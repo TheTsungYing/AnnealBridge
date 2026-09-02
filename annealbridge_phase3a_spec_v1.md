@@ -1,5 +1,7 @@
 # AnnealBridge — Phase 3a 開發規格 (v1)
 
+> v1 修訂紀錄（2026-09-02）：初稿完成後經兩個獨立審查（架構原則 / 程式可行性）修正 25 處，主要：`cqm.num_variables` 是方法改用 `len(cqm.variables)`；`ANNEALBRIDGE_LIMITS` 非 JSON 的例外型別是 `pydantic_settings.SettingsError`；`gate_errors` 改收 backend 以維持 lazy availability；`limits` 通道由假第五 backend 以自訂 key 端到端驗證；grep 測試改為 AST 整值比對並排除 docstring；開發順序把 policy limits 提前到 validator 之前、每步同步更新 error catalog 總數；registry 順序明定並修正 `recommend` 範例；新增 §33.2 對 outline 的偏離表。
+
 > 本規格依 `annealbridge_phase3_spec_outline.md`（含 §8 使用者決策，2026-09-02）撰寫，體例沿用 `annealbridge_phase2_spec_v2.md`。
 > 撰寫時遵守 `annealbridge_PROJECT_OVERVIEW.md` §五的核心原則，特別是原則 4（核心不認識特定求解器）、原則 5（不偷偷幫使用者做決定）、原則 7（不蓋空殼）。
 >
@@ -96,7 +98,8 @@ models ← validation ← compiler ← solvers ← orchestration ← interfaces 
 規則（全部沿用 Phase 2 §4，並新增）：
 
 - `SolverCapabilities`、`AvailabilityStatus`、`ParameterLimit`、`ModelType` 移至 `models/capabilities.py`（純 Pydantic）。理由與 `SolverExecutionMetadata` 搬到 `models/metadata.py` 相同：`validation` 與 `orchestration/policy.py` 都要用到，而 `validation` 不得 import `solvers`。`solvers/base.py` 從 `models` re-export，既有 `from annealbridge.solvers import SolverCapabilities` 仍可用。
-- `orchestration` **不得 import 任何具體 backend 模組**（`solvers.exact`、`solvers.dwave_qpu`、`solvers.leap_hybrid_*`、`solvers.simulated_annealing`），只能經 `solvers.registry` / `solvers.base` / `solvers.metadata`。`orchestration` **可以** import 具體 compiler（`compiler.bqm`、`compiler.cqm`）——compiler 是核心自己的東西，不是外掛；但只能在建立預設 `compilers` 清單時 import，其餘一律走 `ModelCompiler` Protocol。
+- `orchestration` **不得 import 任何具體 backend 模組**（`solvers.exact`、`solvers.dwave_qpu`、`solvers.leap_hybrid_*`、`solvers.simulated_annealing`），只能經 `solvers.registry` / `solvers.base` / `solvers.metadata`；`solvers/__init__.py` 對 `REASON_*` 的 re-export **保留**（既有測試 import 它們），只是 `orchestration` 不再 import。
+- `orchestration` **可以** import 具體 compiler（`compiler.bqm`、`compiler.cqm`），但**只限 `orchestration/optimizer.py` 建立預設 `compilers` 清單那一處**；`routing.py`、`limits.py` 與 `optimizer.py` 其餘程式一律走 `ModelCompiler` Protocol（§13.3 以測試強制）。這是對 outline §4「不得 import 任何具體 compiler」的刻意縮限，理由：compiler 是核心自己的元件而非外掛，service 總得在某處知道預設有哪些 compiler，否則就要再蓋一個 compiler registry（原則 7）。記於 §33.2。
 - service、validator、interfaces 內**不得出現 backend 名稱字串比對**；允許依 `capabilities` 欄位分派。§13.2 以 grep 測試強制。
 - 所有遠端 backend 共用 `solvers/metadata.py`（availability / classify / redact / sanitize）與新的 `solvers/ocean.py`（§17.5）；exception → code 表可各自定義。
 - 每個新 error code / warning code 都要進 `error_catalog` 且有 `recommended_action`；routing 的 reason code 有獨立的固定說明表（§23.4）。
@@ -120,10 +123,12 @@ src/annealbridge/
 │   └── recommendation.py      (new: BackendRecommendation / BackendRecommendationResult 模型)
 ├── compiler/
 │   ├── base.py                (ModelCompiler + model_type / uses_hard_penalty)
-│   ├── bqm.py                 (model_type="bqm")
+│   ├── objective.py           (new: build_objective_bqm，兩個 compiler 共用)
+│   ├── bqm.py                 (model_type="bqm"；objective 改用 objective.py)
 │   └── cqm.py                 (new: CQMCompiler)
 ├── solvers/
 │   ├── base.py                (re-export models.capabilities；is_available() -> AvailabilityStatus)
+│   ├── metadata.py            (dwave_availability() -> AvailabilityStatus；REASON_* 與 re-export 保留)
 │   ├── ocean.py               (new: call_ocean、resolved、LazySampler、共用 exception 表)
 │   ├── leap_hybrid_cqm.py     (new)
 │   ├── registry.py            (+ leap_hybrid_cqm)
@@ -144,6 +149,10 @@ tests/
 │   ├── test_capabilities_model.py     (new)
 │   ├── test_availability.py           (new)
 │   ├── test_policy.py                 (+ limit / limits_for / limits dict)
+│   ├── test_settings.py               (+ ANNEALBRIDGE_LIMITS、pydantic_settings.SettingsError 轉換)
+│   ├── test_capabilities_view.py      (is_available() 改 AvailabilityStatus)
+│   ├── test_solvers.py / test_registry.py (同上；registry 五個名稱)
+│   ├── test_error_catalog.py          (每步同步更新 code 總數)
 │   ├── test_limits.py                 (new: orchestration/limits.py 純函式)
 │   ├── test_problem_validator_full.py (改為 capabilities 注入)
 │   ├── test_service_validate.py       (new)
@@ -163,10 +172,13 @@ tests/
 │   └── test_knapsack_cqm.py           (new)
 ├── mcp/
 │   ├── test_tools_list.py             (四個 tool)
+│   ├── test_capabilities.py           (backend 名單改五個)
 │   ├── test_validate.py               (+ capabilities 相關 warnings)
 │   └── test_recommend.py              (new)
 ├── remote_mock/
-│   ├── conftest.py                    (+ FakeCQMSampler)
+│   ├── conftest.py                    (+ FakeCQMSampler；make_remote_available 改回 AvailabilityStatus)
+│   ├── test_dwave_qpu_mock.py / test_leap_hybrid_mock.py (is_available() 斷言改型別)
+│   ├── test_service_remote_flow.py    (availability 未知 reason 案例改 category="unavailable")
 │   ├── test_leap_hybrid_cqm_mock.py   (new)
 │   └── test_credential_leak.py        (+ CQM backend)
 └── remote_live/
@@ -244,6 +256,8 @@ class SolverCapabilities(BaseModel):
 | `leap_hybrid_bqm` | `["bqm"]` | False | False | `("leap_hybrid_bqm.time_limit_seconds", "time_seconds", "REMOTE_TIME_LIMIT")` |
 | `leap_hybrid_cqm` | `["cqm"]` | False | False | `("leap_hybrid_cqm.time_limit_seconds", "time_seconds", "REMOTE_TIME_LIMIT")` |
 
+表中的 tuple 是縮寫，程式碼一律寫 `ParameterLimit(preference=..., limit=..., error_code=...)`（pydantic 對 `list[ParameterLimit]` 不接受 tuple）。
+
 `simulated_annealing` 雖 `supports_num_reads=True`，但**不宣告** reads 上限：本機 reads 不受 policy 管，這正是 Phase 2 用 `caps.remote and caps.supports_num_reads` 特判想表達的事，改成宣告後不需要特判。
 
 ---
@@ -261,9 +275,11 @@ class SolverBackend(Protocol):
     def name(self) -> str: ...
     @property
     def is_exhaustive(self) -> bool: ...
-    def resolve_time_limit(self, compiled: CompiledProblem, preferences: SolverPreferences) -> float | None: ...
-    def solve(self, compiled: CompiledProblem, preferences: SolverPreferences) -> RawSolverResult: ...
+    def resolve_time_limit(self, compiled_problem: CompiledProblem, preferences: SolverPreferences) -> float | None: ...
+    def solve(self, compiled_problem: CompiledProblem, preferences: SolverPreferences) -> RawSolverResult: ...
 ```
+
+參數名維持 Phase 2 的 `compiled_problem`，不改。
 
 - 本機 backend：`AvailabilityStatus(category="available")`。
 - `solvers/metadata.py` 的 `dwave_availability()` 改回傳 `AvailabilityStatus`：`not_installed` / `credentials_missing` / `config_invalid`（`error_code="DWAVE_CONFIG_INVALID"`）/ `available`。`detail` 沿用 `REASON_*` 常數文字。三個 D-Wave backend 共用。
@@ -278,7 +294,9 @@ class SolverBackend(Protocol):
 | `config_invalid` | `configuration_error` | `BACKEND_CONFIG_INVALID`（新，§20） |
 | `unavailable` | `backend_unavailable` | `BACKEND_UNAVAILABLE` |
 
-`_AVAILABILITY_MAP` 改成以 category 為 key；`REASON_*` 常數只留在 `solvers/metadata.py`，`orchestration` 不再 import 它們。錯誤訊息格式不變：`Backend '<name>' is unavailable: <detail>`。
+`_AVAILABILITY_MAP` 改成以 category 為 key；`orchestration` 不再 import `REASON_*`（常數本身與 `solvers/__init__` 的 re-export 保留）。錯誤訊息格式不變：`Backend '<name>' is unavailable: <detail>`；`detail is None` 時沿用 `no reason reported`。
+
+既有測試的對應：`tests/remote_mock/conftest.py` 的 `make_remote_available` 改回 `AvailabilityStatus(category="available")`；模擬 D-Wave config 壞掉的 fake 必須連 `error_code="DWAVE_CONFIG_INVALID"` 一起給（與 `dwave_availability()` 相同），`test_service_remote_flow.py` 對該 code 的期望才不變；Phase 2 的「未知 reason」與 `(False, None)` 案例改為 `category="unavailable"`，期望 `BACKEND_UNAVAILABLE`。
 
 ### 8.3 capabilities view
 
@@ -296,34 +314,36 @@ def validate_problem_full(
     *,
     capabilities: SolverCapabilities | None = None,
     max_compiled_variables: int | None = None,
+    model_type: ModelType | None = None,
 ) -> ProblemValidationResult: ...
 ```
 
 - `capabilities is None`：只做 backend 無關的檢查（errors、`SOFT_WEIGHT_SMALL`、`LARGE_SLACK_RANGE`、`REDUNDANT_CONSTRAINT`、`DUPLICATE_TERM_MERGED`），estimate 以 BQM 路徑計算，所有 backend-fit / ignored-parameter warnings 跳過。
 - `exact_max_variables` 參數**移除**（改名 `max_compiled_variables`，只在 `capabilities.exhaustive` 時套用）。此函式的直接呼叫者只有 MCP tool 與測試，MCP tool 改走 `service.validate()`（§10）。
+- `model_type`：呼叫端（service）告知實際會走的 compiler 路徑；`None` 時退回 `capabilities.preferred_model_type`（無 capabilities 則 `"bqm"`）。validator 不認識 compilers，所以由 service 傳入，避免多 model type 的 backend 搭配自訂 `compilers` 時 validator 猜錯路徑。
 
 ### 9.2 estimate 依 model type
 
 ```python
-model_type = capabilities.preferred_model_type if capabilities else "bqm"
+model_type = model_type or (capabilities.preferred_model_type if capabilities else "bqm")
 estimated = estimate_compiled_variables(problem) if model_type == "bqm" else len(problem.variables)
 ```
 
-CQM 路徑沒有 slack，`estimated_compiled_variables == len(variables)`。`ProblemValidationResult` 新增 `model_type: ModelType | None = None`（記錄估算依據；`capabilities is None` 時為 `"bqm"`）。
+CQM 路徑沒有 slack，`estimated_compiled_variables == len(variables)`。`ProblemValidationResult` 新增 `model_type: ModelType | None = None`（記錄估算依據）。
 
 ### 9.3 warnings 對應表（取代 Phase 2 §20 以 backend 名稱條件的列）
 
 | code | 觸發條件（全部以 capabilities 欄位表達） |
 |---|---|
 | `EXACT_OVER_LIMIT` | `caps.exhaustive` 且 `max_compiled_variables` 非 None 且 `estimated > max` |
-| `EXACT_NEAR_LIMIT` | `caps.exhaustive` 且 `estimated > max × 0.8` |
+| `EXACT_NEAR_LIMIT` | `caps.exhaustive` 且 `max_compiled_variables` 非 None 且 `max × 0.8 < estimated ≤ max` |
 | `DENSE_FOR_QPU` | `caps.requires_embedding` 且（`estimated > 150` 或最大 constraint 變數數 > 30） |
 | `SEED_IGNORED` | `solver.seed is not None` 且 `not caps.supports_seed` |
 | `PARAMETER_IGNORED`（`solver.num_reads`） | `num_reads` 非預設 且 `not caps.supports_num_reads` |
 | `PARAMETER_IGNORED`（`solver.num_sweeps`） | `num_sweeps` 非預設 且 `not caps.supports_num_sweeps` |
 | `PARAMETER_IGNORED`（`solver.penalty_multiplier`） | 非預設 且 `model_type == "cqm"`（CQM 路徑無 hard penalty，§16.3） |
-| `PARAMETER_IGNORED`（`solver.max_retries`） | 非預設 且 `model_type == "cqm"`（CQM 路徑 attempt 恆 1） |
-| `PARAMETER_IGNORED`（`solver.<block>.*`） | 使用者填了某個 backend option block（如 `dwave_qpu`），但該 block 名稱 ≠ `caps.name`（填錯 backend 的選項） |
+| `PARAMETER_IGNORED`（`solver.max_retries`） | 非預設 且（`model_type == "cqm"` 或 `caps.exhaustive`）——兩者依 §16.3 attempt 都恆 1 |
+| `PARAMETER_IGNORED`（`solver.<block>.*`） | 使用者填了某個 backend option block（如 `dwave_qpu`），但該 block 欄位名 ≠ `caps.name`（填錯 backend 的選項）。**命名契約**：option block 的欄位名必須等於該 backend 的 `capabilities.name`（現有四個皆如此，`leap_hybrid_cqm` 亦同）；比對對象是 `caps.name` 而非 registry key，自訂 registry 用別的 key 註冊時此 warning 以 `caps.name` 為準。沒有 option block 的 backend（exact、SA、§13.1 的 fake）不受影響 |
 | 其餘（`SOFT_WEIGHT_SMALL`、`LARGE_SLACK_RANGE`、`REDUNDANT_CONSTRAINT`、`DUPLICATE_TERM_MERGED`） | 不變，backend 無關 |
 
 `EXACT_*` / `DENSE_FOR_QPU` 的 code 名稱**保留**（Agent 已學過的詞彙），但訊息文字改為以能力描述：「the exhaustive backend limit」、「a backend that requires minor-embedding」。
@@ -332,7 +352,7 @@ CQM 路徑沒有 slack，`estimated_compiled_variables == len(variables)`。`Pro
 
 ### 9.4 `_POSITIVE_BACKEND_OPTION_FIELDS` 通用化
 
-改為由 `SolverPreferences.model_fields` 反射：凡型別為 `<BaseModel 子類> | None` 的欄位視為 option block，其所有 `float | None` / `int | None` 欄位若非 None 必須有限且 > 0，否則 `INVALID_SOLVER_PREFERENCE`（path `solver.<block>.<field>`）。`bool` 欄位（`auto_scale`）不檢查。新增 `leap_hybrid_cqm` block 後 validator 零改動。
+改為由 `SolverPreferences.model_fields` 反射：凡 annotation 為 `<BaseModel 子類> | None` 的欄位視為 option block（同時處理 `types.UnionType` 與 `typing.Union` 兩種寫法；實測 pydantic 2.13 下 `dwave_qpu` 的 origin 是 `types.UnionType`，`seed: int | None` 正確地不被視為 block），其所有 `float | None` / `int | None` 欄位若非 None 必須有限且 > 0，否則 `INVALID_SOLVER_PREFERENCE`（path `solver.<block>.<field>`）。`bool` 欄位（`auto_scale`）不檢查。新增 `leap_hybrid_cqm` block 後 validator 零改動。「> 0」是 3a 全部 option 欄位的共同規則；3b 若出現合法為 0 或負數的 option 欄位，改為在欄位上以 `Field(gt=0)` 宣告、validator 只讀 constraint，屆時再改（§32）。
 
 ### 9.5 移除
 
@@ -349,10 +369,12 @@ class OptimizationService:
             caps = self._registry.get(problem.solver.backend).capabilities
         except KeyError:
             caps = None
+        model_type = self._select_model_type(caps) if caps is not None else None   # §16.1，無 compiler 時 None
         return validate_problem_full(
             problem,
             capabilities=caps,
-            max_compiled_variables=self._policy.limit("variables"),
+            max_compiled_variables=int(self._policy.limit("variables")),
+            model_type=model_type,
         )
 ```
 
@@ -422,8 +444,10 @@ class ExecutionPolicy(BaseModel):
         """capabilities view 與 service 共用的唯一來源（§12.3）。"""
 ```
 
-- `limits` 是 3b 的接點（例如 Fujitsu 的 `iterations`）；3a 內建 backend 只用四個相容 key，`limits` 預設空。
-- `ServerSettings` 加 `limits: dict[str, float] = {}`，env `ANNEALBRIDGE_LIMITS`（pydantic-settings 以 JSON 解析，例 `ANNEALBRIDGE_LIMITS='{"iterations": 100000}'`）；`to_policy()` 原樣傳入。舊 env 名一個都不改。
+- 3a 內建 backend 只用四個相容 key，`limits` 預設空；它在 3a 的消費者是 §13.1 的假第五 backend（宣告自訂 key `iterations`，端到端證明自訂 key 可用），不是空殼。3b 的 Fujitsu 走同一條路。
+- `ServerSettings` 加 `limits: dict[str, float] = {}`，env `ANNEALBRIDGE_LIMITS`（pydantic-settings 以 JSON 解析，實測 `'{"iterations": 100000}'` 可用）；`to_policy()` 原樣傳入。舊 env 名一個都不改。
+- **例外型別（實測 pydantic-settings 2.15）**：env 值不是合法 JSON 時拋的是 `pydantic_settings.SettingsError`（`ValueError` 子類，**沒有** `.errors()`），不是 `pydantic.ValidationError`。`load_settings()` 必須同時捕捉兩者並轉成專案的 `annealbridge.config.SettingsError`：`ValidationError` 沿用逐欄位格式，`pydantic_settings.SettingsError` 用 `f"Invalid server settings: {exc}"` 一行，兩者都走 CLI / MCP 既有的 exit 2 路徑。
+- **型別規則**：`limit(key)` 回相容欄位自己的型別（`variables` 為 `int`，其餘 `int` / `float` 依欄位），`limits` dict 的值一律 `float`；`limits_for()` 原樣輸出（自訂 key 會是 `100000.0`，可接受）；需要 `int` 的呼叫端（§10 的 `max_compiled_variables`）自行 `int()`。
 - **不新增任何 backend 命名的 policy 欄位**；3b 加 backend 時只能走 `limits`。
 
 ### 11.3 宣告與 policy 的一致性
@@ -443,12 +467,16 @@ def read_preference(preferences: SolverPreferences, path: str) -> float | int | 
 def preference_limit_errors(
     capabilities: SolverCapabilities, preferences: SolverPreferences, policy: ExecutionPolicy
 ) -> list[SolveError]:
-    """§14 step 9 的 preference 部分：走訪 capabilities.parameter_limits，超限 → catalog_error(decl.error_code, ...)。不 clamp。"""
+    """§16.2 步驟 8：走訪 capabilities.parameter_limits，超限 → catalog_error(decl.error_code, ...)。不 clamp。
+    policy.limit(decl.limit) 為 None → ValueError（宣告與 policy 不一致；service 建構時已擋，此處是純函式自己的防線）。"""
 
 def gate_errors(
-    backend_name: str, capabilities: SolverCapabilities, status: AvailabilityStatus, policy: ExecutionPolicy
-) -> tuple[str, list[SolveError]] | None:
-    """§14 steps 3–5：enabled_backends → allow_remote → availability。回 (status, errors) 或 None。"""
+    backend_name: str, backend: SolverBackend, policy: ExecutionPolicy
+) -> tuple[str, str, list[SolveError]] | None:
+    """§16.2 步驟 3–5：enabled_backends → allow_remote → backend.is_available()，依序短路；
+    前兩關擋下時不呼叫 is_available()（D-Wave 的 availability 會讀 config 檔，順序語意與 Phase 2 相同）。
+    回 (status, reported_backend_name, errors) 或 None。reported_backend_name：BACKEND_DISABLED_BY_POLICY 用
+    registry key（backend_name），其餘用 capabilities.name（Phase 2 既有行為，測試釘住）。"""
 ```
 
 ### 12.1 `_preference_limit_errors` 改寫
@@ -461,7 +489,7 @@ for decl in caps.parameter_limits:
         errors.append(_limit_error(decl.error_code, decl.preference, value, maximum))
 ```
 
-訊息格式沿用 `"{label} {value} exceeds the server maximum of {maximum}"`；label 改用點路徑（`dwave_qpu.annealing_time_us`）。Phase 2 測試若斷言 label 為 `annealing_time_us`，更新為含路徑的版本。
+訊息格式沿用 `"{label} {value} exceeds the server maximum of {maximum}"`；label 改用點路徑（`dwave_qpu.annealing_time_us`）。既有測試只斷言訊息內含 requested / maximum 數值，不斷言 label 文字，故不需改。
 
 ### 12.2 flag 驅動的兩個編譯後檢查（不變，但改讀通用 key）
 
@@ -491,25 +519,30 @@ return result
 
 ### 13.1 `tests/architecture/test_fifth_backend.py`
 
-`tests/fakes/declared_backend.py` 定義 `FakeDeclaredBackend`：`remote=True`、`supports_num_reads=True`、`supports_time_limit=False`、`supported_model_types=["bqm"]`、`parameter_limits=[("num_reads", "reads", "QPU_READS_LIMIT")]`，`is_available()` 永遠 available，`solve()` 回一個固定 feasible sample。以自訂 registry（四個內建 + 它）與 `ExecutionPolicy(allow_remote=True)` 建 service，斷言：
+`tests/fakes/declared_backend.py` 定義 `FakeDeclaredBackend`：`name="fake_declared"`、`remote=True`、`supports_num_reads=True`、`supports_time_limit=False`、`supported_model_types=["bqm"]`、無 option block，
+`parameter_limits=[ParameterLimit(preference="num_reads", limit="iterations", error_code="FAKE_ITERATIONS_LIMIT")]`（**自訂 key**，證明 §11 的 `limits` 通道端到端可用；`FAKE_ITERATIONS_LIMIT` 只在測試內註冊到 catalog，或以 `catalog_error` 對未知 code 回 `recommended_action=None` 的既有行為處理），`is_available()` 永遠 available，`solve()` 回一個固定 feasible sample。以 `SolverRegistry.default()` 的五個 backend + 它組自訂 registry，policy 為 `ExecutionPolicy(allow_remote=True, limits={"iterations": 1000})`，斷言：
 
-- `build_capabilities(...)` 對它回 `limits == {"max_reads": 1000}`（漂移 1 修正）。
-- `num_reads=5000` solve → `resource_limit_exceeded` / `QPU_READS_LIMIT`；`num_reads=10` → `success`。
+- `build_capabilities(...)` 對它回 `limits == {"max_iterations": 1000.0}`（漂移 1 修正：capabilities 與 service 同源）。
+- `num_reads=5000` solve → `resource_limit_exceeded` / `FAKE_ITERATIONS_LIMIT`；`num_reads=10` → `success`。
 - `service.validate()` 對它：帶 `seed` → `SEED_IGNORED`（不再需要名單）。
-- 上述全部**不修改** `optimizer.py`、`capabilities.py`、`problem_validator.py`、`policy.py`（測試本身就是證明：這些檔案裡沒有它的名字）。
-- 宣告一個 policy 沒有的 key（`("num_reads", "iterations", "X")`）→ `OptimizationService(...)` 建構時 `ValueError`。
+- `service.recommend()` 的清單含它且 `usable=True`。
+- 上述全部**不修改** `optimizer.py`、`limits.py`、`routing.py`、`capabilities.py`、`problem_validator.py`、`policy.py`（測試本身就是證明：這些檔案裡沒有它的名字）。
+- 同一個 fake 搭配 `ExecutionPolicy(allow_remote=True)`（沒有 `iterations`）→ `OptimizationService(...)` 建構時 `ValueError`，訊息含 backend 名與 key。
 
 ### 13.2 `tests/architecture/test_no_backend_names.py`
 
-以 AST / 正規表示式掃描下列檔案，不得出現字串常數 `"exact"`、`"simulated_annealing"`、`"dwave_qpu"`、`"leap_hybrid_bqm"`、`"leap_hybrid_cqm"`：
+以 AST 掃描下列檔案，規則：任何 `ast.Constant` 字串節點的**整值**等於 `"exact"`、`"simulated_annealing"`、`"dwave_qpu"`、`"leap_hybrid_bqm"`、`"leap_hybrid_cqm"` 之一即違規（整值相等，不是子字串；docstring 與註解不在範圍——docstring 是 `Expr` 陳述式裡的 Constant，掃描時排除）：
 
 - `orchestration/**`、`validation/**`、`interfaces/capabilities.py`、`interfaces/mcp/tools.py`、`interfaces/cli/main.py`
 
-允許出現的位置：`models/problem.py`（`SolverPreferences.backend` Literal 與 option block 欄位名）、`solvers/<backend>.py`（自己的 `name`）、`solvers/registry.py`、README、測試。
+允許出現的位置：`models/problem.py`（`SolverPreferences.backend` Literal 與 option block 欄位名）、`models/error_catalog.py`、`solvers/<backend>.py`（自己的 `name`）、`solvers/registry.py`、README、測試。
+
+整值規則不會抓到訊息文字裡的名字，所以另外要求（人工 + code review，不靠測試）：`problem_validator.py` 的 `_WARNING_RECOMMENDED_ACTIONS`（`EXACT_NEAR_LIMIT` / `EXACT_OVER_LIMIT` / `DENSE_FOR_QPU` 目前提到 `simulated_annealing`、`leap_hybrid_bqm`）與 `optimizer.py` 的 `EXACT_VARIABLE_LIMIT` 訊息（「exact solver limit」）改寫成能力描述（「the exhaustive backend」「a local heuristic backend」「a hybrid backend」），與 §9.3 的訊息規則一致。`models/error_catalog.py` 的 `recommended_action` 文字可以提 backend 名（它是給 Agent 的固定詞彙，且在 models 層）。
 
 ### 13.3 `test_import_boundaries.py` 新增
 
-`orchestration/**` 不得 import `annealbridge.solvers.exact` / `.simulated_annealing` / `.dwave_qpu` / `.leap_hybrid_bqm` / `.leap_hybrid_cqm`（可 import `annealbridge.solvers`、`.base`、`.registry`、`.metadata`）。
+- `orchestration/**` 不得 import `annealbridge.solvers.exact` / `.simulated_annealing` / `.dwave_qpu` / `.leap_hybrid_bqm` / `.leap_hybrid_cqm`（可 import `annealbridge.solvers`、`.base`、`.registry`、`.metadata`）。
+- `annealbridge.compiler.bqm` / `.cqm`（以及 `from annealbridge.compiler import BQMCompiler, CQMCompiler`）只允許出現在 `orchestration/optimizer.py`；`orchestration/routing.py`、`orchestration/limits.py`、`orchestration/policy.py` 不得 import 它們。
 
 ---
 
@@ -570,7 +603,7 @@ class ModelCompiler(Protocol):
    - hard：`weight=None`（dimod 語意：必須滿足）；trace `penalty=None, native=True`。
    - soft：`weight=constraint.weight, penalty="quadratic"`；trace `penalty=weight, native=True`。`penalty="quadratic"` 的能量貢獻為 `weight × violation²`，與 `solution_validator` 的 `weighted_penalty` 同一公式（§21.2 測試證明）。dimod 文件註明 `"quadratic"` 只適用 binary 變數，3b 加整數時必須重新決定（§32.1）。
    - label 用 `constraint.id`；validator 已保證唯一。
-4. `CompiledProblem(model_type="cqm", model=cqm, internal_variables=set(), hard_penalty=None, objective_scale=compute_objective_scale(objective), num_variables=cqm.num_variables)`。
+4. `CompiledProblem(model_type="cqm", model=cqm, internal_variables=set(), hard_penalty=None, objective_scale=compute_objective_scale(objective), num_variables=len(cqm.variables))`。注意 dimod 0.12.22 的 `ConstrainedQuadraticModel.num_variables` 是**方法**不是屬性（實測），直接塞會是 bound method；用 `len(cqm.variables)`。
 
 ### 15.2 不做的事
 
@@ -602,8 +635,8 @@ class OptimizationService:
         # 以 model_type 建索引；重複 → ValueError
 ```
 
-- `compiler=` 關鍵字**移除**（唯一使用者 `test_service_validation_consistency.py` 改為 `compilers=[FakeFailingCompiler()]`，fake 宣告 `model_type="bqm"`）。
-- `_select_compiler(caps)`：依 `caps.supported_model_types` 順序取第一個有 compiler 的；都沒有 → `configuration_error` / `NO_COMPILER_FOR_MODEL_TYPE`（新 code）。**這是 service 唯一依 model type 分派的地方，且依 capabilities，不依名稱。**
+- `compiler=` 關鍵字**移除**（唯一使用者 `test_service_validation_consistency.py` 改為 `compilers=[FakeFailingCompiler()]`，fake 必須宣告 `model_type="bqm"` **與** `uses_hard_penalty=True`，否則 §16.2 步驟 9 / §16.3 讀屬性會 AttributeError）。
+- `_select_model_type(caps) -> ModelType | None`：依 `caps.supported_model_types` 順序取第一個有 compiler 的 type；`_select_compiler(caps)` 據此取 compiler。都沒有 → `configuration_error` / `NO_COMPILER_FOR_MODEL_TYPE`（新 code）。**這是 service 唯一依 model type 分派的地方，且依 capabilities，不依名稱。** `service.validate()`（§10）與 routing（§23.3）用同一個 `_select_model_type`，三處對「會走哪條路徑」的答案一致。
 - 選定的 `compiled.model_type` 記入 log 與（§22）metadata。
 
 ### 16.2 流程（Phase 2 §14 的 3a 版）
@@ -621,12 +654,14 @@ class OptimizationService:
 12. solve → solver_error（含分類 code）
 13. process_candidates（不變：去重、independent validator、ranking）
 14. feasible → success
-15. exhaustive → infeasible (proven=True)
+15. exhaustive → infeasible (proven=True)；**維持** Phase 2 條件：只有 raw.num_samples > 0 才算 proven
 16. not compiler.uses_hard_penalty → infeasible (proven=False)，attempt 恆 1，無 REMOTE_RETRIES_DISABLED warning
-17. remote and not allow_remote_retries → infeasible + REMOTE_RETRIES_DISABLED（僅 uses_hard_penalty 路徑）
+17. remote and not allow_remote_retries → infeasible + REMOTE_RETRIES_DISABLED（僅 uses_hard_penalty 路徑；**維持** max_retries > 0 才發 warning）
 18. attempt > max_retries → infeasible
 19. λ = next_penalty；回到 10
 ```
+
+步驟 3–5 的 gate 順序、availability 的 lazy 評估、回報的 backend 名稱規則，全部沿用 Phase 2（見 §12 `gate_errors` docstring）。
 
 ### 16.3 `_max_attempts`
 
@@ -681,7 +716,7 @@ SolverCapabilities(
 
 ### 17.3 SampleSet → RawSolverResult
 
-- CQM sampleset 的 `record.sample` dtype 依 sampler 而定（`ExactCQMSolver` 實測 `int64`，Leap 回傳可能為 float）；`sampleset_to_arrays` 轉 `int8` 前必須先斷言所有值為整數且在 {0, 1}（`np.all(np.isin(values, (0, 1)))`），否則 `SolverExecutionError(code="REMOTE_SOLVER_ERROR")`。3b 加整數變數時此處要放寬為 `int64`（§32.1）。
+- CQM sampleset 的 `record.sample` dtype 依 sampler 而定（`ExactCQMSolver` 實測 `int64`，Leap 回傳可能為 float）。**在 `LeapHybridCQMBackend.solve()` 內、呼叫共用的 `sampleset_to_arrays` 之前**先斷言 `np.all(np.isin(sampleset.record.sample, (0, 1)))`，否則 `SolverExecutionError(code="REMOTE_SOLVER_ERROR")`；共用 helper `solvers/base.py::sampleset_to_arrays` 本身**不改**（四個既有 backend 的行為與測試不受影響）。3b 加整數變數時，改的是這個 backend 內的斷言與 `RawSolverResult` 的 dtype（§32.1）。
 - **不得**以 `record.is_feasible` 過濾或排序（原則 2）；全部 sample 原序回傳，service 的 independent validator 重驗。
 - `metadata.sampler_reported_feasible = int(record.is_feasible.sum())`（§22），純供診斷：validator 與 sampler 對 feasible 的判定若不一致，這個數字讓人看得出來。
 - `sampleset.info` 經 `sanitize_sampleset_info`（whitelist：hybrid 的 `run_time`、`charge_time`、`qpu_access_time` 已在 whitelist 內）；`effective_time_limit_seconds` 記入。
@@ -712,7 +747,9 @@ class LazySampler:                                 # factory + lock + 只快取�
 
 ### 17.7 Registry
 
-`SolverRegistry.default()` 註冊第五個 backend `leap_hybrid_cqm`。CI 的 minimal-install job 印出的 `names()` 應含它，且不需 `dwave-system`。
+`SolverRegistry.default()` 註冊第五個 backend `leap_hybrid_cqm`。**註冊順序固定**：`exact`、`simulated_annealing`、`dwave_qpu`、`leap_hybrid_bqm`、`leap_hybrid_cqm`（前四個是 Phase 2 既有順序；capabilities 列表、CLI 表格與 routing 的最後 tie-break 都依此順序）。CI 的 minimal-install job 印出的 `names()` 應含它，且不需 `dwave-system`。
+
+既有測試更新：`tests/mcp/test_capabilities.py`（backend 名單 `sorted(...) == [四個]`）與 `tests/unit/test_cli.py`（`capabilities` 表格列集合）改為五個。
 
 ---
 
@@ -753,14 +790,14 @@ class SolverPreferences(BaseModel):
 |---|---|---|---|
 | `BACKEND_CONFIG_INVALID` | error | `configuration_error` | availability category `config_invalid` 且 backend 未指定 `error_code` |
 | `NO_COMPILER_FOR_MODEL_TYPE` | error | `configuration_error` | backend 宣告的 model types 沒有任何一個有 compiler |
-| `UNKNOWN_BACKEND` | warning（新增 warning 用法） | — | `service.validate()` 對自訂 registry 找不到 backend |
+| `UNKNOWN_BACKEND` | warning（新增 warning 用法） | — | `service.validate()` 對自訂 registry 找不到 backend；**共用**既有 catalog 條目與 `recommended_action`，訊息由 validator 產生，`test_error_catalog.py` 的 code 總數不因此 +1 |
 
 `recommended_action`：
 
 - `BACKEND_CONFIG_INVALID`：「The backend's configuration is present but invalid; fix or remove it on the server, or use a local backend.」
 - `NO_COMPILER_FOR_MODEL_TYPE`：「The server has no compiler for the model types this backend accepts; this is a server configuration error—report it, or choose another backend.」
 
-既有 warning code 全部保留；`PARAMETER_IGNORED` 的 `recommended_action` 文字改為通用（不提 leap_hybrid_bqm）。`test_error_catalog.py` 的覆蓋檢查擴到 routing reason codes（§23.4）以外的全部新 code。
+既有 warning code 全部保留；`PARAMETER_IGNORED`、`EXACT_NEAR_LIMIT`、`EXACT_OVER_LIMIT`、`DENSE_FOR_QPU` 的 `recommended_action` 文字改為能力描述（§13.2）。`test_error_catalog.py` 的覆蓋檢查擴到 routing reason codes（§23.4）以外的全部新 code；該檔對 code 總數的斷言（目前 `== 32`）**在每個新增 code 的開發步驟同步更新**，不是留到最後。
 
 ---
 
@@ -825,17 +862,18 @@ def recommend(problem, registry, policy, compilers: dict[ModelType, ModelCompile
 
 1. `validate_problem(problem)` 有錯 → `valid=False`，無推薦。
 2. 對 registry 每個 backend（registry 順序）：
-   - `caps`、`status = backend.is_available()`（無網路）。
-   - `blocking = gate_errors(...)` 的 errors + `preference_limit_errors(caps, problem.solver, policy)`（把使用者的 preferences 套到每個候選 backend 上，例如 `num_reads=5000` 對 QPU 是 blocking，對 SA 不是）。
-   - `validation = validate_problem_full(problem, capabilities=caps, max_compiled_variables=policy.limit("variables"))`；`caps.exhaustive` 且 `EXACT_OVER_LIMIT` 在 warnings → 轉為 blocking `EXACT_VARIABLE_LIMIT`。
-   - `model_type`：`caps.supported_model_types` 中第一個有 compiler 的；無 → blocking `NO_COMPILER_FOR_MODEL_TYPE`。
+   - `caps = backend.capabilities`。
+   - `blocking = gate_errors(name, backend, policy)` 的 errors（同 service，lazy 呼叫 `is_available()`，無網路）+ `preference_limit_errors(caps, problem.solver, policy)`（把使用者的 preferences 套到每個候選 backend 上，例如 `num_reads=5000` 對 QPU 是 blocking，對 SA 不是）。
+   - `model_type`：與 service 同一個 `_select_model_type(caps)` 規則（依 `compilers` 取第一個有 compiler 的 type）；無 → blocking `NO_COMPILER_FOR_MODEL_TYPE`、`model_type=None`。
+   - `validation = validate_problem_full(problem, capabilities=caps, max_compiled_variables=int(policy.limit("variables")), model_type=model_type)`；`caps.exhaustive` 且 `EXACT_OVER_LIMIT` 在 warnings → 轉為 blocking `EXACT_VARIABLE_LIMIT`。
    - `usable = not blocking`。
 3. 排序 key（tuple，ascending）：
    1. `0 if usable else 1`
    2. `1 if "DENSE_FOR_QPU" in warning codes else 0`
    3. tier：
       - `caps.exhaustive` 且無 `EXACT_*` warning → 0（`R_EXACT_FITS`：可證最佳、免費）
-      - `caps.exhaustive` 但 `EXACT_NEAR_LIMIT` → 1（`R_EXACT_NEAR_LIMIT`）
+      - `caps.exhaustive` 且 `EXACT_NEAR_LIMIT` → 1（`R_EXACT_NEAR_LIMIT`）
+      - `caps.exhaustive` 且 `EXACT_OVER_LIMIT`（已轉 blocking） → 1（`R_EXACT_OVER_LIMIT`；反正 key 1 已把它排到 unusable 區）
       - 本機 heuristic → 2（`R_LOCAL_HEURISTIC`）
       - 遠端且 `model_type == "cqm"` 且 problem 有 ≥ 1 條 hard constraint → 3（`R_NATIVE_CONSTRAINTS`）
       - 其他遠端 → 4（`R_REMOTE`）；其中 `not caps.returns_multiple_samples` 且 `top_k > 1` 加 reason `R_SINGLE_SAMPLE`（不影響 tier）
@@ -851,6 +889,7 @@ def recommend(problem, registry, policy, compilers: dict[ModelType, ModelCompile
 | `R_UNUSABLE` | 現在 solve 會失敗，見 `blocking` |
 | `R_EXACT_FITS` | 編譯後變數在 exhaustive 上限內，可證最佳解與不可行性 |
 | `R_EXACT_NEAR_LIMIT` | 在上限內但接近，執行時間與記憶體可觀 |
+| `R_EXACT_OVER_LIMIT` | 編譯後變數超過 exhaustive 上限，solve 會被拒 |
 | `R_LOCAL_HEURISTIC` | 本機 heuristic，免費、可重試、不保證最佳 |
 | `R_NATIVE_CONSTRAINTS` | hard constraint 以模型原生表達，無 penalty / slack |
 | `R_REMOTE` | 遠端，消耗 quota |
@@ -903,9 +942,11 @@ Rank  Backend              Usable  Model  Reasons
 1     exact                yes     bqm    R_EXACT_FITS
 2     simulated_annealing  yes     bqm    R_LOCAL_HEURISTIC
 3     leap_hybrid_cqm      no      cqm    R_UNUSABLE, R_NATIVE_CONSTRAINTS   [REMOTE_DISABLED]
-4     leap_hybrid_bqm      no      bqm    R_UNUSABLE, R_REMOTE, R_SINGLE_SAMPLE   [REMOTE_DISABLED]
-5     dwave_qpu            no      bqm    R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]
+4     dwave_qpu            no      bqm    R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]
+5     leap_hybrid_bqm      no      bqm    R_UNUSABLE, R_REMOTE, R_SINGLE_SAMPLE   [REMOTE_DISABLED]
 ```
+
+（knapsack 不 DENSE；`dwave_qpu` 與 `leap_hybrid_bqm` 同為 unusable、tier 4，依 §17.7 的 registry 順序 `dwave_qpu` 在前。）
 
 exit code：問題無效 → 1；否則 0（推薦清單本身沒有失敗）。CLI 與 MCP 共用同一個 `service.recommend()`；CLI 不含任何排序邏輯。
 
@@ -917,13 +958,13 @@ exit code：問題無效 → 1；否則 0（推薦清單本身沒有失敗）。
 
 - `test_capabilities_model.py`：`ParameterLimit` / `AvailabilityStatus.available` / `preferred_model_type`；`supported_model_types` 空 → ValidationError。
 - `test_availability.py`：`dwave_availability()` 四種 category（monkeypatch `find_spec` 與 `load_config`），`detail` 不含 config 值。
-- `test_policy.py`：`limit()` 四個相容 key 讀舊欄位；`limits={"iterations": 5}` 可讀；`limits={"reads": 5}` → ValidationError（與相容 key 衝突）；`limits` 值 ≤ 0 / 非有限 → ValidationError；`limits_for()` 對五個內建 backend 的輸出逐 key 等於 Phase 2 期望。
-- `test_settings.py`：`ANNEALBRIDGE_LIMITS='{"iterations": 100}'` 解析；非 JSON → `SettingsError`；舊 env 名全部仍生效。
-- `test_limits.py`：`read_preference` 點路徑、block 未填回 None、路徑不存在 raise；`preference_limit_errors` 收齊多個超限；`gate_errors` 三個 gate 順序。
+- `test_policy.py`：`limit()` 四個相容 key 讀舊欄位；`limits={"iterations": 5}` 可讀；`limits={"reads": 5}` → ValidationError（與相容 key 衝突）；`limits` 值 ≤ 0 / 非有限 → ValidationError；`limits_for()` 對四個 Phase 2 backend 的輸出逐 key 等於 Phase 2 期望，對 `leap_hybrid_cqm` 為 `{"max_time_seconds": 300}`。
+- `test_settings.py`：`ANNEALBRIDGE_LIMITS='{"iterations": 100}'` 解析；非 JSON → 專案 `SettingsError`（來源是 `pydantic_settings.SettingsError`，§11.2）；舊 env 名全部仍生效。
+- `test_limits.py`：`read_preference` 點路徑、block 未填回 None、路徑不存在 raise；`preference_limit_errors` 收齊多個超限、policy 缺 key → ValueError；`gate_errors` 三個 gate 順序，且前兩關擋下時 `is_available()` **未被呼叫**（spy），回報名稱規則（disabled-by-policy 用 registry key、其餘用 `caps.name`）。
 - `test_problem_validator_full.py`：全部改成傳 `capabilities=`；§9.3 表每一列一個測試；`capabilities=None` 不產 backend warnings；exact + seed → `SEED_IGNORED`（漂移 2）；填錯 block（backend=exact 但給 `dwave_qpu` options）→ `PARAMETER_IGNORED`。
 - `test_service_validate.py`：`service.validate()` 與直接呼叫 `validate_problem_full(capabilities=registry caps, max=policy)` 結果相等；自訂 registry 缺 backend → `UNKNOWN_BACKEND` warning。
 - `test_cqm_compiler.py`：變數 / objective 符號（maximize 取負）/ hard 為 `weight=None` / soft 為 `weight, penalty="quadratic"` / label = id / `internal_variables == set()` / `hard_penalty is None` / 常數 constraint 的 redundant 與 CompilationError 兩支 / determinism / §21.2 語意一致性 / **交叉驗證**：對 knapsack 用 `dimod.ExactCQMSolver` 列舉全部 assignment，`is_feasible` 與 `validate_solution(...).feasible` 對每一筆完全一致（這裡是唯一允許讀 `is_feasible` 的地方，目的是驗 compiler）。實測（dimod 0.12.22）：`is_feasible` 只看 hard constraint，soft 違反的 sample 仍為 True，正是我們要的語意；**不要**用 `cqm.check_feasible()`，它把 soft constraint 也算進去。
-- `test_service_cqm_flow.py`：`tests/fakes/local_cqm_backend.py` 的 `FakeLocalCQMBackend`（`supported_model_types=["cqm"]`、本機、包 `dimod.ExactCQMSolver().sample_cqm`，回傳全部 sample、不過濾）。斷言：選到 `CQMCompiler`；`attempts == 1`、`penalty is None`；success 且 objective 與 exact 路徑相同；hard constraint 無 penalty（`constraint_trace[*].native`）；fake 回傳全部標 `is_feasible=True` 的 sample 中含違反 hard constraint 者 → service 仍過濾掉（不信任 sampler）；registry 只有 `["bqm"]` compiler 時 → `NO_COMPILER_FOR_MODEL_TYPE`。
+- `test_service_cqm_flow.py`：`tests/fakes/local_cqm_backend.py` 的 `FakeLocalCQMBackend`（`name="fake_local_cqm"`、`supported_model_types=["cqm"]`、`remote=False`、`heuristic=False`、**`exhaustive=True`**（它確實列舉全部 assignment）、包 `dimod.ExactCQMSolver().sample_cqm`，回傳全部 sample、不過濾）。斷言：選到 `CQMCompiler`；`attempts == 1`、`penalty is None`；success 且 objective 與 exact 路徑相同；hard constraint 無 penalty（`constraint_trace[*].native`）；fake 回傳全部標 `is_feasible=True` 的 sample 中含違反 hard constraint 者 → service 仍過濾掉（不信任 sampler）；一個矛盾 constraint 的問題 → `infeasible` 且 `infeasibility_proven=True`（走 §16.2 步驟 15，因 exhaustive）；service 的 `compilers=[BQMCompiler()]` 時 → `configuration_error` / `NO_COMPILER_FOR_MODEL_TYPE`。
 - `test_routing.py`：預設 policy（remote 關）→ exact 第一、SA 第二、三個遠端 `usable=False` 且 `blocking` 含 `REMOTE_DISABLED`；`allow_remote=True` + fake available 遠端 → CQM 排在 BQM hybrid 前（有 hard constraint）、無 constraint 時 hybrid_bqm 在 CQM 前；DENSE 問題 QPU 最後；`num_reads=5000` → QPU blocking `QPU_READS_LIMIT` 而 SA 不受影響；invalid problem → 無推薦；同一輸入兩次結果相等；每個 reason code 都在 `REASON_DESCRIPTIONS`。
 - `test_cli.py`：`validate` 三種 exit code、`--json` 為合法 `ProblemValidationResult`；`recommend` 表格與 `--json`。
 - `test_solvers.py` / `test_registry.py`：`is_available()` 回 `AvailabilityStatus`；registry 五個名稱。
@@ -1003,15 +1044,15 @@ exit code：問題無效 → 1；否則 0（推薦清單本身沒有失敗）。
 
 每步跑完相關測試（含 Phase 1/2 全部）再進下一步。
 
-1. **Step 0a-1**：`models/capabilities.py`（`SolverCapabilities` 搬家 + 新欄位含預設值、`AvailabilityStatus`、`ParameterLimit`、`ModelType`）；`solvers/base.py` re-export；`is_available()` 改回傳 `AvailabilityStatus`，五個位置（四 backend + `dwave_availability`）與所有 fakes / 測試同步；service `_AVAILABILITY_MAP` 改依 category。全綠。
-2. **Step 0a-2**：validator 改 `capabilities=` 注入、§9.3 表、§9.4 反射、刪名稱常數；`service.validate()`；MCP validate tool 改一行；CLI `validate`。更新 `test_problem_validator_full.py` / `test_validate.py` 期望值（漂移 2 修正）。全綠。
-3. **Step 0b-1**：`ExecutionPolicy.limit()` / `limits_for()` / `limits`；`ServerSettings.limits`；`orchestration/limits.py` 三個純函式；service `_gate_backend` / `_preference_limit_errors` 改用；`interfaces/capabilities.py` 刪 `_policy_limits`。五個內建 backend 宣告 `parameter_limits`（此時第五個尚未存在，先四個）。全綠，capabilities 測試期望值不變。
-4. **Step 0b-2**：`tests/fakes/declared_backend.py` + `test_fifth_backend.py` + `test_no_backend_names.py` + import boundary 新規則。全綠。
-5. `CompiledProblem.model_type` / `hard_penalty: None` / `ConstraintTrace.native`；`ModelCompiler` 擴充；`BQMCompiler` 宣告；`compiler/objective.py` 抽共用；service 改 `compilers=` 並依 capabilities 選；`SolveAttempt.penalty: None`；`_max_attempts` 加 `uses_hard_penalty`。`test_bqm_compiler.py` 不改仍綠。
-6. `CQMCompiler` + `test_cqm_compiler.py`（含 ExactCQMSolver 交叉驗證、§21.2）。
-7. `tests/fakes/local_cqm_backend.py` + `test_service_cqm_flow.py` + `test_knapsack_cqm.py`；validator §9.2 / §21.1 的 model-type estimate。
-8. `solvers/ocean.py` 抽共用（既有 mock 測試不改仍綠）→ `LeapHybridCQMOptions` + Literal → `LeapHybridCQMBackend` → registry → `test_leap_hybrid_cqm_mock.py` → credential leak 參數化 → `test_phase1_compat.py` 加 CQM block 斷言 → metadata 新欄位。
-9. `validation/recommendation.py` + `orchestration/routing.py` + `service.recommend()` + `test_routing.py` → MCP `recommend_backend` + `test_recommend.py` + `test_tools_list.py` 四個 → CLI `recommend`。
+1. **Step 0a-1（capabilities 與 availability）**：`models/capabilities.py`（`SolverCapabilities` 搬家 + 新欄位含預設值、`AvailabilityStatus`、`ParameterLimit`、`ModelType`）；`solvers/base.py` re-export；SA 宣告 `supports_num_sweeps=True`、QPU 宣告 `requires_embedding=True`；`is_available()` 改回傳 `AvailabilityStatus`，必改位置：四個 backend、`dwave_availability()`、`interfaces/capabilities.py`（tuple 解構）、`tests/remote_mock/conftest.py::make_remote_available`、`tests/unit/test_capabilities_view.py`、`tests/unit/test_solvers.py`、`tests/remote_mock/test_*_mock.py` 的 `is_available()` 斷言、`test_service_remote_flow.py` 的 config-invalid / unknown-reason 案例（§8.2）；service `_AVAILABILITY_MAP` 改依 category；catalog 加 `BACKEND_CONFIG_INVALID` 並同步 `test_error_catalog.py` 總數。順手刪除 `interfaces/mcp/server.py` 三份重複的 `reset_state(build_state(settings))` 與 `interfaces/cli/main.py` 三份重複的 `_build_state` 定義。全綠。
+2. **Step 0b-1（policy 通用 limits）**：`ExecutionPolicy.limit()` / `limits_for()` / `limits`；`ServerSettings.limits` + `load_settings` 捕捉 `pydantic_settings.SettingsError`；`orchestration/limits.py` 三個純函式；service `_gate_backend` / `_preference_limit_errors` 改用；四個既有 backend 宣告 `parameter_limits`；`interfaces/capabilities.py` 刪 `_policy_limits`；service `__init__` 的宣告/policy 一致性檢查。全綠，capabilities 測試期望值不變。（此步排在 validator 之前，因為 §10 的 `service.validate()` 需要 `policy.limit()`。）
+3. **Step 0a-2（validator 注入）**：validator 改 `capabilities=` / `model_type=` 注入、§9.3 整張表（含 `model_type == "cqm"` 兩列，此時只有 fake 能觸發）、§9.2 estimate、§9.4 反射、刪名稱常數、§13.2 要求的訊息文字改寫；`service.validate()`（暫以 `caps.preferred_model_type` 當 `model_type`，步驟 5 再接 `_select_model_type`）；MCP validate tool 改一行；CLI `validate`。更新 `test_problem_validator_full.py` / `test_validate.py` 期望值（漂移 2 修正）。全綠。
+4. **Step 0b-2（架構測試）**：`tests/fakes/declared_backend.py` + `test_fifth_backend.py`（此時尚無 `recommend()`，該斷言留到步驟 9 補）+ `test_no_backend_names.py` + import boundary 新規則。全綠。
+5. `CompiledProblem.model_type` / `hard_penalty: None` / `ConstraintTrace.native`；`ModelCompiler` 擴充；`BQMCompiler` 宣告；`compiler/objective.py` 抽共用；service 改 `compilers=`（**此步預設暫為 `[BQMCompiler()]`**，步驟 6 再加 `CQMCompiler()`）、`_select_model_type` / `_select_compiler`、`service.validate()` 改用 `_select_model_type`；`SolveAttempt.penalty: None`；`_max_attempts` 加 `uses_hard_penalty`；catalog 加 `NO_COMPILER_FOR_MODEL_TYPE` 並同步總數；`FakeFailingCompiler` 加兩個屬性。`test_bqm_compiler.py` 不改仍綠。
+6. `CQMCompiler` + `test_cqm_compiler.py`（含 ExactCQMSolver 交叉驗證、§21.2）；service 預設 compilers 加入 `CQMCompiler()`。
+7. `tests/fakes/local_cqm_backend.py` + `test_service_cqm_flow.py` + `test_knapsack_cqm.py`（第一次有真實的 CQM 路徑走過 §9.2 estimate 與 §9.3 的 cqm 列，補對應斷言）。
+8. `solvers/ocean.py` 抽共用（既有 mock 測試不改仍綠）→ `LeapHybridCQMOptions` + Literal → `LeapHybridCQMBackend` → registry（§17.7 順序；同步 `test_registry.py`、`tests/mcp/test_capabilities.py`、`tests/unit/test_cli.py` 的名單）→ `test_leap_hybrid_cqm_mock.py` → credential leak 參數化 → `test_phase1_compat.py` 加 CQM block 斷言 → metadata 新欄位。
+9. `validation/recommendation.py` + `orchestration/routing.py` + `service.recommend()` + `test_routing.py` → MCP `recommend_backend` + `test_recommend.py` + `test_tools_list.py` 四個 → CLI `recommend` → 補 `test_fifth_backend.py` 的 `recommend()` 斷言。
 10. error catalog 補齊 + `test_error_catalog.py` 覆蓋；README；`remote_live` CQM 測試；CI 不需改（minimal-install 印 names 會自動含新 backend）；acceptance 逐條核對。
 
 ---
@@ -1061,7 +1102,9 @@ exit code：問題無效 → 1；否則 0（推薦清單本身沒有失敗）。
 
 ---
 
-## 33. 對 Phase 2 spec 的偏離（明列）
+## 33. 偏離清單（明列）
+
+### 33.1 對 Phase 2 spec 的偏離
 
 | Phase 2 spec | 3a 變更 | 理由 |
 |---|---|---|
@@ -1075,3 +1118,12 @@ exit code：問題無效 → 1；否則 0（推薦清單本身沒有失敗）。
 | `OptimizationService(compiler=...)` | → `compilers=[...]` | 第二個 compiler |
 | `SolveAttempt.penalty: float` | → `float | None` | CQM 無 penalty |
 | §3「不做 CQM」 | 3a 做 CQM | Phase 3 範圍 |
+
+### 33.2 對 outline（`annealbridge_phase3_spec_outline.md`）的偏離
+
+| outline | 3a 變更 | 理由 |
+|---|---|---|
+| §4「`orchestration` 不得 import 任何具體 compiler 或 backend」 | backend 照禁；具體 compiler 只允許在 `optimizer.py` 建預設 `compilers` 清單那一處 import（§4、§13.3） | compiler 是核心元件；全禁就得再蓋 compiler registry，違反原則 7 |
+| §2.2「Leap CQM 官方上限查證後列入 capabilities `limits`」 | 不進 `limits`，寫進 `description` 與 README（§17.6） | Phase 2 §22 定義 `limits` 是 operator 可調的 policy 上限；混入 solver 原生上限會讓 Agent 分不清哪個能請 operator 調 |
+| §2.2「整數變數在 CQM 路徑直通」 | 3a 不做（§3、§32.1） | 決策 1：整數變數歸 3b |
+| §1.2「`validate_problem_full(problem, *, capabilities, exact_max_variables)`」 | 參數改名 `max_compiled_variables` 並加 `model_type`（§9.1） | 名稱不該提 exact；model type 由 service 決定 |
