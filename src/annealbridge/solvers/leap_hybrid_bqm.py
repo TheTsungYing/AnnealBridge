@@ -15,7 +15,7 @@ from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers.base import (
     RawSolverResult,
     SolverCapabilities,
-    sampleset_to_lists,
+    sampleset_to_arrays,
 )
 from annealbridge.solvers.metadata import (
     ocean_config_status,
@@ -241,7 +241,7 @@ class LeapHybridBQMBackend:
             lambda: _resolved(sampler.sample(bqm, time_limit=effective_time_limit)),
         )
 
-        samples, energies = sampleset_to_lists(sampleset)
+        variables, samples, energies = sampleset_to_arrays(sampleset)
         metadata = sanitize_sampleset_info(sampleset.info, backend=self.name)
         metadata.effective_time_limit_seconds = effective_time_limit
         logger.info(
@@ -254,6 +254,7 @@ class LeapHybridBQMBackend:
             effective_time_limit,
         )
         return RawSolverResult(
+            variables=variables,
             samples=samples,
             energies=energies,
             backend=self.name,

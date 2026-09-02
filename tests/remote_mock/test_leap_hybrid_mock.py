@@ -270,8 +270,9 @@ class TestSampleSetConversion:
         fake, compiled, result = solve_with_fake(make_preferences(None))
 
         expected_sample = {str(v): 0 for v in compiled.model.variables}
-        assert result.samples == [expected_sample]
-        assert result.energies == [
+        assert sorted(result.variables) == sorted(expected_sample)
+        assert result.as_dicts() == [expected_sample]
+        assert result.energies.tolist() == [
             pytest.approx(compiled.model.energy({v: 0 for v in compiled.model.variables}))
         ]
         assert result.backend == "leap_hybrid_bqm"
@@ -280,7 +281,7 @@ class TestSampleSetConversion:
         _, compiled, result = solve_with_fake(make_preferences(None))
 
         assert compiled.internal_variables
-        assert compiled.internal_variables <= set(result.samples[0])
+        assert compiled.internal_variables <= set(result.variables)
 
 
 class TestMetadataSanitization:
@@ -452,8 +453,9 @@ class TestLazySampleSetResolution:
         )
 
         assert lazy.sample_calls == 1
-        assert result.samples == expected.samples
-        assert result.energies == expected.energies
+        assert result.variables == expected.variables
+        assert result.samples.tolist() == expected.samples.tolist()
+        assert result.energies.tolist() == expected.energies.tolist()
         assert result.backend == expected.backend
         assert result.metadata.model_dump() == expected.metadata.model_dump()
 

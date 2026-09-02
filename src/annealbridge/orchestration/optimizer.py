@@ -9,6 +9,9 @@ never on the concrete compiled model type (spec §17).
 
 import logging
 import threading
+from dataclasses import dataclass
+
+import numpy as np
 
 from annealbridge.compiler import BQMCompiler
 from annealbridge.compiler.base import ModelCompiler
@@ -31,7 +34,11 @@ from annealbridge.solvers import (
     SolverBackend,
     SolverRegistry,
 )
-from annealbridge.validation import validate_problem, validate_solution
+from annealbridge.validation import (
+    validate_batch,
+    validate_problem,
+    validate_solution,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,30 +57,139 @@ def evaluate_objective(objective: Objective, sample: dict[str, int]) -> float:
     return value
 
 
+def evaluate_objective_batch(
+    objective: Objective, variables: list[str], samples: np.ndarray
+) -> np.ndarray:
+    """Vectorised :func:`evaluate_objective` over the rows of ``samples``.
+
+    Column ``j`` of ``samples`` is the 0/1 value of ``variables[j]``. Terms
+    are accumulated in the same order and association as the scalar
+    version (constant first, then linear, then quadratic), so the two agree
+    bit for bit; the unit tests assert that equality.
+    """
+    column = {name: index for index, name in enumerate(variables)}
+    value = np.full(samples.shape[0], objective.constant, dtype=np.float64)
+    for term in objective.linear_terms:
+        value += term.coefficient * samples[:, column[term.variable]]
+    for term in objective.quadratic_terms:
+        value += (
+            term.coefficient
+            * samples[:, column[term.variable1]]
+            * samples[:, column[term.variable2]]
+        )
+    return value
+
+
 def _assignment_tuple(sample: dict[str, int]) -> tuple[int, ...]:
     """Deterministic tie-break key: values ordered by variable name."""
     return tuple(sample[name] for name in sorted(sample))
 
 
+def _pack_rows(matrix: np.ndarray) -> np.ndarray:
+    """Pack each 0/1 row of ``matrix`` into big-endian 64-bit words.
+
+    Returns an ``uint64`` array of shape ``(rows, ceil(columns / 64))``.
+    Column 0 of the input lands in the most significant bit of word 0, so
+    comparing rows word by word (word 0 first) orders them exactly like
+    comparing the original rows as tuples. Any number of columns is
+    supported — wider rows simply produce more words — so there is no
+    fallback path to keep correct separately.
+    """
+    rows, columns = matrix.shape
+    words = max(1, -(-columns // 64))
+    packed = np.packbits(matrix, axis=1, bitorder="big")  # (rows, ceil(cols/8))
+    padded = np.zeros((rows, words * 8), dtype=np.uint8)
+    padded[:, : packed.shape[1]] = packed
+    return padded.view(">u8").astype(np.uint64)
+
+
+def _lexsort(keys: list[np.ndarray]) -> np.ndarray:
+    """Stable multi-key argsort with ``keys`` given in *priority* order.
+
+    ``np.lexsort`` treats its last key as the most significant, which is
+    easy to get backwards; this wrapper takes the natural order instead.
+    """
+    return np.lexsort(tuple(reversed(keys)))
+
+
+def _words(packed: np.ndarray) -> list[np.ndarray]:
+    """Columns of a :func:`_pack_rows` result, most significant word first."""
+    return [packed[:, word] for word in range(packed.shape[1])]
+
+
+@dataclass(frozen=True)
+class CandidateSet:
+    """Deduplicated business candidates, aligned row by row.
+
+    ``samples`` holds one 0/1 row per distinct business assignment (column
+    ``j`` is ``variables[j]``, in the solver's variable order minus the
+    internal ones); ``energies`` is the minimum energy the solver reported
+    for that assignment — kept for reporting and debugging only, never
+    used for feasibility or ranking (overview principle 2).
+    """
+
+    variables: list[str]
+    samples: np.ndarray  # int8, shape (candidates, len(variables))
+    energies: np.ndarray  # float64, shape (candidates,)
+
+    def __len__(self) -> int:
+        return int(self.samples.shape[0])
+
+    def sample_dict(self, index: int) -> dict[str, int]:
+        return dict(zip(self.variables, self.samples[index].tolist()))
+
+    def as_pairs(self) -> list[tuple[dict[str, int], float]]:
+        """``[(business_sample, energy), ...]`` — small-scale/test helper."""
+        return [
+            (self.sample_dict(index), float(self.energies[index]))
+            for index in range(len(self))
+        ]
+
+
 def deduplicate_samples(
     raw: RawSolverResult, internal_variables: set[str]
-) -> list[tuple[dict[str, int], float]]:
+) -> CandidateSet:
     """Strip internal variables and deduplicate by business assignment.
 
-    Duplicates keep the minimum energy seen for that assignment (spec §25).
+    Duplicates keep the minimum energy seen for that assignment (spec §25);
+    among equal energies the earliest read wins, and candidates come back
+    in order of first appearance, so the result is fully deterministic and
+    identical to a row-by-row pass — it is just computed on the arrays.
+    Energy is used here only to pick which duplicate's energy to report.
     """
-    best: dict[tuple[int, ...], tuple[dict[str, int], float]] = {}
-    for sample, energy in zip(raw.samples, raw.energies):
-        business = {
-            name: value
-            for name, value in sample.items()
-            if name not in internal_variables
-        }
-        key = _assignment_tuple(business)
-        kept = best.get(key)
-        if kept is None or energy < kept[1]:
-            best[key] = (business, energy)
-    return list(best.values())
+    business_columns = [
+        index
+        for index, name in enumerate(raw.variables)
+        if name not in internal_variables
+    ]
+    variables = [raw.variables[index] for index in business_columns]
+    business = raw.samples[:, business_columns]
+    count = business.shape[0]
+    if count == 0:
+        return CandidateSet(
+            variables=variables,
+            samples=business,
+            energies=np.asarray(raw.energies, dtype=np.float64),
+        )
+
+    keys = _pack_rows(business)
+    energies = np.asarray(raw.energies, dtype=np.float64)
+    # Sort by assignment, then energy; the sort is stable, so within one
+    # assignment equal energies stay in read order.
+    order = _lexsort([*_words(keys), energies])
+    sorted_keys = keys[order]
+    group_start = np.empty(count, dtype=bool)
+    group_start[0] = True
+    np.any(sorted_keys[1:] != sorted_keys[:-1], axis=1, out=group_start[1:])
+    starts = np.flatnonzero(group_start)
+    representatives = order[starts]  # min-energy read of each assignment
+    first_seen = np.minimum.reduceat(order, starts)  # earliest read of each
+    keep = representatives[np.argsort(first_seen, kind="stable")]
+    return CandidateSet(
+        variables=variables,
+        samples=np.ascontiguousarray(business[keep]),
+        energies=energies[keep],
+    )
 
 
 def process_candidates(
@@ -84,53 +200,68 @@ def process_candidates(
 ) -> tuple[list[Solution], int, int]:
     """Run the §25 candidate pipeline on raw solver output.
 
-    Deduplicates, validates against the original problem, keeps feasible
-    candidates only, computes objective/soft-violation/ranking scores, and
-    returns the top ``top_k`` solutions ranked from 1, plus the unique and
-    feasible candidate counts.
+    Deduplicates, validates *every* candidate against the original problem,
+    keeps feasible candidates only, computes objective/soft-violation/ranking
+    scores, and returns the top ``top_k`` solutions ranked from 1, plus the
+    unique and feasible candidate counts.
+
+    Validation runs in two layers with one arithmetic: the vectorised
+    :func:`validate_batch` judges all candidates (feasibility, soft score)
+    and :func:`evaluate_objective_batch` their objective; the ranking is
+    computed from those. Only the top-k then go through
+    :func:`validate_solution` to build the full per-constraint evaluations
+    for the report. Energy is never consulted for either step.
     """
-    deduped = deduplicate_samples(raw, internal_variables)
+    candidates = deduplicate_samples(raw, internal_variables)
+    if len(candidates) == 0:
+        return [], 0, 0
     minimize = problem.objective.direction == "minimize"
 
-    scored: list[tuple[dict[str, int], float, object, float, float]] = []
-    for sample, energy in deduped:
-        validation = validate_solution(problem, sample)
-        if not validation.feasible:
-            continue
-        objective_value = evaluate_objective(problem.objective, sample)
-        if minimize:
-            ranking_score = objective_value + validation.soft_violation_score
-        else:
-            ranking_score = objective_value - validation.soft_violation_score
-        scored.append((sample, energy, validation, objective_value, ranking_score))
+    verdict = validate_batch(problem, candidates.variables, candidates.samples)
+    feasible = np.flatnonzero(verdict.feasible)
+    if len(feasible) == 0:
+        return [], len(candidates), 0
+
+    feasible_samples = candidates.samples[feasible]
+    objective_value = evaluate_objective_batch(
+        problem.objective, candidates.variables, feasible_samples
+    )
+    soft_violation_score = verdict.soft_violation_score[feasible]
+    if minimize:
+        ranking_score = objective_value + soft_violation_score
+    else:
+        ranking_score = objective_value - soft_violation_score
 
     # §25.1: ascending ranking_score for minimize, descending for maximize;
     # ties broken by objective_value in the same direction, then by the
     # name-sorted assignment tuple so the order is fully deterministic.
     sign = 1.0 if minimize else -1.0
-    scored.sort(
-        key=lambda item: (
-            sign * item[4],
-            sign * item[3],
-            _assignment_tuple(item[0]),
-        )
+    name_order = sorted(
+        range(len(candidates.variables)), key=lambda j: candidates.variables[j]
+    )
+    tie_break = _pack_rows(feasible_samples[:, name_order])
+    order = _lexsort(
+        [sign * ranking_score, sign * objective_value, *_words(tie_break)]
     )
 
-    solutions = [
-        Solution(
-            rank=rank,
-            variables=sample,
-            objective_value=objective_value,
-            soft_violation_score=validation.soft_violation_score,
-            ranking_score=ranking_score,
-            energy=energy,
-            hard_constraints_satisfied=True,
-            constraint_evaluations=validation.evaluations,
+    solutions: list[Solution] = []
+    for rank, position in enumerate(order[:top_k].tolist(), start=1):
+        index = int(feasible[position])
+        sample = candidates.sample_dict(index)
+        validation = validate_solution(problem, sample)
+        solutions.append(
+            Solution(
+                rank=rank,
+                variables=sample,
+                objective_value=float(objective_value[position]),
+                soft_violation_score=validation.soft_violation_score,
+                ranking_score=float(ranking_score[position]),
+                energy=float(candidates.energies[index]),
+                hard_constraints_satisfied=validation.feasible,
+                constraint_evaluations=validation.evaluations,
+            )
         )
-        for rank, (sample, energy, validation, objective_value, ranking_score) in
-        enumerate(scored[:top_k], start=1)
-    ]
-    return solutions, len(deduped), len(scored)
+    return solutions, len(candidates), int(len(feasible))
 
 
 # Categorical is_available() reasons → (result status, error code). Keyed on
@@ -485,7 +616,7 @@ class OptimizationService:
                     SolveAttempt(
                         attempt=attempt,
                         penalty=penalty,
-                        samples_received=len(raw.samples),
+                        samples_received=raw.num_samples,
                         unique_samples=unique_samples,
                         feasible_samples=feasible_samples,
                     )
@@ -499,7 +630,7 @@ class OptimizationService:
                     attempt,
                     penalty,
                     compiled.num_variables,
-                    len(raw.samples),
+                    raw.num_samples,
                     unique_samples,
                     feasible_samples,
                     solutions[0].ranking_score if solutions else None,
@@ -524,7 +655,7 @@ class OptimizationService:
             # An exhaustive backend proves infeasibility only by actually
             # enumerating assignments: zero samples back is not a proof.
             proven = (
-                backend.is_exhaustive and raw is not None and len(raw.samples) > 0
+                backend.is_exhaustive and raw is not None and raw.num_samples > 0
             )
             if proven:
                 message = (

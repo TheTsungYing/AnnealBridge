@@ -19,7 +19,7 @@ from annealbridge.models import (
 from annealbridge.solvers.base import (
     RawSolverResult,
     SolverCapabilities,
-    sampleset_to_lists,
+    sampleset_to_arrays,
 )
 from annealbridge.solvers.metadata import (
     ocean_config_status,
@@ -290,7 +290,7 @@ class DWaveQPUBackend:
             lambda: _resolved(sampler.sample(bqm, **sample_kwargs)),
         )
 
-        samples, energies = sampleset_to_lists(sampleset)
+        variables, samples, energies = sampleset_to_arrays(sampleset)
         metadata = sanitize_sampleset_info(sampleset.info, backend=self.name)
         metadata.num_reads_requested = preferences.num_reads
         metadata.average_chain_break_fraction = _average_chain_break_fraction(
@@ -309,6 +309,7 @@ class DWaveQPUBackend:
             preferences.num_reads,
         )
         return RawSolverResult(
+            variables=variables,
             samples=samples,
             energies=energies,
             backend=self.name,

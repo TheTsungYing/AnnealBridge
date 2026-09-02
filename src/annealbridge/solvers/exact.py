@@ -9,7 +9,7 @@ from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers.base import (
     RawSolverResult,
     SolverCapabilities,
-    sampleset_to_lists,
+    sampleset_to_arrays,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,7 +79,7 @@ class ExactSolverBackend:
                 f"Exact solver failed: {exc}"
             ) from exc
 
-        samples, energies = sampleset_to_lists(sampleset)
+        variables, samples, energies = sampleset_to_arrays(sampleset)
         logger.info(
             "Backend %s solved problem %s: %d variables, %d samples",
             self.name,
@@ -87,4 +87,9 @@ class ExactSolverBackend:
             compiled_problem.num_variables,
             len(samples),
         )
-        return RawSolverResult(samples=samples, energies=energies, backend=self.name)
+        return RawSolverResult(
+            variables=variables,
+            samples=samples,
+            energies=energies,
+            backend=self.name,
+        )

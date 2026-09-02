@@ -84,8 +84,8 @@ class TestExactSolverBackend:
         compiled = compile_knapsack()
         result = ExactSolverBackend().solve(compiled, SolverPreferences())
 
-        best_index = min(range(len(result.energies)), key=result.energies.__getitem__)
-        best_sample = result.samples[best_index]
+        best_index = int(result.energies.argmin())
+        best_sample = result.as_dicts()[best_index]
         business = {
             name: value
             for name, value in best_sample.items()
@@ -101,16 +101,18 @@ class TestExactSolverBackend:
         result = ExactSolverBackend().solve(compiled, SolverPreferences())
 
         assert result.backend == "exact"
-        assert len(result.samples) == 2**compiled.num_variables
-        assert len(result.energies) == len(result.samples)
-        assert result.samples
+        assert result.num_samples == 2**compiled.num_variables
+        assert result.samples.shape == (2**compiled.num_variables, compiled.num_variables)
+        assert len(result.energies) == result.num_samples
+        assert result.num_samples > 0
 
     def test_samples_include_internal_variables(self):
         compiled = compile_knapsack()
         result = ExactSolverBackend().solve(compiled, SolverPreferences())
 
         assert compiled.internal_variables
-        assert compiled.internal_variables <= set(result.samples[0])
+        assert compiled.internal_variables <= set(result.variables)
+        assert compiled.internal_variables <= set(result.as_dicts()[0])
 
 
 class TestSimulatedAnnealingBackend:
@@ -156,8 +158,9 @@ class TestSimulatedAnnealingBackend:
         first = backend.solve(compiled, preferences)
         second = backend.solve(compiled, preferences)
 
-        assert first.samples == second.samples
-        assert first.energies == second.energies
+        assert first.variables == second.variables
+        assert first.samples.tolist() == second.samples.tolist()
+        assert first.energies.tolist() == second.energies.tolist()
 
     def test_returns_all_reads(self):
         compiled = compile_knapsack()
@@ -165,13 +168,14 @@ class TestSimulatedAnnealingBackend:
         result = SimulatedAnnealingBackend().solve(compiled, preferences)
 
         assert result.backend == "simulated_annealing"
-        assert len(result.samples) == preferences.num_reads
+        assert result.num_samples == preferences.num_reads
+        assert result.samples.shape == (preferences.num_reads, compiled.num_variables)
         assert len(result.energies) == preferences.num_reads
-        assert result.samples
+        assert result.num_samples > 0
 
     def test_none_seed_still_solves(self):
         compiled = compile_knapsack()
         preferences = SolverPreferences(num_reads=5, num_sweeps=50, seed=None)
         result = SimulatedAnnealingBackend().solve(compiled, preferences)
 
-        assert len(result.samples) == preferences.num_reads
+        assert result.num_samples == preferences.num_reads

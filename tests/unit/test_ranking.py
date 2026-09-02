@@ -34,7 +34,7 @@ def make_problem(
 
 
 def raw(samples: list[dict[str, int]], energies: list[float]) -> RawSolverResult:
-    return RawSolverResult(samples=samples, energies=energies, backend="exact")
+    return RawSolverResult.from_dicts(samples, energies, "exact")
 
 
 class TestDeduplication:

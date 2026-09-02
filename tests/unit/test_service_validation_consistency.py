@@ -211,7 +211,12 @@ class EmptyExhaustiveBackend:
         return None
 
     def solve(self, compiled_problem, preferences) -> RawSolverResult:
-        return RawSolverResult(samples=[], energies=[], backend=self.name)
+        return RawSolverResult(
+            variables=[str(v) for v in compiled_problem.model.variables],
+            samples=[],
+            energies=[],
+            backend=self.name,
+        )
 
 
 def _with_fake_backend(problem: OptimizationProblem) -> OptimizationProblem:

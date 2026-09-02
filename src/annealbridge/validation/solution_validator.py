@@ -3,9 +3,31 @@
 Feasibility is judged against the *original* OptimizationProblem, never
 against BQM energy. The sample must already have internal (slack)
 variables removed by the caller.
+
+Two entry points share one arithmetic:
+
+- :func:`validate` evaluates a single sample and builds the full
+  ``ValidationResult`` with one ``ConstraintEvaluation`` per constraint.
+- :func:`validate_batch` evaluates a whole matrix of candidates at once and
+  returns only the per-candidate verdicts (``feasible`` and
+  ``soft_violation_score``) as arrays. Every candidate is still re-checked
+  against the original problem (overview principle 2); only the report
+  objects are skipped, because building thousands of Pydantic models per
+  solve dominated the run time while the ranking only ever reads the
+  evaluations of the top-k.
+
+Both paths accumulate the constraint's left-hand side term by term in
+term order, compare with the same ``EPSILON`` rule, and compute
+``weight * violation * violation`` in the same association, so their
+results are bit-identical — not merely close. ``tests/unit`` asserts that
+equality on random problems; keep the two kernels in lock-step when
+touching either.
 """
 
 import logging
+from dataclasses import dataclass
+
+import numpy as np
 
 from annealbridge.models import (
     Constraint,
@@ -36,19 +58,22 @@ def validate(problem: OptimizationProblem, sample: dict[str, int]) -> Validation
         for evaluation in evaluations
         if evaluation.constraint_type == "soft" and not evaluation.satisfied
     ]
+    soft_violation_score = 0.0
+    for evaluation in soft_violations:
+        soft_violation_score += evaluation.weighted_penalty
     return ValidationResult(
         feasible=not hard_violations,
         evaluations=evaluations,
         hard_violations=hard_violations,
         soft_violations=soft_violations,
-        soft_violation_score=sum(
-            evaluation.weighted_penalty for evaluation in soft_violations
-        ),
+        soft_violation_score=soft_violation_score,
     )
 
 
 def _evaluate(constraint: Constraint, sample: dict[str, int]) -> ConstraintEvaluation:
-    actual = sum(term.coefficient * sample[term.variable] for term in constraint.terms)
+    actual = 0.0
+    for term in constraint.terms:
+        actual += term.coefficient * sample[term.variable]
     rhs = constraint.rhs
 
     if constraint.operator == "==":
@@ -65,7 +90,7 @@ def _evaluate(constraint: Constraint, sample: dict[str, int]) -> ConstraintEvalu
 
     weighted_penalty: float | None = None
     if constraint.type == "soft":
-        weighted_penalty = constraint.weight * violation_amount**2
+        weighted_penalty = constraint.weight * violation_amount * violation_amount
 
     return ConstraintEvaluation(
         constraint_id=constraint.id,
@@ -77,3 +102,65 @@ def _evaluate(constraint: Constraint, sample: dict[str, int]) -> ConstraintEvalu
         violation_amount=violation_amount,
         weighted_penalty=weighted_penalty,
     )
+
+
+@dataclass(frozen=True)
+class BatchValidation:
+    """Per-candidate verdicts of :func:`validate_batch`, aligned by row."""
+
+    feasible: np.ndarray  # bool, shape (candidates,)
+    soft_violation_score: np.ndarray  # float64, shape (candidates,)
+
+
+def validate_batch(
+    problem: OptimizationProblem,
+    variables: list[str],
+    samples: np.ndarray,
+) -> BatchValidation:
+    """Evaluate every constraint against every row of ``samples`` at once.
+
+    ``samples`` is an integer matrix of shape ``(candidates, len(variables))``
+    whose column ``j`` holds the 0/1 value of business variable
+    ``variables[j]``; internal variables must already be stripped. Returns
+    the same ``feasible`` verdict and ``soft_violation_score`` that
+    :func:`validate` would produce for each row, computed with identical
+    arithmetic, without building per-constraint report objects.
+    """
+    if samples.ndim != 2 or samples.shape[1] != len(variables):
+        raise ValueError(
+            f"samples must have shape (candidates, {len(variables)}), "
+            f"got {samples.shape}"
+        )
+    column = {name: index for index, name in enumerate(variables)}
+    count = samples.shape[0]
+    feasible = np.ones(count, dtype=bool)
+    soft_violation_score = np.zeros(count, dtype=np.float64)
+
+    for constraint in problem.constraints:
+        actual = np.zeros(count, dtype=np.float64)
+        for term in constraint.terms:
+            try:
+                actual += term.coefficient * samples[:, column[term.variable]]
+            except KeyError:
+                raise KeyError(term.variable) from None
+        rhs = constraint.rhs
+
+        if constraint.operator == "==":
+            satisfied = np.abs(actual - rhs) <= EPSILON
+            violation = np.abs(actual - rhs)
+        elif constraint.operator == "<=":
+            satisfied = actual <= rhs + EPSILON
+            violation = np.maximum(0.0, actual - rhs)
+        else:
+            satisfied = actual >= rhs - EPSILON
+            violation = np.maximum(0.0, rhs - actual)
+
+        if constraint.type == "hard":
+            feasible &= satisfied
+        else:
+            violation_amount = np.where(satisfied, 0.0, violation)
+            soft_violation_score += (
+                constraint.weight * violation_amount * violation_amount
+            )
+
+    return BatchValidation(feasible=feasible, soft_violation_score=soft_violation_score)

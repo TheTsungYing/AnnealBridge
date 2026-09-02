@@ -369,11 +369,12 @@ class TestSampleSetConversion:
         variables = list(compiled.model.variables)
         zeros = {variable: 0 for variable in variables}
         flipped = {**zeros, variables[0]: 1}
-        assert result.samples == [
+        assert sorted(result.variables) == sorted(str(variable) for variable in variables)
+        assert result.as_dicts() == [
             {str(variable): int(value) for variable, value in row.items()}
             for row in (zeros, flipped)
         ]
-        assert result.energies == [
+        assert result.energies.tolist() == [
             pytest.approx(compiled.model.energy(zeros)),
             pytest.approx(compiled.model.energy(flipped)),
         ]
@@ -383,7 +384,7 @@ class TestSampleSetConversion:
         _, compiled, result = solve_with_fake(make_preferences())
 
         assert compiled.internal_variables
-        assert compiled.internal_variables <= set(result.samples[0])
+        assert compiled.internal_variables <= set(result.variables)
 
 
 class TestMetadataSanitization:
@@ -622,8 +623,9 @@ class TestLazySampleSetResolution:
         )
 
         assert lazy.sample_calls == 1
-        assert result.samples == expected.samples
-        assert result.energies == expected.energies
+        assert result.variables == expected.variables
+        assert result.samples.tolist() == expected.samples.tolist()
+        assert result.energies.tolist() == expected.energies.tolist()
         assert result.backend == expected.backend
         assert result.metadata.model_dump() == expected.metadata.model_dump()
         assert result.metadata.embedding_max_chain_length == 3
