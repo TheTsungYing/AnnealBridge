@@ -113,3 +113,13 @@ async def test_valid_problem_reports_estimates():
     # An equality constraint needs no slack bits, so only the two binaries.
     assert estimated == 2
     assert content["objective_scale"] == pytest.approx(200.0)
+
+
+async def test_errors_carry_recommended_action():
+    # tools.py documents that validation errors come back "each with a
+    # recommended_action"; the adapter must not drop the catalog text.
+    content = await validate(UNKNOWN_VARIABLE_PROBLEM)
+
+    action = content["errors"][0]["recommended_action"]
+    assert isinstance(action, str)
+    assert action.strip()

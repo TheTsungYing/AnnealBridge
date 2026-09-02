@@ -9,18 +9,25 @@ from annealbridge.models.objective import Objective
 from annealbridge.models.variable import Variable
 
 
+# The schema layer rejects what is not a number at all (NaN / ±inf, which
+# would also defeat every `value > limit` policy comparison); the semantic
+# "> 0" rule is the problem validator's job so it surfaces as invalid_problem
+# with a recommended_action instead of a bare type error.
+_FINITE = Field(default=None, allow_inf_nan=False)
+
+
 class DWaveQPUOptions(BaseModel):
     """Options specific to the D-Wave QPU backend (Phase 2 spec §12)."""
 
-    annealing_time_us: float | None = None
-    chain_strength: float | None = None  # None → Ocean 預設 (uniform_torque_compensation)
+    annealing_time_us: float | None = _FINITE
+    chain_strength: float | None = _FINITE  # None → Ocean 預設 (uniform_torque_compensation)
     auto_scale: bool = True
 
 
 class LeapHybridBQMOptions(BaseModel):
     """Options specific to the Leap hybrid BQM backend (Phase 2 spec §12)."""
 
-    time_limit_seconds: float | None = None  # None → sampler 最小值
+    time_limit_seconds: float | None = _FINITE  # None → sampler 最小值
 
 
 class SolverPreferences(BaseModel):

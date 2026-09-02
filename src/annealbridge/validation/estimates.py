@@ -29,6 +29,19 @@ def accumulate_terms(terms: Iterable[LinearTerm]) -> dict[str, float]:
     return coefficients
 
 
+def lhs_bounds(coefficients: dict[str, float]) -> tuple[float, float]:
+    """Return ``(lhs_min, lhs_max)`` of ``sum(a_i * x_i)`` over binary ``x_i``.
+
+    Must be called on *accumulated* coefficients (one entry per variable):
+    per-term bounds over-estimate the range when a variable repeats with
+    mixed signs, which is exactly how validator and compiler used to
+    disagree on trivial infeasibility.
+    """
+    lhs_min = sum(min(value, 0.0) for value in coefficients.values())
+    lhs_max = sum(max(value, 0.0) for value in coefficients.values())
+    return lhs_min, lhs_max
+
+
 def compute_slack_coefficients(slack_range: int) -> list[int]:
     """Return binary-expansion coefficients for a slack in ``0..slack_range``.
 
@@ -68,8 +81,9 @@ class InequalityAnalysis:
     ``coefficients`` and ``rhs`` are normalized to the ``<=`` form (a ``>=``
     constraint has both sides multiplied by -1) with zero coefficients
     dropped. ``slack_range`` keeps the raw ``int(round(rhs - lhs_min))``
-    value — it may be negative for an infeasible constraint (the compiler
-    decides whether to raise or clamp) and is ``None`` when ``redundant``.
+    value — it is negative for a trivially infeasible constraint (a hard one
+    is rejected by the validator before compilation; the compiler clamps a
+    soft one) and is ``None`` when ``redundant``.
     """
 
     coefficients: dict[str, float]
@@ -98,8 +112,7 @@ def analyze_inequality(constraint: Constraint) -> InequalityAnalysis:
         coefficients = {variable: -value for variable, value in coefficients.items()}
         rhs = -rhs
 
-    lhs_min = sum(min(value, 0.0) for value in coefficients.values())
-    lhs_max = sum(max(value, 0.0) for value in coefficients.values())
+    lhs_min, lhs_max = lhs_bounds(coefficients)
     redundant = lhs_max <= rhs
     slack_range = None if redundant else int(round(rhs - lhs_min))
     return InequalityAnalysis(
@@ -115,10 +128,12 @@ def analyze_inequality(constraint: Constraint) -> InequalityAnalysis:
 def count_slack_bits(constraint: Constraint) -> int:
     """Number of slack variables compilation will generate for ``constraint``.
 
-    Equality constraints and redundant inequalities need none; an infeasible
-    inequality is counted as clamped to zero bits, matching the compiler's
-    soft-constraint clamp (a hard one fails compilation, so there is no
-    compiled variable count to match). The count goes through
+    Equality constraints and redundant inequalities need none. A trivially
+    infeasible *soft* inequality counts as zero bits, matching the
+    compiler's explicit clamp in ``encode_slack``. A trivially infeasible
+    *hard* inequality is never silently clamped: ``validate_problem`` rejects
+    it with TRIVIALLY_INFEASIBLE before any estimate is made, so reaching it
+    here is a programming error and raises. The count goes through
     :func:`compute_slack_coefficients` — the same function ``encode_slack``
     uses — so the two can never drift.
     """
@@ -127,7 +142,16 @@ def count_slack_bits(constraint: Constraint) -> int:
     analysis = analyze_inequality(constraint)
     if analysis.redundant:
         return 0
-    return len(compute_slack_coefficients(max(0, analysis.slack_range or 0)))
+    slack_range = analysis.slack_range
+    assert slack_range is not None  # non-redundant analysis always sets it
+    if slack_range < 0:
+        if constraint.type == "hard":
+            raise ValueError(
+                f"Hard constraint {constraint.id} is trivially infeasible; "
+                "validate_problem must reject it before estimating"
+            )
+        return 0
+    return len(compute_slack_coefficients(slack_range))
 
 
 def estimate_compiled_variables(problem: OptimizationProblem) -> int:

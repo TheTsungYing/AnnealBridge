@@ -12,10 +12,8 @@ import threading
 
 from annealbridge.compiler import BQMCompiler
 from annealbridge.compiler.base import ModelCompiler
-from annealbridge.exceptions import OptimizerError
+from annealbridge.exceptions import CompilationError, OptimizerError
 from annealbridge.models import (
-    RECOMMENDED_ACTIONS,
-    RETRYABLE_CODES,
     CompiledProblem,
     Objective,
     OptimizationProblem,
@@ -24,6 +22,7 @@ from annealbridge.models import (
     SolveError,
     SolveResult,
     SolverPreferences,
+    catalog_error,
 )
 from annealbridge.orchestration.policy import ExecutionPolicy
 from annealbridge.penalty import PenaltyStrategy, ScaledPenaltyStrategy
@@ -148,21 +147,6 @@ _AVAILABILITY_MAP: dict[str, tuple[str, str]] = {
 }
 
 
-def _catalog_error(code: str, message: str, *, path: str | None = None) -> SolveError:
-    """Build a SolveError with the catalog's fixed recommended_action.
-
-    Every service-produced error goes through here so recommended_action
-    and retryable stay consistent per code (spec §13.2).
-    """
-    return SolveError(
-        code=code,
-        path=path,
-        message=message,
-        retryable=code in RETRYABLE_CODES,
-        recommended_action=RECOMMENDED_ACTIONS.get(code),
-    )
-
-
 class OptimizationService:
     """End-to-end solve pipeline over pluggable components (spec §28)."""
 
@@ -188,9 +172,9 @@ class OptimizationService:
     def solve(self, problem: OptimizationProblem) -> SolveResult:
         """Solve ``problem`` and return a structured :class:`SolveResult`.
 
-        Never raises for domain errors: validation failures become
-        ``invalid_problem`` and solver/compiler failures become
-        ``solver_error`` (spec §27, §36).
+        Never raises for domain errors: validation and compilation failures
+        become ``invalid_problem`` (no backend was ever called) and solver
+        failures become ``solver_error`` (spec §27, §36).
         """
         errors = validate_problem(problem)
         if errors:
@@ -221,7 +205,7 @@ class OptimizationService:
                 "backend_unavailable",
                 backend_name,
                 direction,
-                [_catalog_error("UNKNOWN_BACKEND", message)],
+                [catalog_error("UNKNOWN_BACKEND", message)],
             )
 
         gate_result = self._gate_backend(backend, direction)
@@ -236,7 +220,7 @@ class OptimizationService:
                 backend.name,
                 direction,
                 [
-                    _catalog_error(
+                    catalog_error(
                         "CONCURRENCY_LIMIT",
                         f"Too many concurrent solves: the server allows at "
                         f"most {self._policy.max_concurrent_solves}",
@@ -286,7 +270,7 @@ class OptimizationService:
                 caps.name,
                 direction,
                 [
-                    _catalog_error(
+                    catalog_error(
                         "BACKEND_DISABLED_BY_POLICY",
                         f"Backend '{caps.name}' is disabled by server "
                         f"policy; enabled backends: "
@@ -300,7 +284,7 @@ class OptimizationService:
                 caps.name,
                 direction,
                 [
-                    _catalog_error(
+                    catalog_error(
                         "REMOTE_DISABLED",
                         f"Backend '{caps.name}' is remote and remote "
                         f"solving is disabled by server policy",
@@ -317,7 +301,7 @@ class OptimizationService:
                 caps.name,
                 direction,
                 [
-                    _catalog_error(
+                    catalog_error(
                         code,
                         f"Backend '{caps.name}' is unavailable: "
                         f"{reason or 'no reason reported'}",
@@ -342,7 +326,7 @@ class OptimizationService:
         if caps.remote and caps.supports_num_reads:
             if preferences.num_reads > policy.max_qpu_reads:
                 errors.append(
-                    _catalog_error(
+                    catalog_error(
                         "QPU_READS_LIMIT",
                         f"num_reads {preferences.num_reads} exceeds the "
                         f"server maximum of {policy.max_qpu_reads}",
@@ -358,7 +342,7 @@ class OptimizationService:
                 and annealing_time > policy.max_qpu_annealing_time_us
             ):
                 errors.append(
-                    _catalog_error(
+                    catalog_error(
                         "QPU_ANNEALING_TIME_LIMIT",
                         f"annealing_time_us {annealing_time} exceeds the "
                         f"server maximum of {policy.max_qpu_annealing_time_us}",
@@ -379,7 +363,7 @@ class OptimizationService:
                 and time_limit > policy.max_remote_time_seconds
             ):
                 errors.append(
-                    _catalog_error(
+                    catalog_error(
                         "REMOTE_TIME_LIMIT",
                         f"time_limit_seconds {time_limit} exceeds the "
                         f"server maximum of {policy.max_remote_time_seconds}",
@@ -409,7 +393,7 @@ class OptimizationService:
         maximum = self._policy.max_remote_time_seconds
         if effective is None or effective <= maximum:
             return None
-        return _catalog_error(
+        return catalog_error(
             "REMOTE_TIME_LIMIT",
             f"effective time_limit_seconds {effective} (the requested value "
             f"raised to the solver's minimum for this problem size) exceeds "
@@ -463,7 +447,7 @@ class OptimizationService:
                         backend.name,
                         direction,
                         [
-                            _catalog_error(
+                            catalog_error(
                                 "EXACT_VARIABLE_LIMIT",
                                 f"Compiled problem has "
                                 f"{compiled.num_variables} variables "
@@ -529,10 +513,20 @@ class OptimizationService:
                 backend.capabilities.remote
                 and not self._policy.allow_remote_retries
             )
-            if backend.is_exhaustive:
+            # An exhaustive backend proves infeasibility only by actually
+            # enumerating assignments: zero samples back is not a proof.
+            proven = (
+                backend.is_exhaustive and raw is not None and len(raw.samples) > 0
+            )
+            if proven:
                 message = (
                     "No feasible solution exists: the exhaustive backend "
                     "enumerated every assignment"
+                )
+            elif backend.is_exhaustive:
+                message = (
+                    "No feasible solution found: the exhaustive backend "
+                    "returned no samples, so infeasibility is not proven"
                 )
             elif remote_retries_blocked:
                 message = (
@@ -540,7 +534,7 @@ class OptimizationService:
                     "disables automatic remote retries"
                 )
                 warnings.append(
-                    _catalog_error(
+                    catalog_error(
                         "REMOTE_RETRIES_DISABLED",
                         "1 attempt was made; server policy disables "
                         "automatic remote retries to protect quota",
@@ -558,12 +552,25 @@ class OptimizationService:
                 objective_direction=direction,
                 solutions=[],
                 attempts=attempts,
-                infeasibility_proven=backend.is_exhaustive,
+                infeasibility_proven=proven,
                 warnings=warnings,
                 # Timing/usage facts from the last attempt still matter to
                 # the caller (e.g. quota spent on a remote solve).
                 metadata=raw.metadata if raw is not None else None,
                 message=message,
+            )
+        except CompilationError as exc:
+            # The problem passed validation but the compiler still refused
+            # it. No backend was called, so this is a problem-side failure
+            # (and a validator/compiler mismatch worth reporting), never a
+            # solver error.
+            logger.warning("Problem %s compilation error: %s", problem.name, exc)
+            return self._failure(
+                "invalid_problem",
+                backend.name,
+                direction,
+                [catalog_error("COMPILATION_FAILED", str(exc))],
+                attempts=attempts,
             )
         except OptimizerError as exc:
             # Remote backends redact their messages before raising; the
@@ -574,6 +581,6 @@ class OptimizationService:
                 "solver_error",
                 backend.name,
                 direction,
-                [_catalog_error(code, str(exc))],
+                [catalog_error(code, str(exc))],
                 attempts=attempts,
             )

@@ -1,9 +1,10 @@
 """Pre-compilation validation of an OptimizationProblem (spec §12, Phase 2 §20).
 
 ``validate_problem`` collects *all* errors in a single pass and returns them
-as a list of ``ProblemError``; it never raises and never stops at the first
+as a list of ``SolveError`` (each carrying the catalog's fixed
+``recommended_action``); it never raises and never stops at the first
 problem. Duplicate objective terms are legal (the compiler sums coefficients)
-and are only logged as warnings (spec §8).
+and only produce a DUPLICATE_TERM_MERGED warning plus one log line (spec §8).
 
 ``validate_problem_full`` wraps the same error pass and adds the Phase 2 §20
 advisory layer: non-blocking warnings, ``estimated_compiled_variables`` and
@@ -21,15 +22,17 @@ from annealbridge.models import (
     Constraint,
     Objective,
     OptimizationProblem,
-    ProblemError,
     SolveError,
     SolverPreferences,
+    catalog_error,
 )
 from annealbridge.validation.estimates import (
+    accumulate_terms,
     analyze_inequality,
     compute_objective_scale,
     count_slack_bits,
     estimate_compiled_variables,
+    lhs_bounds,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,6 +52,35 @@ HYBRID_IGNORED_PARAMETER_FIELDS = ("num_reads", "num_sweeps")
 
 # Defaults are read off the model so they can never drift from the schema.
 _DEFAULT_SOLVER_PREFERENCES = SolverPreferences()
+
+# Every error code this validator can emit (Phase 1 spec §12 plus
+# NO_VARIABLES). Each must have a fixed recommended_action in the error
+# catalog; tests/unit/test_error_catalog.py enforces the coverage.
+VALIDATOR_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        "DUPLICATE_CONSTRAINT_ID",
+        "DUPLICATE_VARIABLE",
+        "EMPTY_CONSTRAINT",
+        "HARD_CONSTRAINT_HAS_WEIGHT",
+        "INVALID_SOLVER_PREFERENCE",
+        "NON_FINITE_COEFFICIENT",
+        "NON_INTEGER_INEQUALITY",
+        "NO_VARIABLES",
+        "RESERVED_VARIABLE_NAME",
+        "SELF_QUADRATIC_TERM",
+        "SOFT_CONSTRAINT_MISSING_WEIGHT",
+        "TRIVIALLY_INFEASIBLE",
+        "UNKNOWN_VARIABLE",
+    }
+)
+
+# Backend-specific option fields that must be finite and strictly positive
+# when given: (SolverPreferences attribute, option field).
+_POSITIVE_BACKEND_OPTION_FIELDS = (
+    ("dwave_qpu", "annealing_time_us"),
+    ("dwave_qpu", "chain_strength"),
+    ("leap_hybrid_bqm", "time_limit_seconds"),
+)
 
 # Fixed categorical guidance per warning code (mirrors the error catalog's
 # style; §13.2's RECOMMENDED_ACTIONS stays an error-code vocabulary).
@@ -110,12 +142,24 @@ class ProblemValidationResult(BaseModel):
     objective_scale: float | None = None
 
 
-def validate_problem(problem: OptimizationProblem) -> list[ProblemError]:
+def validate_problem(problem: OptimizationProblem) -> list[SolveError]:
     """Validate a problem before compilation, returning all errors found.
 
     An empty list means the problem is safe to hand to the compiler.
     """
-    errors: list[ProblemError] = []
+    errors, _ = _collect(problem)
+    return errors
+
+
+def _collect(
+    problem: OptimizationProblem,
+) -> tuple[list[SolveError], list[SolveError]]:
+    """Single error pass plus the spec §8 duplicate-term warnings.
+
+    Both public entry points go through here so a duplicate term is logged
+    exactly once, whichever of them is called.
+    """
+    errors: list[SolveError] = []
     known_variables = {variable.name for variable in problem.variables}
 
     _check_variables(problem, errors)
@@ -124,7 +168,10 @@ def validate_problem(problem: OptimizationProblem) -> list[ProblemError]:
     for index, constraint in enumerate(problem.constraints):
         _check_constraint(constraint, index, known_variables, errors)
     _check_solver_preferences(problem, errors)
-    return errors
+
+    duplicate_warnings: list[SolveError] = []
+    _warn_duplicate_terms(problem.objective, duplicate_warnings)
+    return errors, duplicate_warnings
 
 
 def validate_problem_full(
@@ -143,7 +190,7 @@ def validate_problem_full(
     exact backend (validation must not read policy itself, §4); when it is
     ``None`` the EXACT_NEAR_LIMIT / EXACT_OVER_LIMIT checks are skipped.
     """
-    errors = validate_problem(problem)
+    errors, duplicate_warnings = _collect(problem)
     if errors:
         return ProblemValidationResult(valid=False, errors=errors)
 
@@ -155,7 +202,7 @@ def validate_problem_full(
     _warn_inequalities(problem, warnings)
     _warn_backend_fit(problem, estimated, exact_max_variables, warnings)
     _warn_ignored_parameters(problem, warnings)
-    _warn_duplicate_terms(problem.objective, warnings)
+    warnings.extend(duplicate_warnings)
 
     return ProblemValidationResult(
         valid=True,
@@ -174,6 +221,11 @@ def _warning(code: str, path: str | None, message: str) -> SolveError:
         retryable=False,
         recommended_action=_WARNING_RECOMMENDED_ACTIONS[code],
     )
+
+
+def _error(*, code: str, path: str | None, message: str) -> SolveError:
+    """Build a validation error with the catalog's fixed recommended_action."""
+    return catalog_error(code, message, path=path)
 
 
 def _warn_soft_weights(
@@ -337,6 +389,13 @@ def _warn_ignored_parameters(
 
 
 def _warn_duplicate_terms(objective: Objective, warnings: list[SolveError]) -> None:
+    """Spec §8: duplicate objective terms are merged, not rejected.
+
+    The structured DUPLICATE_TERM_MERGED warning is the primary signal; each
+    one is also logged once so the merge stays visible on the errors-only
+    path the service uses.
+    """
+    first_new = len(warnings)
     for variable, count in _duplicate_linear_variables(objective):
         warnings.append(
             _warning(
@@ -361,14 +420,24 @@ def _warn_duplicate_terms(objective: Objective, warnings: list[SolveError]) -> N
                 ),
             )
         )
+    for warning in warnings[first_new:]:
+        logger.warning("%s", warning.message)
 
 
-def _check_variables(problem: OptimizationProblem, errors: list[ProblemError]) -> None:
+def _check_variables(problem: OptimizationProblem, errors: list[SolveError]) -> None:
+    if not problem.variables:
+        errors.append(
+            _error(
+                code="NO_VARIABLES",
+                path="variables",
+                message="Problem declares no variables; there is nothing to optimize",
+            )
+        )
     seen: set[str] = set()
     for index, variable in enumerate(problem.variables):
         if variable.name in seen:
             errors.append(
-                ProblemError(
+                _error(
                     code="DUPLICATE_VARIABLE",
                     path=f"variables[{index}]",
                     message=f"Variable {variable.name} is declared more than once",
@@ -377,7 +446,7 @@ def _check_variables(problem: OptimizationProblem, errors: list[ProblemError]) -
         seen.add(variable.name)
         if variable.name.startswith("__"):
             errors.append(
-                ProblemError(
+                _error(
                     code="RESERVED_VARIABLE_NAME",
                     path=f"variables[{index}]",
                     message=(
@@ -389,13 +458,13 @@ def _check_variables(problem: OptimizationProblem, errors: list[ProblemError]) -
 
 
 def _check_constraint_ids(
-    problem: OptimizationProblem, errors: list[ProblemError]
+    problem: OptimizationProblem, errors: list[SolveError]
 ) -> None:
     seen: set[str] = set()
     for index, constraint in enumerate(problem.constraints):
         if constraint.id in seen:
             errors.append(
-                ProblemError(
+                _error(
                     code="DUPLICATE_CONSTRAINT_ID",
                     path=f"constraints[{index}]",
                     message=f"Constraint id {constraint.id} is used more than once",
@@ -407,7 +476,7 @@ def _check_constraint_ids(
 def _check_objective(
     problem: OptimizationProblem,
     known_variables: set[str],
-    errors: list[ProblemError],
+    errors: list[SolveError],
 ) -> None:
     objective = problem.objective
 
@@ -425,7 +494,7 @@ def _check_objective(
                 errors.append(_unknown_variable(variable, path))
         if term.variable1 == term.variable2:
             errors.append(
-                ProblemError(
+                _error(
                     code="SELF_QUADRATIC_TERM",
                     path=path,
                     message=(
@@ -441,8 +510,6 @@ def _check_objective(
         errors.append(
             _non_finite(f"constant {objective.constant}", "objective.constant")
         )
-
-    _warn_duplicate_objective_terms(objective)
 
 
 def _duplicate_linear_variables(objective: Objective) -> list[tuple[str, int]]:
@@ -462,34 +529,17 @@ def _duplicate_quadratic_pairs(
     ]
 
 
-def _warn_duplicate_objective_terms(objective) -> None:
-    for variable, count in _duplicate_linear_variables(objective):
-        logger.warning(
-            "Variable %s appears %d times in objective.linear_terms; "
-            "coefficients will be summed by the compiler",
-            variable,
-            count,
-        )
-    for pair, count in _duplicate_quadratic_pairs(objective):
-        logger.warning(
-            "Variable pair %s appears %d times in objective.quadratic_terms; "
-            "coefficients will be summed by the compiler",
-            pair,
-            count,
-        )
-
-
 def _check_constraint(
     constraint: Constraint,
     index: int,
     known_variables: set[str],
-    errors: list[ProblemError],
+    errors: list[SolveError],
 ) -> None:
     base = f"constraints[{index}]"
 
     if not constraint.terms:
         errors.append(
-            ProblemError(
+            _error(
                 code="EMPTY_CONSTRAINT",
                 path=base,
                 message=f"Constraint {constraint.id} has no terms",
@@ -514,7 +564,7 @@ def _check_constraint(
     if constraint.type == "hard":
         if constraint.weight is not None:
             errors.append(
-                ProblemError(
+                _error(
                     code="HARD_CONSTRAINT_HAS_WEIGHT",
                     path=f"{base}.weight",
                     message=(
@@ -526,7 +576,7 @@ def _check_constraint(
     else:
         if constraint.weight is None or constraint.weight <= 0:
             errors.append(
-                ProblemError(
+                _error(
                     code="SOFT_CONSTRAINT_MISSING_WEIGHT",
                     path=f"{base}.weight",
                     message=(
@@ -544,18 +594,23 @@ def _check_constraint(
 
 
 def _check_trivially_infeasible(
-    constraint: Constraint, base: str, errors: list[ProblemError]
+    constraint: Constraint, base: str, errors: list[SolveError]
 ) -> None:
+    """Reject a hard constraint no binary assignment can satisfy.
+
+    The lhs range is taken over the *accumulated* coefficients (one per
+    variable), exactly as the compiler sums them, so a constraint accepted
+    here can never fail slack encoding later. The message reports the
+    user's own operator and rhs, never the compiler's normalized form.
+    """
     if constraint.type != "hard" or not constraint.terms:
         return
-    coefficients = [term.coefficient for term in constraint.terms]
-    if not all(math.isfinite(value) for value in coefficients) or not math.isfinite(
-        constraint.rhs
-    ):
+    if not all(math.isfinite(term.coefficient) for term in constraint.terms):
+        return
+    if not math.isfinite(constraint.rhs):
         return
 
-    lhs_min = sum(min(value, 0.0) for value in coefficients)
-    lhs_max = sum(max(value, 0.0) for value in coefficients)
+    lhs_min, lhs_max = lhs_bounds(accumulate_terms(constraint.terms))
     rhs = constraint.rhs
 
     if constraint.operator == "<=":
@@ -567,12 +622,13 @@ def _check_trivially_infeasible(
 
     if infeasible:
         errors.append(
-            ProblemError(
+            _error(
                 code="TRIVIALLY_INFEASIBLE",
                 path=base,
                 message=(
                     f"Hard constraint {constraint.id} can never be satisfied: "
-                    f"lhs range is [{lhs_min}, {lhs_max}] but requires "
+                    f"lhs range (after summing repeated variables) is "
+                    f"[{lhs_min}, {lhs_max}] but requires "
                     f"{constraint.operator} {rhs}"
                 ),
             )
@@ -580,7 +636,7 @@ def _check_trivially_infeasible(
 
 
 def _check_solver_preferences(
-    problem: OptimizationProblem, errors: list[ProblemError]
+    problem: OptimizationProblem, errors: list[SolveError]
 ) -> None:
     solver = problem.solver
     checks = [
@@ -598,24 +654,47 @@ def _check_solver_preferences(
     for field, value, is_bad, rule in checks:
         if is_bad:
             errors.append(
-                ProblemError(
+                _error(
                     code="INVALID_SOLVER_PREFERENCE",
                     path=f"solver.{field}",
                     message=f"solver.{field} {rule}, got {value}",
                 )
             )
 
+    # Backend-specific options: the schema already rejects NaN / ±inf
+    # (allow_inf_nan=False); the semantic "> 0" rule lives here. Finiteness
+    # is re-checked so a model built without validation cannot slip through
+    # (nan > limit is False, so a policy comparison would silently pass).
+    for options_field, field in _POSITIVE_BACKEND_OPTION_FIELDS:
+        options = getattr(solver, options_field)
+        if options is None:
+            continue
+        value = getattr(options, field)
+        if value is None:
+            continue
+        if not math.isfinite(value) or value <= 0:
+            errors.append(
+                _error(
+                    code="INVALID_SOLVER_PREFERENCE",
+                    path=f"solver.{options_field}.{field}",
+                    message=(
+                        f"solver.{options_field}.{field} must be a finite "
+                        f"number > 0, got {value}"
+                    ),
+                )
+            )
 
-def _unknown_variable(variable: str, path: str) -> ProblemError:
-    return ProblemError(
+
+def _unknown_variable(variable: str, path: str) -> SolveError:
+    return _error(
         code="UNKNOWN_VARIABLE",
         path=path,
         message=f"Variable {variable} does not exist",
     )
 
 
-def _non_finite(what: str, path: str) -> ProblemError:
-    return ProblemError(
+def _non_finite(what: str, path: str) -> SolveError:
+    return _error(
         code="NON_FINITE_COEFFICIENT",
         path=path,
         message=f"Value is not finite: {what}",
@@ -624,8 +703,8 @@ def _non_finite(what: str, path: str) -> ProblemError:
 
 def _non_integer_inequality(
     constraint: Constraint, value: float, path: str
-) -> ProblemError:
-    return ProblemError(
+) -> SolveError:
+    return _error(
         code="NON_INTEGER_INEQUALITY",
         path=path,
         message=(

@@ -2,10 +2,13 @@
 
 import logging
 
+import math
+
 import pytest
+from pydantic import ValidationError
 
 from annealbridge.models import OptimizationProblem
-from annealbridge.validation import validate_problem
+from annealbridge.validation import validate_problem, validate_problem_full
 
 
 def make_problem_dict() -> dict:
@@ -309,6 +312,72 @@ class TestTriviallyInfeasible:
         data["constraints"][1]["rhs"] = 99  # unreachable, but soft
         assert validate_dict(data) == []
 
+    def test_repeated_variable_is_judged_on_accumulated_coefficients(self):
+        # x1 appears as +1 and -1: per-term ranges say [-1, 1] (feasible) but
+        # the compiler sums them to 0, so ">= 1" can never hold.
+        data = make_problem_dict()
+        data["constraints"][0] = {
+            "id": "dup",
+            "type": "hard",
+            "terms": [
+                {"variable": "x1", "coefficient": 1},
+                {"variable": "x1", "coefficient": -1},
+            ],
+            "operator": ">=",
+            "rhs": 1,
+        }
+        errors = validate_dict(data)
+        assert codes(errors) == ["TRIVIALLY_INFEASIBLE"]
+        assert errors[0].path == "constraints[0]"
+        assert errors[0].recommended_action
+
+    def test_message_reports_the_users_operator_and_rhs(self):
+        data = make_problem_dict()
+        data["constraints"][0] = {
+            "id": "dup",
+            "type": "hard",
+            "terms": [
+                {"variable": "x1", "coefficient": 1},
+                {"variable": "x1", "coefficient": -1},
+            ],
+            "operator": ">=",
+            "rhs": 1,
+        }
+        message = validate_dict(data)[0].message
+        assert ">= 1" in message
+        assert "-1" not in message  # never the compiler's normalized form
+
+    def test_repeated_variable_with_reachable_accumulated_range_passes(self):
+        # x1: +2 and -1 accumulate to +1, so "<= 0" is satisfiable (x1 = 0).
+        data = make_problem_dict()
+        data["constraints"][0] = {
+            "id": "dup",
+            "type": "hard",
+            "terms": [
+                {"variable": "x1", "coefficient": 2},
+                {"variable": "x1", "coefficient": -1},
+            ],
+            "operator": "<=",
+            "rhs": 0,
+        }
+        assert validate_dict(data) == []
+
+    def test_equality_uses_accumulated_coefficients_too(self):
+        # +1 and -1 sum to 0, so "== 1" is unreachable even though the raw
+        # per-term range [-1, 1] contains 1.
+        data = make_problem_dict()
+        data["constraints"][0] = {
+            "id": "dup",
+            "type": "hard",
+            "terms": [
+                {"variable": "x1", "coefficient": 1},
+                {"variable": "x1", "coefficient": -1},
+            ],
+            "operator": "==",
+            "rhs": 1,
+        }
+        assert codes(validate_dict(data)) == ["TRIVIALLY_INFEASIBLE"]
+
 
 class TestErrorCollection:
     def test_all_errors_collected_in_one_pass(self):
@@ -330,6 +399,8 @@ class TestErrorCollection:
 
 
 class TestDuplicateObjectiveTermWarning:
+    """Spec §8: duplicates are merged, never rejected; one log line each."""
+
     def test_duplicate_linear_term_warns_but_passes(self, caplog):
         data = make_problem_dict()
         data["objective"]["linear_terms"].append({"variable": "x1", "coefficient": 2})
@@ -347,3 +418,119 @@ class TestDuplicateObjectiveTermWarning:
             errors = validate_dict(data)
         assert errors == []
         assert any("x1" in record.getMessage() for record in caplog.records)
+
+    def test_full_validation_logs_each_duplicate_exactly_once(self, caplog):
+        # One helper feeds both the structured warning and the log line, so
+        # the full entry point must not log the same duplicate twice.
+        data = make_problem_dict()
+        data["objective"]["linear_terms"].append({"variable": "x1", "coefficient": 2})
+        problem = OptimizationProblem.model_validate(data)
+        with caplog.at_level(logging.WARNING, logger="annealbridge.validation"):
+            result = validate_problem_full(problem)
+        merged = [w for w in result.warnings if w.code == "DUPLICATE_TERM_MERGED"]
+        assert len(merged) == 1
+        logged = [r for r in caplog.records if "x1" in r.getMessage()]
+        assert len(logged) == 1
+        assert logged[0].getMessage() == merged[0].message
+
+
+class TestNoVariables:
+    def test_empty_variables_is_rejected(self):
+        data = make_problem_dict()
+        data["variables"] = []
+        data["objective"] = {"direction": "minimize", "linear_terms": []}
+        data["constraints"] = []
+        errors = validate_dict(data)
+        assert codes(errors) == ["NO_VARIABLES"]
+        assert errors[0].path == "variables"
+        assert errors[0].recommended_action
+
+    def test_no_variables_is_collected_alongside_other_errors(self):
+        data = make_problem_dict()
+        data["variables"] = []
+        errors = validate_dict(data)
+        assert "NO_VARIABLES" in codes(errors)
+        assert "UNKNOWN_VARIABLE" in codes(errors)
+
+
+class TestBackendOptionRanges:
+    """annealing_time_us / chain_strength / time_limit_seconds must be finite > 0.
+
+    The Pydantic layer rejects NaN / ±inf (they are not numbers at all and
+    would defeat every ``value > limit`` policy comparison); the validator
+    owns the semantic ``> 0`` rule so it surfaces as invalid_problem with a
+    recommended_action rather than a bare type error.
+    """
+
+    OPTIONS = [
+        ("dwave_qpu", "annealing_time_us"),
+        ("dwave_qpu", "chain_strength"),
+        ("leap_hybrid_bqm", "time_limit_seconds"),
+    ]
+
+    @pytest.mark.parametrize(("options_field", "field"), OPTIONS)
+    @pytest.mark.parametrize("bad_value", [-5, 0])
+    def test_non_positive_is_invalid_solver_preference(
+        self, options_field, field, bad_value
+    ):
+        data = make_problem_dict()
+        data["solver"] = {options_field: {field: bad_value}}
+        errors = validate_dict(data)
+        assert codes(errors) == ["INVALID_SOLVER_PREFERENCE"]
+        assert errors[0].path == f"solver.{options_field}.{field}"
+        assert str(bad_value) in errors[0].message
+        assert errors[0].recommended_action
+
+    @pytest.mark.parametrize(("options_field", "field"), OPTIONS)
+    @pytest.mark.parametrize("bad_value", [math.nan, math.inf])
+    def test_non_finite_is_rejected_by_the_schema(
+        self, options_field, field, bad_value
+    ):
+        data = make_problem_dict()
+        data["solver"] = {options_field: {field: bad_value}}
+        with pytest.raises(ValidationError) as excinfo:
+            OptimizationProblem.model_validate(data)
+        assert excinfo.value.errors()[0]["type"] == "finite_number"
+
+    @pytest.mark.parametrize(("options_field", "field"), OPTIONS)
+    @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+    def test_non_finite_json_literal_is_rejected_by_the_schema(
+        self, options_field, field, literal
+    ):
+        # A raw JSON payload (the MCP path) cannot smuggle NaN/Infinity in
+        # either: nan > limit is False, so it would bypass policy limits.
+        data = make_problem_dict()
+        data["solver"] = {options_field: {field: 1}}
+        import json
+
+        payload = json.dumps(data).replace(f'"{field}": 1', f'"{field}": {literal}')
+        assert literal in payload
+        with pytest.raises(ValidationError):
+            OptimizationProblem.model_validate_json(payload)
+
+    @pytest.mark.parametrize(("options_field", "field"), OPTIONS)
+    def test_positive_value_is_legal(self, options_field, field):
+        data = make_problem_dict()
+        data["solver"] = {options_field: {field: 2.5}}
+        assert validate_dict(data) == []
+
+    def test_omitted_options_are_legal(self):
+        data = make_problem_dict()
+        data["solver"] = {"backend": "dwave_qpu", "dwave_qpu": {}}
+        assert validate_dict(data) == []
+
+
+class TestRecommendedAction:
+    def test_every_collected_error_carries_a_recommended_action(self):
+        data = make_problem_dict()
+        data["variables"].append({"name": "x1"})
+        data["objective"]["linear_terms"][0]["variable"] = "ghost"
+        data["constraints"][0]["weight"] = 1.0
+        data["constraints"][1]["weight"] = -2
+        data["solver"] = {"top_k": 0}
+        errors = validate_dict(data)
+        assert len(errors) == 5
+        for error in errors:
+            assert isinstance(error.recommended_action, str)
+            assert error.recommended_action.strip()
+            assert error.retryable is False

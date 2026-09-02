@@ -8,6 +8,7 @@ and one triggering plus one non-triggering case per warning code.
 import pytest
 
 from annealbridge.compiler import BQMCompiler
+from annealbridge.exceptions import CompilationError
 from annealbridge.models import OptimizationProblem
 from annealbridge.validation import validate_problem, validate_problem_full
 from annealbridge.validation.estimates import (
@@ -476,3 +477,77 @@ class TestWarningPayload:
                 assert warning.retryable is False
                 assert isinstance(warning.recommended_action, str)
                 assert warning.recommended_action.strip()
+
+
+class TestValidateCompileConsistency:
+    """Whatever passes validate_problem must compile, and vice versa.
+
+    Inequalities with repeated variables are the historical mismatch: the
+    validator used per-term ranges while the compiler sums coefficients.
+    Both now judge on accumulated coefficients, so the two verdicts agree
+    on every case below and the estimate matches the compiled size.
+    """
+
+    CASES = [
+        # (operator, rhs, terms) — repeated variables with mixed signs
+        (">=", 1, [lin("x1", 1), lin("x1", -1)]),  # sums to 0: infeasible
+        ("<=", -1, [lin("x1", 1), lin("x1", -1)]),  # sums to 0: infeasible
+        ("<=", -2, [lin("x1", 1), lin("x1", -2)]),  # sums to -1: infeasible
+        ("<=", -1, [lin("x1", 1), lin("x1", -2)]),  # sums to -1: feasible
+        ("<=", 0, [lin("x1", 2), lin("x1", -1)]),  # sums to +1: feasible
+        (">=", 1, [lin("x1", 2), lin("x1", -1)]),  # sums to +1: feasible
+        (">=", 2, [lin("x1", 2), lin("x1", -1)]),  # sums to +1: infeasible
+        ("<=", 1, [lin("x1", 1), lin("x1", 1)]),  # sums to 2: feasible
+        ("<=", 3, [lin("x1", 1), lin("x1", 1)]),  # redundant: feasible
+        (">=", 3, [lin("x1", 1), lin("x1", 1)]),  # sums to 2: infeasible
+        (">=", 0, [lin("x1", 1), lin("x1", -1), lin("x2", 1)]),  # feasible
+        (">=", 2, [lin("x1", 1), lin("x1", -1), lin("x2", 1)]),  # infeasible
+        ("<=", -1, [lin("x1", 1), lin("x1", -1), lin("x2", -1)]),  # feasible
+        ("<=", 0, [lin("x1", 3), lin("x1", -3), lin("x2", 0)]),  # all-zero: redundant
+    ]
+
+    @pytest.mark.parametrize(("operator", "rhs", "terms"), CASES)
+    def test_validator_and_compiler_agree(self, operator, rhs, terms):
+        problem = make_problem(
+            variables=("x1", "x2"),
+            constraints=[hard("dup", operator, rhs, terms)],
+        )
+        result = validate_problem_full(problem)
+        if result.valid:
+            compiled = BQMCompiler().compile(problem, hard_penalty=2.0)
+            assert compiled.num_variables == result.estimated_compiled_variables
+        else:
+            assert [e.code for e in result.errors] == ["TRIVIALLY_INFEASIBLE"]
+            with pytest.raises(CompilationError):
+                BQMCompiler().compile(problem, hard_penalty=2.0)
+
+    def test_cases_cover_both_verdicts(self):
+        verdicts = {
+            validate_problem_full(
+                make_problem(
+                    variables=("x1", "x2"),
+                    constraints=[hard("dup", operator, rhs, terms)],
+                )
+            ).valid
+            for operator, rhs, terms in self.CASES
+        }
+        assert verdicts == {True, False}
+
+
+class TestCountSlackBitsNeverClampsHard:
+    def test_hard_infeasible_raises_instead_of_clamping(self):
+        problem = make_problem(
+            constraints=[hard("dup", ">=", 1, [lin("x1", 1), lin("x1", -1)])],
+        )
+        with pytest.raises(ValueError, match="trivially infeasible"):
+            count_slack_bits(problem.constraints[0])
+
+    def test_soft_infeasible_counts_zero_like_the_compiler(self):
+        problem = make_problem(
+            constraints=[
+                soft("dup", ">=", 1, [lin("x1", 1), lin("x1", -1)], 1.0),
+            ],
+        )
+        assert count_slack_bits(problem.constraints[0]) == 0
+        compiled = BQMCompiler().compile(problem, hard_penalty=2.0)
+        assert compiled.num_variables == estimate_compiled_variables(problem)

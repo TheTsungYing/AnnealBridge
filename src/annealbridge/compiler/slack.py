@@ -57,8 +57,9 @@ def encode_slack(constraint: Constraint) -> InequalityEncoding:
     """Encode a ``<=`` or ``>=`` constraint with binary slack variables.
 
     Raises :class:`CompilationError` for a hard constraint that can never be
-    satisfied (the validator's trivial-infeasibility check works on raw terms,
-    so accumulated duplicates can still produce this case here). A soft
+    satisfied. The validator judges trivial infeasibility on the same
+    accumulated coefficients, so a validated problem never reaches this
+    branch; it stays as a defence for callers that skip validation. A soft
     constraint in the same situation is clamped to zero slack bits with a
     warning: its penalty then degrades to the squared minimal violation,
     which is exactly the pressure a violated soft constraint should exert.

@@ -146,7 +146,10 @@ class TestDuplicateTermAccumulation:
 class TestTriviallyInfeasible:
     def test_hard_raises_compilation_error(self):
         # Accumulated coefficient is -1, so lhs range is [-1, 0] and rhs -2
-        # can never be reached; the validator misses this (raw-term ranges).
+        # can never be reached. The validator now judges this the same way
+        # (it also sums repeated variables before taking the lhs range), so
+        # this assertion is the compiler's own defence for callers that skip
+        # validate_problem and call the encoder directly.
         with pytest.raises(CompilationError):
             encode_slack(make_constraint("<=", -2, [("x1", 1), ("x1", -2)]))
 
