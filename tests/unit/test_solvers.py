@@ -5,6 +5,7 @@ import pytest
 from annealbridge.compiler import BQMCompiler
 from annealbridge.models import CompiledProblem, OptimizationProblem, SolverPreferences
 from annealbridge.solvers import (
+    AvailabilityStatus,
     ExactSolverBackend,
     SimulatedAnnealingBackend,
     SolverCapabilities,
@@ -70,9 +71,15 @@ class TestExactSolverBackend:
         assert capabilities.supported_model_types == ["bqm"]
         assert capabilities.returns_multiple_samples is True
         assert capabilities.description.strip()
+        assert capabilities.supports_num_sweeps is False
+        assert capabilities.requires_embedding is False
+        assert capabilities.parameter_limits == []
 
     def test_is_available(self):
-        assert ExactSolverBackend().is_available() == (True, None)
+        status = ExactSolverBackend().is_available()
+        assert isinstance(status, AvailabilityStatus)
+        assert status.available is True
+        assert status == AvailabilityStatus(category="available")
 
     def test_properties_alias_capabilities(self):
         backend = ExactSolverBackend()
@@ -138,9 +145,15 @@ class TestSimulatedAnnealingBackend:
         assert capabilities.supported_model_types == ["bqm"]
         assert capabilities.returns_multiple_samples is True
         assert capabilities.description.strip()
+        assert capabilities.supports_num_sweeps is True
+        assert capabilities.requires_embedding is False
+        assert capabilities.parameter_limits == []
 
     def test_is_available(self):
-        assert SimulatedAnnealingBackend().is_available() == (True, None)
+        status = SimulatedAnnealingBackend().is_available()
+        assert isinstance(status, AvailabilityStatus)
+        assert status.available is True
+        assert status == AvailabilityStatus(category="available")
 
     def test_properties_alias_capabilities(self):
         backend = SimulatedAnnealingBackend()

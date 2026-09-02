@@ -31,9 +31,6 @@ from annealbridge.models import (
 from annealbridge.orchestration.policy import ExecutionPolicy
 from annealbridge.penalty import PenaltyStrategy, ScaledPenaltyStrategy
 from annealbridge.solvers import (
-    REASON_CONFIG_INVALID,
-    REASON_CREDENTIALS_MISSING,
-    REASON_NOT_INSTALLED,
     RawSolverResult,
     SolverBackend,
     SolverRegistry,
@@ -268,14 +265,17 @@ def process_candidates(
     return solutions, len(candidates), int(len(feasible))
 
 
-# Categorical is_available() reasons → (result status, error code). Keyed on
-# the availability-failure *category*, never on backend identity, so the
-# service stays backend-agnostic (overview principle 4). Unknown reasons
-# (and a bare ``(False, None)``) fall back to BACKEND_UNAVAILABLE.
+# AvailabilityStatus.category → (result status, default error code), per
+# Phase 3a spec §8.2. Keyed on the structured category, never on a backend's
+# reason text, so the service stays backend-agnostic (overview principle
+# 4). A backend may name a more specific ``error_code`` on its status
+# (e.g. the D-Wave backends report DWAVE_CONFIG_INVALID); the default here
+# only applies when it does not.
 _AVAILABILITY_MAP: dict[str, tuple[str, str]] = {
-    REASON_NOT_INSTALLED: ("backend_unavailable", "BACKEND_NOT_INSTALLED"),
-    REASON_CREDENTIALS_MISSING: ("backend_unavailable", "REMOTE_CREDENTIALS_MISSING"),
-    REASON_CONFIG_INVALID: ("configuration_error", "DWAVE_CONFIG_INVALID"),
+    "not_installed": ("backend_unavailable", "BACKEND_NOT_INSTALLED"),
+    "credentials_missing": ("backend_unavailable", "REMOTE_CREDENTIALS_MISSING"),
+    "config_invalid": ("configuration_error", "BACKEND_CONFIG_INVALID"),
+    "unavailable": ("backend_unavailable", "BACKEND_UNAVAILABLE"),
 }
 
 
@@ -436,11 +436,10 @@ class OptimizationService:
                     )
                 ],
             )
-        available, reason = backend.is_available()
-        if not available:
-            status, code = _AVAILABILITY_MAP.get(
-                reason or "", ("backend_unavailable", "BACKEND_UNAVAILABLE")
-            )
+        availability = backend.is_available()
+        if not availability.available:
+            status, default_code = _AVAILABILITY_MAP[availability.category]
+            code = availability.error_code or default_code
             return self._failure(
                 status,
                 caps.name,
@@ -449,7 +448,7 @@ class OptimizationService:
                     catalog_error(
                         code,
                         f"Backend '{caps.name}' is unavailable: "
-                        f"{reason or 'no reason reported'}",
+                        f"{availability.detail or 'no reason reported'}",
                     )
                 ],
             )

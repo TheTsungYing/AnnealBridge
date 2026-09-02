@@ -1,5 +1,12 @@
 """Domain models for the optimization middleware."""
 
+from annealbridge.models.capabilities import (
+    AvailabilityCategory,
+    AvailabilityStatus,
+    ModelType,
+    ParameterLimit,
+    SolverCapabilities,
+)
 from annealbridge.models.compiled import CompiledProblem, ConstraintTrace
 from annealbridge.models.constraint import Constraint
 from annealbridge.models.error_catalog import (
@@ -28,6 +35,8 @@ from annealbridge.models.variable import Variable
 
 __all__ = [
     "catalog_error",
+    "AvailabilityCategory",
+    "AvailabilityStatus",
     "CompiledProblem",
     "Constraint",
     "ConstraintEvaluation",
@@ -35,8 +44,10 @@ __all__ = [
     "DWaveQPUOptions",
     "LeapHybridBQMOptions",
     "LinearTerm",
+    "ModelType",
     "Objective",
     "OptimizationProblem",
+    "ParameterLimit",
     "ProblemError",
     "QuadraticTerm",
     "RECOMMENDED_ACTIONS",
@@ -45,6 +56,7 @@ __all__ = [
     "SolveAttempt",
     "SolveError",
     "SolveResult",
+    "SolverCapabilities",
     "SolverExecutionMetadata",
     "SolverPreferences",
     "ValidationResult",

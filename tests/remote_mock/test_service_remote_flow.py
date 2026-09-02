@@ -28,6 +28,7 @@ from annealbridge.solvers import (
     REASON_CONFIG_INVALID,
     REASON_CREDENTIALS_MISSING,
     REASON_NOT_INSTALLED,
+    AvailabilityStatus,
     DWaveQPUBackend,
     ExactSolverBackend,
     LeapHybridBQMBackend,
@@ -68,13 +69,13 @@ class BlockingQPUSampler(FakeQPUSampler):
 
 
 class FakeUnavailableBackend:
-    """A remote backend that reports itself unavailable for a given reason.
+    """A remote backend that reports the given availability status.
 
     Implements the ``SolverBackend`` protocol; ``solve()`` fails loudly so a
     test proves the service never reaches it.
     """
 
-    def __init__(self, availability: tuple[bool, str | None]) -> None:
+    def __init__(self, availability: AvailabilityStatus) -> None:
         self._availability = availability
         self.solve_calls = 0
 
@@ -93,7 +94,7 @@ class FakeUnavailableBackend:
             description="Fake remote backend used to exercise availability gating.",
         )
 
-    def is_available(self) -> tuple[bool, str | None]:
+    def is_available(self) -> AvailabilityStatus:
         return self._availability
 
     @property
@@ -207,7 +208,9 @@ class TestRemoteDisabledByPolicy:
         # The gate fires even though the real is_available() would report
         # "dwave-system not installed": REMOTE_DISABLED wins because it is
         # checked first.
-        assert DWaveQPUBackend().is_available() == (False, REASON_NOT_INSTALLED)
+        assert DWaveQPUBackend().is_available() == AvailabilityStatus(
+            category="not_installed", detail=REASON_NOT_INSTALLED
+        )
 
         result = make_qpu_service(FakeQPUSampler(assignments=BEST), allow_remote=False).solve(
             make_problem()
@@ -264,7 +267,11 @@ class TestEnabledBackendsUseRegistryKeys:
     a custom registry may register a backend under a different key."""
 
     def make_service(self, enabled: set[str]) -> tuple[FakeUnavailableBackend, OptimizationService]:
-        backend = FakeUnavailableBackend((False, REASON_CREDENTIALS_MISSING))
+        backend = FakeUnavailableBackend(
+            AvailabilityStatus(
+                category="credentials_missing", detail=REASON_CREDENTIALS_MISSING
+            )
+        )
         assert backend.name != "dwave_qpu"  # the key deliberately differs
         service = make_service(
             backend, "dwave_qpu", allow_remote=True, enabled_backends=enabled
@@ -300,34 +307,58 @@ class TestEnabledBackendsUseRegistryKeys:
 
 
 class TestAvailabilityClassification:
-    """§14 step 5: is_available() reasons map to categorical codes."""
+    """§14 step 5 / 3a §8.2: the availability *category* maps to a status
+    and a default code; a backend-supplied ``error_code`` wins over the
+    default. The service never compares reason strings."""
 
     @pytest.mark.parametrize(
         ("availability", "expected_status", "expected_code"),
         [
             (
-                (False, REASON_NOT_INSTALLED),
+                AvailabilityStatus(category="not_installed", detail=REASON_NOT_INSTALLED),
                 "backend_unavailable",
                 "BACKEND_NOT_INSTALLED",
             ),
             (
-                (False, REASON_CREDENTIALS_MISSING),
+                AvailabilityStatus(
+                    category="credentials_missing", detail=REASON_CREDENTIALS_MISSING
+                ),
                 "backend_unavailable",
                 "REMOTE_CREDENTIALS_MISSING",
             ),
             (
-                (False, REASON_CONFIG_INVALID),
+                AvailabilityStatus(
+                    category="config_invalid",
+                    detail=REASON_CONFIG_INVALID,
+                    error_code="DWAVE_CONFIG_INVALID",
+                ),
                 "configuration_error",
                 "DWAVE_CONFIG_INVALID",
             ),
             (
-                (False, "some new reason"),
+                AvailabilityStatus(category="config_invalid", detail="config broken"),
+                "configuration_error",
+                "BACKEND_CONFIG_INVALID",
+            ),
+            (
+                AvailabilityStatus(category="unavailable", detail="some new reason"),
                 "backend_unavailable",
                 "BACKEND_UNAVAILABLE",
             ),
-            ((False, None), "backend_unavailable", "BACKEND_UNAVAILABLE"),
+            (
+                AvailabilityStatus(category="unavailable"),
+                "backend_unavailable",
+                "BACKEND_UNAVAILABLE",
+            ),
         ],
-        ids=["not-installed", "credentials", "invalid-config", "unknown", "no-reason"],
+        ids=[
+            "not-installed",
+            "credentials",
+            "invalid-config-dwave-code",
+            "invalid-config-default-code",
+            "unknown",
+            "no-reason",
+        ],
     )
     def test_reason_maps_to_status_and_code(
         self, availability, expected_status, expected_code
@@ -342,12 +373,19 @@ class TestAvailabilityClassification:
         assert result.solutions == []
         assert len(result.errors) == 1
         assert result.errors[0].code == expected_code
+        assert result.errors[0].recommended_action
+        expected_detail = availability.detail or "no reason reported"
+        assert result.errors[0].message == (
+            f"Backend 'fake_remote' is unavailable: {expected_detail}"
+        )
         assert backend.solve_calls == 0
         assert_actions_present(result)
 
     def test_unreported_reason_still_produces_a_message(self):
         service = make_service(
-            FakeUnavailableBackend((False, None)), "dwave_qpu", allow_remote=True
+            FakeUnavailableBackend(AvailabilityStatus(category="unavailable")),
+            "dwave_qpu",
+            allow_remote=True,
         )
 
         result = service.solve(make_problem())

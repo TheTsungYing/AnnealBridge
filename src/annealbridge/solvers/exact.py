@@ -7,6 +7,7 @@ import dimod
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers.base import (
+    AvailabilityStatus,
     RawSolverResult,
     SolverCapabilities,
     sampleset_to_arrays,
@@ -44,9 +45,9 @@ class ExactSolverBackend:
     def capabilities(self) -> SolverCapabilities:
         return _CAPABILITIES
 
-    def is_available(self) -> tuple[bool, str | None]:
+    def is_available(self) -> AvailabilityStatus:
         """Local backend, always available. No network I/O."""
-        return (True, None)
+        return AvailabilityStatus(category="available")
 
     @property
     def name(self) -> str:

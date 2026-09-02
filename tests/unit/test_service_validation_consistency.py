@@ -25,7 +25,7 @@ from annealbridge.models import (
 )
 from annealbridge.orchestration import OptimizationService
 from annealbridge.solvers import RawSolverResult, SolverRegistry
-from annealbridge.solvers.base import SolverCapabilities
+from annealbridge.solvers.base import AvailabilityStatus, SolverCapabilities
 
 BACKENDS = ["simulated_annealing", "exact"]
 
@@ -214,8 +214,8 @@ class EmptyExhaustiveBackend:
     def capabilities(self) -> SolverCapabilities:
         return _FAKE_EXHAUSTIVE_CAPABILITIES
 
-    def is_available(self) -> tuple[bool, str | None]:
-        return (True, None)
+    def is_available(self) -> AvailabilityStatus:
+        return AvailabilityStatus(category="available")
 
     @property
     def name(self) -> str:

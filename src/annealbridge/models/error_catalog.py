@@ -88,6 +88,10 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "The backend reported it is unavailable; see the message for the "
         "reason, or choose another backend."
     ),
+    "BACKEND_CONFIG_INVALID": (
+        "The backend's configuration is present but invalid; fix or remove "
+        "it on the server, or use a local backend."
+    ),
     # Problem validator codes (Phase 1 spec §12)
     "UNKNOWN_VARIABLE": (
         "A term references a variable that is not declared; add the variable "

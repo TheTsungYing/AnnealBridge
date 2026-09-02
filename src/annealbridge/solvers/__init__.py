@@ -2,6 +2,7 @@
 D-Wave QPU and Leap hybrid BQM solvers (spec §20–§22, Phase 2 §15–§16)."""
 
 from annealbridge.solvers.base import (
+    AvailabilityStatus,
     RawSolverResult,
     SolverBackend,
     SolverCapabilities,
@@ -20,6 +21,7 @@ from annealbridge.solvers.registry import SolverRegistry
 from annealbridge.solvers.simulated_annealing import SimulatedAnnealingBackend
 
 __all__ = [
+    "AvailabilityStatus",
     "DWaveQPUBackend",
     "ExactSolverBackend",
     "LeapHybridBQMBackend",

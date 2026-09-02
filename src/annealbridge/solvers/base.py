@@ -12,20 +12,16 @@ from annealbridge.models import (
     SolverPreferences,
 )
 
-
-class SolverCapabilities(BaseModel):
-    """Static self-description of a solver backend (Phase 2 spec §10)."""
-
-    name: str
-    remote: bool
-    heuristic: bool
-    exhaustive: bool
-    supports_seed: bool
-    supports_num_reads: bool
-    supports_time_limit: bool
-    supported_model_types: list[str]
-    returns_multiple_samples: bool
-    description: str
+# The capability / availability models live in ``models.capabilities``
+# (Phase 3a spec §4) and are re-exported here so existing
+# ``from annealbridge.solvers import SolverCapabilities`` imports keep working.
+from annealbridge.models.capabilities import (  # noqa: F401
+    AvailabilityCategory,
+    AvailabilityStatus,
+    ModelType,
+    ParameterLimit,
+    SolverCapabilities,
+)
 
 
 class RawSolverResult(BaseModel):
@@ -144,12 +140,12 @@ class SolverBackend(Protocol):
     @property
     def capabilities(self) -> SolverCapabilities: ...
 
-    def is_available(self) -> tuple[bool, str | None]:
-        """Return ``(available, reason_if_not)``.
+    def is_available(self) -> AvailabilityStatus:
+        """Return the backend's structured availability (spec §8).
 
-        Must not perform network I/O. The reason must be a categorical
-        string (e.g. "dwave-system not installed") and never contain
-        configuration values.
+        Must not perform network I/O and must not cache. ``detail`` must be
+        a categorical string (e.g. "dwave-system not installed") and never
+        contain configuration values.
         """
         ...
 

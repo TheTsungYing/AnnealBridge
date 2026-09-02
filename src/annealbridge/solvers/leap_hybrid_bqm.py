@@ -12,6 +12,7 @@ from typing import Any, Callable, TypeVar
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers.base import (
+    AvailabilityStatus,
     RawSolverResult,
     SolverCapabilities,
     sampleset_to_arrays,
@@ -128,7 +129,7 @@ class LeapHybridBQMBackend:
     def capabilities(self) -> SolverCapabilities:
         return _CAPABILITIES
 
-    def is_available(self) -> tuple[bool, str | None]:
+    def is_available(self) -> AvailabilityStatus:
         """Installability and credentials, via the shared check. No network I/O."""
         return dwave_availability()
 

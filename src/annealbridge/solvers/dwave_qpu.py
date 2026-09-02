@@ -16,6 +16,7 @@ from annealbridge.models import (
     SolverPreferences,
 )
 from annealbridge.solvers.base import (
+    AvailabilityStatus,
     RawSolverResult,
     SolverCapabilities,
     sampleset_to_arrays,
@@ -41,6 +42,7 @@ _CAPABILITIES = SolverCapabilities(
     supports_time_limit=False,
     supported_model_types=["bqm"],
     returns_multiple_samples=True,
+    requires_embedding=True,
     description=(
         "D-Wave quantum annealer accessed through "
         "EmbeddingComposite(DWaveSampler()). Minor-embedding and chain-break "
@@ -184,7 +186,7 @@ class DWaveQPUBackend:
     def capabilities(self) -> SolverCapabilities:
         return _CAPABILITIES
 
-    def is_available(self) -> tuple[bool, str | None]:
+    def is_available(self) -> AvailabilityStatus:
         """Installability and credentials, via the shared check. No network I/O."""
         return dwave_availability()
 

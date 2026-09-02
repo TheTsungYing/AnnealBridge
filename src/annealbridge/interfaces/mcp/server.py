@@ -93,12 +93,6 @@ def main() -> None:
     # The settings were validated above; wire the state from them now so
     # the first tool call cannot hit a configuration error.
     reset_state(build_state(settings))
-    # The settings were validated above; wire the state from them now so
-    # the first tool call cannot hit a configuration error.
-    reset_state(build_state(settings))
-    # The settings were validated above; wire the state from them now so
-    # the first tool call cannot hit a configuration error.
-    reset_state(build_state(settings))
     # Ensure the tools are registered on `mcp` before serving.
     import annealbridge.interfaces.mcp.tools  # noqa: F401
 

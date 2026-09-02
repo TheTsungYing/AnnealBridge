@@ -13,6 +13,7 @@ import os
 import re
 from typing import Literal
 
+from annealbridge.models.capabilities import AvailabilityStatus
 from annealbridge.models.metadata import SolverExecutionMetadata
 
 __all__ = [
@@ -28,9 +29,10 @@ __all__ = [
     "sanitize_sampleset_info",
 ]
 
-# Spec §10: the categorical ``is_available()`` reasons for the D-Wave
-# backends. They never contain config values; the service maps them to
-# error codes by string, so they are constants rather than free text.
+# Spec §10: the categorical ``is_available()`` details for the D-Wave
+# backends. They never contain config values. Since Phase 3a the service
+# maps availability by ``AvailabilityStatus.category``, not by these strings;
+# they remain constants so tests and messages share one wording.
 REASON_NOT_INSTALLED = "dwave-system not installed"
 REASON_CREDENTIALS_MISSING = "D-Wave credentials not configured"
 REASON_CONFIG_INVALID = "D-Wave configuration invalid"
@@ -173,22 +175,30 @@ def dwave_system_installed() -> bool:
         return False
 
 
-def dwave_availability() -> tuple[bool, str | None]:
+def dwave_availability() -> AvailabilityStatus:
     """The shared ``is_available()`` answer for the D-Wave backends.
 
-    Checks installability, then credentials. No network I/O. Reasons are
+    Checks installability, then credentials. No network I/O. Details are
     the categorical constants above and never contain config values
-    (spec §10). Evaluated live on every call: credentials can change at
-    any time, so this must never be cached.
+    (spec §10). ``config_invalid`` names the D-Wave-specific catalog code
+    so the service can report it without knowing the backend (3a §8.2).
+    Evaluated live on every call: credentials can change at any time, so
+    this must never be cached.
     """
     if not dwave_system_installed():
-        return (False, REASON_NOT_INSTALLED)
+        return AvailabilityStatus(category="not_installed", detail=REASON_NOT_INSTALLED)
     status = ocean_config_status()
     if status == "invalid":
-        return (False, REASON_CONFIG_INVALID)
+        return AvailabilityStatus(
+            category="config_invalid",
+            detail=REASON_CONFIG_INVALID,
+            error_code="DWAVE_CONFIG_INVALID",
+        )
     if status == "missing":
-        return (False, REASON_CREDENTIALS_MISSING)
-    return (True, None)
+        return AvailabilityStatus(
+            category="credentials_missing", detail=REASON_CREDENTIALS_MISSING
+        )
+    return AvailabilityStatus(category="available")
 
 
 def classify_exception(exc: Exception, codes: dict[str, str]) -> str:

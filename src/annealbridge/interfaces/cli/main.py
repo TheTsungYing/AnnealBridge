@@ -62,24 +62,6 @@ def _build_state() -> AppState:
         raise typer.Exit(code=2)
 
 
-def _build_state() -> AppState:
-    """Wire the service from the environment, exiting cleanly on bad settings."""
-    try:
-        return build_state()
-    except SettingsError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=2)
-
-
-def _build_state() -> AppState:
-    """Wire the service from the environment, exiting cleanly on bad settings."""
-    try:
-        return build_state()
-    except SettingsError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=2)
-
-
 def _override_backend(problem: OptimizationProblem, backend: str) -> OptimizationProblem:
     """Return a copy of ``problem`` with ``solver.backend`` replaced by ``backend``."""
     try:

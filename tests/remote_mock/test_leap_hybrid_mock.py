@@ -22,7 +22,11 @@ from annealbridge.models import (
     LeapHybridBQMOptions,
     SolverPreferences,
 )
-from annealbridge.solvers import LeapHybridBQMBackend, SolverCapabilities
+from annealbridge.solvers import (
+    AvailabilityStatus,
+    LeapHybridBQMBackend,
+    SolverCapabilities,
+)
 import annealbridge.solvers.metadata as metadata_module
 from annealbridge.solvers.metadata import (
     REASON_CONFIG_INVALID,
@@ -74,6 +78,8 @@ class TestCapabilities:
         capabilities = LeapHybridBQMBackend().capabilities
         assert isinstance(capabilities, SolverCapabilities)
         assert capabilities.name == "leap_hybrid_bqm"
+        assert capabilities.requires_embedding is False
+        assert capabilities.supports_num_sweeps is False
         assert capabilities.remote is True
         assert capabilities.heuristic is True
         assert capabilities.exhaustive is False
@@ -548,25 +554,32 @@ class TestIsAvailable:
     def test_dwave_system_not_installed(self, monkeypatch):
         monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: False)
 
-        assert LeapHybridBQMBackend().is_available() == (False, REASON_NOT_INSTALLED)
+        assert LeapHybridBQMBackend().is_available() == AvailabilityStatus(
+            category="not_installed", detail=REASON_NOT_INSTALLED
+        )
 
     def test_credentials_not_configured(self, monkeypatch):
         monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
         monkeypatch.setattr(metadata_module, "ocean_config_status", lambda: "missing")
 
-        assert LeapHybridBQMBackend().is_available() == (
-            False,
-            REASON_CREDENTIALS_MISSING,
+        assert LeapHybridBQMBackend().is_available() == AvailabilityStatus(
+            category="credentials_missing", detail=REASON_CREDENTIALS_MISSING
         )
 
     def test_configuration_invalid(self, monkeypatch):
         monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
         monkeypatch.setattr(metadata_module, "ocean_config_status", lambda: "invalid")
 
-        assert LeapHybridBQMBackend().is_available() == (False, REASON_CONFIG_INVALID)
+        assert LeapHybridBQMBackend().is_available() == AvailabilityStatus(
+            category="config_invalid",
+            detail=REASON_CONFIG_INVALID,
+            error_code="DWAVE_CONFIG_INVALID",
+        )
 
     def test_available_when_installed_and_configured(self, monkeypatch):
         monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
         monkeypatch.setattr(metadata_module, "ocean_config_status", lambda: "ok")
 
-        assert LeapHybridBQMBackend().is_available() == (True, None)
+        assert LeapHybridBQMBackend().is_available() == AvailabilityStatus(
+            category="available"
+        )

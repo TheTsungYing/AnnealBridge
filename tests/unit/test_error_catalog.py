@@ -24,6 +24,8 @@ EXPECTED_CODES = [
     "SOLVER_ERROR",
     "DWAVE_CONFIG_INVALID",
     "BACKEND_UNAVAILABLE",
+    # Phase 3a spec §20
+    "BACKEND_CONFIG_INVALID",
     # Problem validator codes (Phase 1 spec §12)
     "UNKNOWN_VARIABLE",
     "DUPLICATE_VARIABLE",
@@ -62,7 +64,7 @@ class TestRecommendedActions:
         assert set(RECOMMENDED_ACTIONS) == set(EXPECTED_CODES)
 
     def test_expected_codes_are_unique(self):
-        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 32
+        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 33
 
 
 class TestRetryableCodes:

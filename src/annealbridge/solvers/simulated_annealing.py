@@ -7,6 +7,7 @@ from dwave.samplers import SimulatedAnnealingSampler
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers.base import (
+    AvailabilityStatus,
     RawSolverResult,
     SolverCapabilities,
     sampleset_to_arrays,
@@ -24,6 +25,7 @@ _CAPABILITIES = SolverCapabilities(
     supports_time_limit=False,
     supported_model_types=["bqm"],
     returns_multiple_samples=True,
+    supports_num_sweeps=True,
     description=(
         "Local heuristic simulated-annealing sampler; scales to larger "
         "problems but does not prove optimality or infeasibility."
@@ -46,9 +48,9 @@ class SimulatedAnnealingBackend:
     def capabilities(self) -> SolverCapabilities:
         return _CAPABILITIES
 
-    def is_available(self) -> tuple[bool, str | None]:
+    def is_available(self) -> AvailabilityStatus:
         """Local backend, always available. No network I/O."""
-        return (True, None)
+        return AvailabilityStatus(category="available")
 
     @property
     def name(self) -> str:

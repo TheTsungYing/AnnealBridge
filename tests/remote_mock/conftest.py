@@ -12,7 +12,7 @@ names.
 
 import dimod
 
-from annealbridge.models import OptimizationProblem
+from annealbridge.models import AvailabilityStatus, OptimizationProblem
 
 # Matches the DEV-[A-Za-z0-9]{20,} redaction pattern; never a real token.
 FAKE_TOKEN = "DEV-FAKETOKEN1234567890abcdefghij"
@@ -272,7 +272,9 @@ class CountingFactory:
 
 def make_remote_available(monkeypatch, module) -> None:
     """Force ``module``'s backend to report itself installed and configured."""
-    monkeypatch.setattr(module, "dwave_availability", lambda: (True, None))
+    monkeypatch.setattr(
+        module, "dwave_availability", lambda: AvailabilityStatus(category="available")
+    )
 
 
 def make_problem(backend: str = "dwave_qpu", **solver_overrides) -> OptimizationProblem:

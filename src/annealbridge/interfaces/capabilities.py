@@ -78,7 +78,7 @@ def build_capabilities(
     for name in registry.names():
         backend = registry.get(name)
         caps = backend.capabilities
-        available, reason = backend.is_available()
+        status = backend.is_available()
         in_set = policy.enabled_backends is None or name in policy.enabled_backends
         # A remote backend the policy refuses to call is not "enabled": reporting
         # it as enabled would steer agents into a guaranteed REMOTE_DISABLED.
@@ -86,9 +86,9 @@ def build_capabilities(
         backends.append(
             BackendCapability(
                 name=caps.name,
-                available=available,
+                available=status.available,
                 enabled=enabled,
-                unavailable_reason=reason,
+                unavailable_reason=status.detail if not status.available else None,
                 remote=caps.remote,
                 heuristic=caps.heuristic,
                 exhaustive=caps.exhaustive,

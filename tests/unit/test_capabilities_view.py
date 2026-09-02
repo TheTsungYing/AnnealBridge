@@ -8,7 +8,7 @@ from annealbridge.interfaces.capabilities import (
     _problem_json_schema,
     build_capabilities,
 )
-from annealbridge.models import OptimizationProblem
+from annealbridge.models import AvailabilityStatus, OptimizationProblem
 from annealbridge.orchestration import ExecutionPolicy
 from annealbridge.solvers import SolverRegistry
 import annealbridge.solvers.dwave_qpu as qpu_module
@@ -33,9 +33,17 @@ class TestAvailabilityIsLive:
         registry = SolverRegistry.default()
         policy = ExecutionPolicy(allow_remote=True)
 
-        monkeypatch.setattr(qpu_module, "dwave_availability", lambda: (False, "down"))
+        monkeypatch.setattr(
+            qpu_module,
+            "dwave_availability",
+            lambda: AvailabilityStatus(category="unavailable", detail="down"),
+        )
         first = {b.name: b for b in build_capabilities(registry, policy).backends}
-        monkeypatch.setattr(qpu_module, "dwave_availability", lambda: (True, None))
+        monkeypatch.setattr(
+            qpu_module,
+            "dwave_availability",
+            lambda: AvailabilityStatus(category="available"),
+        )
         second = {b.name: b for b in build_capabilities(registry, policy).backends}
 
         assert first["dwave_qpu"].available is False
