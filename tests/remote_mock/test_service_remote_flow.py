@@ -3,9 +3,11 @@
 Everything goes through :meth:`OptimizationService.solve`; no internal
 helper is called directly. Real D-Wave is never touched: fake samplers are
 injected through each backend's ``sampler_factory`` seam, and availability
-is forced by patching the backend module's ``_dwave_system_installed`` /
-``ocean_config_status`` (the ``dwave`` extra is not installed in mock CI,
-so the real ``is_available()`` would report "dwave-system not installed").
+is forced by patching the ``dwave_availability`` name each backend module
+imports from ``solvers.metadata`` (the ``dwave`` extra is not installed in
+mock CI, so the real ``is_available()`` would report
+``REASON_NOT_INSTALLED``). Patching per module keeps the two backends
+independently controllable.
 """
 
 import threading
@@ -23,6 +25,9 @@ from annealbridge.orchestration import OptimizationService
 from annealbridge.orchestration.policy import ExecutionPolicy
 from annealbridge.penalty import ScaledPenaltyStrategy
 from annealbridge.solvers import (
+    REASON_CONFIG_INVALID,
+    REASON_CREDENTIALS_MISSING,
+    REASON_NOT_INSTALLED,
     DWaveQPUBackend,
     ExactSolverBackend,
     LeapHybridBQMBackend,
@@ -32,92 +37,27 @@ from annealbridge.solvers import (
 )
 import annealbridge.solvers.dwave_qpu as qpu_module
 import annealbridge.solvers.leap_hybrid_bqm as leap_module
+from tests.remote_mock.conftest import (
+    FAKE_MINIMAL_SAMPLESET_INFO,
+    CountingFactory,
+    FakeLeapHybridSampler,
+    FakeQPUSampler,
+    RequestTimeout,
+    SolverFailureError,
+    make_problem,
+    make_remote_available,
+)
 
-FAKE_MIN_TIME_LIMIT = 3.0
-
-# Whitelisted timing keys only; the point here is the service flow, the
-# sanitization itself is covered by the per-backend mock tests.
-FAKE_SAMPLESET_INFO = {"timing": {"qpu_access_time": 12345}}
-
-
-class RequestTimeout(Exception):
-    """Fake of dwave.cloud's RequestTimeout (classified as REMOTE_TIMEOUT)."""
-
-
-class SolverFailureError(Exception):
-    """Fake of dwave.cloud's SolverFailureError (→ REMOTE_SOLVER_ERROR)."""
-
-
-def lazy_sampleset(build, failure: Exception | None) -> dimod.SampleSet:
-    """Mimic Ocean: the cloud round-trip only happens on first attribute access.
-
-    ``build()`` produces the real sampleset; ``failure`` (if any) is raised
-    at resolve time — exactly where RequestTimeout / SolverFailureError
-    surface with a real ``DWaveSampler`` / ``LeapHybridSampler``.
-    """
-
-    def hook(future):
-        if failure is not None:
-            raise failure
-        return build()
-
-    return dimod.SampleSet.from_future(object(), hook)
-
-
-def expand(bqm, assignment: dict[str, int]) -> dict:
-    """Widen a business assignment over every compiled variable (slack = 0)."""
-    return {
-        variable: int(assignment.get(str(variable), 0)) for variable in bqm.variables
-    }
-
-
-class FakeQPUSampler:
-    """Fake with the EmbeddingComposite surface the QPU backend touches.
-
-    Returns exactly the caller-supplied business assignments, so a test can
-    decide whether the service sees feasible samples or none at all.
-    """
-
-    def __init__(
-        self,
-        assignments: list[dict[str, int]] | None = None,
-        raise_on_sample: Exception | None = None,
-        lazy: bool = False,
-    ) -> None:
-        self.assignments = (
-            [{"a": 1, "b": 0}] if assignments is None else assignments
-        )
-        self.raise_on_sample = raise_on_sample
-        self.lazy = lazy
-        self.sample_calls = 0
-        self.sample_bqm = None
-        self.sample_kwargs = None
-
-    def _build(self, bqm) -> dimod.SampleSet:
-        rows = [expand(bqm, assignment) for assignment in self.assignments]
-        return dimod.SampleSet.from_samples(
-            rows,
-            vartype=dimod.BINARY,
-            energy=[bqm.energy(row) for row in rows],
-            info=dict(FAKE_SAMPLESET_INFO),
-        )
-
-    def sample(self, bqm, **kwargs) -> dimod.SampleSet:
-        self.sample_calls += 1
-        self.sample_bqm = bqm
-        self.sample_kwargs = kwargs
-        if self.lazy:
-            return lazy_sampleset(lambda: self._build(bqm), self.raise_on_sample)
-        if self.raise_on_sample is not None:
-            raise self.raise_on_sample
-        return self._build(bqm)
+# The business assignment the flow tests expect back from a fake sampler:
+# the optimum of "maximize 2a + b s.t. a + b <= 1".
+BEST = [{"a": 1, "b": 0}]
 
 
 class BlockingQPUSampler(FakeQPUSampler):
     """QPU fake that parks inside ``sample()`` until it is released."""
 
     def __init__(self, started: threading.Event, release: threading.Event) -> None:
-        super().__init__()
+        super().__init__(assignments=BEST)
         self.started = started
         self.release = release
 
@@ -125,64 +65,6 @@ class BlockingQPUSampler(FakeQPUSampler):
         self.started.set()
         assert self.release.wait(timeout=10)
         return super().sample(bqm, **kwargs)
-
-
-class FakeLeapHybridSampler:
-    """Fake with the LeapHybridSampler surface the hybrid backend touches."""
-
-    def __init__(
-        self,
-        assignments: list[dict[str, int]] | None = None,
-        min_time_limit: float = FAKE_MIN_TIME_LIMIT,
-        raise_on_sample: Exception | None = None,
-        lazy: bool = False,
-    ) -> None:
-        self.assignments = (
-            [{"a": 1, "b": 0}] if assignments is None else assignments
-        )
-        self._min_time_limit = min_time_limit
-        self.raise_on_sample = raise_on_sample
-        self.lazy = lazy
-        self.sample_calls = 0
-        self.sample_bqm = None
-        self.sample_kwargs = None
-
-    def min_time_limit(self, bqm) -> float:
-        return self._min_time_limit
-
-    def _build(self, bqm) -> dimod.SampleSet:
-        rows = [expand(bqm, assignment) for assignment in self.assignments]
-        return dimod.SampleSet.from_samples(
-            rows,
-            vartype=dimod.BINARY,
-            energy=[bqm.energy(row) for row in rows],
-            info=dict(FAKE_SAMPLESET_INFO),
-        )
-
-    def sample(self, bqm, **kwargs) -> dimod.SampleSet:
-        self.sample_calls += 1
-        self.sample_bqm = bqm
-        self.sample_kwargs = kwargs
-        if self.lazy:
-            return lazy_sampleset(lambda: self._build(bqm), self.raise_on_sample)
-        if self.raise_on_sample is not None:
-            raise self.raise_on_sample
-        return self._build(bqm)
-
-
-class CountingFactory:
-    """Sampler factory that counts constructions and can fail on demand."""
-
-    def __init__(self, fake, failures: list[Exception] | None = None) -> None:
-        self.fake = fake
-        self.failures = list(failures or [])
-        self.calls = 0
-
-    def __call__(self):
-        self.calls += 1
-        if self.failures:
-            raise self.failures.pop(0)
-        return self.fake
 
 
 class FakeUnavailableBackend:
@@ -228,42 +110,6 @@ class FakeUnavailableBackend:
     def solve(self, compiled_problem, preferences):
         self.solve_calls += 1
         raise AssertionError("solve() must not be reached for an unavailable backend")
-
-
-def make_remote_available(monkeypatch, module) -> None:
-    """Force ``module``'s backend to report itself installed and configured."""
-    monkeypatch.setattr(module, "_dwave_system_installed", lambda: True)
-    monkeypatch.setattr(module, "ocean_config_status", lambda: "ok")
-
-
-def make_problem(backend: str = "dwave_qpu", **solver_overrides) -> OptimizationProblem:
-    """maximize 2a + b s.t. a + b <= 1; the ``<=`` adds an internal slack var."""
-    return OptimizationProblem.model_validate(
-        {
-            "name": "service remote flow problem",
-            "variables": [{"name": "a"}, {"name": "b"}],
-            "objective": {
-                "direction": "maximize",
-                "linear_terms": [
-                    {"variable": "a", "coefficient": 2},
-                    {"variable": "b", "coefficient": 1},
-                ],
-            },
-            "constraints": [
-                {
-                    "id": "at_most_one",
-                    "type": "hard",
-                    "terms": [
-                        {"variable": "a", "coefficient": 1},
-                        {"variable": "b", "coefficient": 1},
-                    ],
-                    "operator": "<=",
-                    "rhs": 1,
-                }
-            ],
-            "solver": {"backend": backend, **solver_overrides},
-        }
-    )
 
 
 def make_zero_infeasible_problem(
@@ -335,7 +181,7 @@ class TestRemoteDisabledByPolicy:
     """§14 step 4: the remote gate runs before availability is even checked."""
 
     def test_remote_backend_is_refused_without_touching_the_sampler(self):
-        fake = FakeQPUSampler()
+        fake = FakeQPUSampler(assignments=BEST)
         service = make_qpu_service(fake, allow_remote=False)
 
         result = service.solve(make_problem())
@@ -349,7 +195,7 @@ class TestRemoteDisabledByPolicy:
         assert_actions_present(result)
 
     def test_sampler_is_never_called(self):
-        fake = FakeQPUSampler()
+        fake = FakeQPUSampler(assignments=BEST)
         service = make_qpu_service(fake, allow_remote=False)
 
         service.solve(make_problem())
@@ -361,9 +207,9 @@ class TestRemoteDisabledByPolicy:
         # The gate fires even though the real is_available() would report
         # "dwave-system not installed": REMOTE_DISABLED wins because it is
         # checked first.
-        assert DWaveQPUBackend().is_available() == (False, "dwave-system not installed")
+        assert DWaveQPUBackend().is_available() == (False, REASON_NOT_INSTALLED)
 
-        result = make_qpu_service(FakeQPUSampler(), allow_remote=False).solve(
+        result = make_qpu_service(FakeQPUSampler(assignments=BEST), allow_remote=False).solve(
             make_problem()
         )
 
@@ -412,6 +258,47 @@ class TestBackendDisabledByPolicy:
         assert result.backend == "exact"
 
 
+class TestEnabledBackendsUseRegistryKeys:
+    """enabled_backends is matched against the registry key the user requests
+    (the same name the capabilities view reports), not capabilities.name —
+    a custom registry may register a backend under a different key."""
+
+    def make_service(self, enabled: set[str]) -> tuple[FakeUnavailableBackend, OptimizationService]:
+        backend = FakeUnavailableBackend((False, REASON_CREDENTIALS_MISSING))
+        assert backend.name != "dwave_qpu"  # the key deliberately differs
+        service = make_service(
+            backend, "dwave_qpu", allow_remote=True, enabled_backends=enabled
+        )
+        return backend, service
+
+    def test_registry_key_in_enabled_set_passes_the_gate(self):
+        backend, service = self.make_service({"dwave_qpu"})
+
+        result = service.solve(make_problem(backend="dwave_qpu"))
+
+        # Past the policy gate: the next gate (availability) is the one that fires.
+        assert result.errors[0].code == "REMOTE_CREDENTIALS_MISSING"
+        assert backend.solve_calls == 0
+
+    def test_capabilities_name_in_enabled_set_does_not_pass_the_gate(self):
+        backend, service = self.make_service({"fake_remote"})
+
+        result = service.solve(make_problem(backend="dwave_qpu"))
+
+        assert result.status == "backend_unavailable"
+        assert result.errors[0].code == "BACKEND_DISABLED_BY_POLICY"
+        assert backend.solve_calls == 0
+
+    def test_refusal_names_the_requested_backend_not_the_internal_one(self):
+        _, service = self.make_service({"exact"})
+
+        result = service.solve(make_problem(backend="dwave_qpu"))
+
+        assert result.backend == "dwave_qpu"
+        assert "'dwave_qpu'" in result.errors[0].message
+        assert "fake_remote" not in result.errors[0].message
+
+
 class TestAvailabilityClassification:
     """§14 step 5: is_available() reasons map to categorical codes."""
 
@@ -419,17 +306,17 @@ class TestAvailabilityClassification:
         ("availability", "expected_status", "expected_code"),
         [
             (
-                (False, "dwave-system not installed"),
+                (False, REASON_NOT_INSTALLED),
                 "backend_unavailable",
                 "BACKEND_NOT_INSTALLED",
             ),
             (
-                (False, "D-Wave credentials not configured"),
+                (False, REASON_CREDENTIALS_MISSING),
                 "backend_unavailable",
                 "REMOTE_CREDENTIALS_MISSING",
             ),
             (
-                (False, "D-Wave configuration invalid"),
+                (False, REASON_CONFIG_INVALID),
                 "configuration_error",
                 "DWAVE_CONFIG_INVALID",
             ),
@@ -474,7 +361,7 @@ class TestPreferenceLimits:
 
     def test_num_reads_over_the_limit_is_refused(self, monkeypatch):
         make_remote_available(monkeypatch, qpu_module)
-        fake = FakeQPUSampler()
+        fake = FakeQPUSampler(assignments=BEST)
         service = make_qpu_service(fake, allow_remote=True, max_qpu_reads=10)
 
         result = service.solve(make_problem(num_reads=100))
@@ -490,7 +377,7 @@ class TestPreferenceLimits:
     def test_num_reads_message_reports_requested_and_maximum(self, monkeypatch):
         make_remote_available(monkeypatch, qpu_module)
         service = make_qpu_service(
-            FakeQPUSampler(), allow_remote=True, max_qpu_reads=10
+            FakeQPUSampler(assignments=BEST), allow_remote=True, max_qpu_reads=10
         )
 
         message = service.solve(make_problem(num_reads=100)).errors[0].message
@@ -502,7 +389,7 @@ class TestPreferenceLimits:
 
     def test_num_reads_over_the_limit_never_reaches_the_sampler(self, monkeypatch):
         make_remote_available(monkeypatch, qpu_module)
-        fake = FakeQPUSampler()
+        fake = FakeQPUSampler(assignments=BEST)
         service = make_qpu_service(fake, allow_remote=True, max_qpu_reads=10)
 
         service.solve(make_problem(num_reads=100))
@@ -512,7 +399,7 @@ class TestPreferenceLimits:
 
     def test_annealing_time_over_the_limit_is_refused(self, monkeypatch):
         make_remote_available(monkeypatch, qpu_module)
-        fake = FakeQPUSampler()
+        fake = FakeQPUSampler(assignments=BEST)
         service = make_qpu_service(
             fake, allow_remote=True, max_qpu_annealing_time_us=100.0
         )
@@ -532,7 +419,7 @@ class TestPreferenceLimits:
 
     def test_hybrid_time_limit_over_the_limit_is_refused(self, monkeypatch):
         make_remote_available(monkeypatch, leap_module)
-        fake = FakeLeapHybridSampler()
+        fake = FakeLeapHybridSampler(assignments=BEST)
         service = make_hybrid_service(
             fake, allow_remote=True, max_remote_time_seconds=10
         )
@@ -556,7 +443,7 @@ class TestPreferenceLimits:
 
     def test_all_violated_limits_are_reported_together(self, monkeypatch):
         make_remote_available(monkeypatch, qpu_module)
-        fake = FakeQPUSampler()
+        fake = FakeQPUSampler(assignments=BEST)
         service = make_qpu_service(
             fake,
             allow_remote=True,
@@ -582,7 +469,7 @@ class TestPreferenceLimits:
 
     def test_preferences_within_the_limits_still_solve(self, monkeypatch):
         make_remote_available(monkeypatch, qpu_module)
-        fake = FakeQPUSampler()
+        fake = FakeQPUSampler(assignments=BEST)
         service = make_qpu_service(
             fake,
             allow_remote=True,
@@ -608,7 +495,7 @@ class TestEffectiveHybridTimeLimit:
     gave nothing; that must be refused before any request is sent."""
 
     def make(self, *, minimum: float, maximum: int, **solver_overrides):
-        fake = FakeLeapHybridSampler(min_time_limit=minimum)
+        fake = FakeLeapHybridSampler(assignments=BEST, min_time_limit=minimum)
         service = make_hybrid_service(
             fake, allow_remote=True, max_remote_time_seconds=maximum
         )
@@ -685,7 +572,7 @@ class TestEffectiveHybridTimeLimit:
 
     def test_time_limit_resolution_failure_is_a_solver_error(self, monkeypatch):
         make_remote_available(monkeypatch, leap_module)
-        fake = FakeLeapHybridSampler()
+        fake = FakeLeapHybridSampler(assignments=BEST)
         factory = CountingFactory(fake, failures=[ValueError("bad region")])
         service = make_service(
             LeapHybridBQMBackend(sampler_factory=factory),
@@ -753,7 +640,9 @@ class TestLazySampleSetFailures:
 
     def test_lazy_success_path_solves_normally(self, monkeypatch):
         make_remote_available(monkeypatch, qpu_module)
-        fake = FakeQPUSampler(lazy=True)
+        fake = FakeQPUSampler(
+            assignments=BEST, info=FAKE_MINIMAL_SAMPLESET_INFO, lazy=True
+        )
         service = make_qpu_service(fake, allow_remote=True)
 
         result = service.solve(make_problem())
@@ -769,7 +658,7 @@ class TestSamplerConstructionFailures:
 
     def test_qpu_factory_value_error_is_not_embedding_failed(self, monkeypatch):
         make_remote_available(monkeypatch, qpu_module)
-        factory = CountingFactory(FakeQPUSampler(), failures=[ValueError("bad region")])
+        factory = CountingFactory(FakeQPUSampler(assignments=BEST), failures=[ValueError("bad region")])
         service = make_service(
             DWaveQPUBackend(sampler_factory=factory), "dwave_qpu", allow_remote=True
         )
@@ -813,7 +702,7 @@ class TestSamplerReuse:
 
     def test_qpu_sampler_is_reused_across_solves(self, monkeypatch):
         make_remote_available(monkeypatch, qpu_module)
-        fake = FakeQPUSampler()
+        fake = FakeQPUSampler(assignments=BEST)
         factory = CountingFactory(fake)
         service = make_service(
             DWaveQPUBackend(sampler_factory=factory), "dwave_qpu", allow_remote=True
@@ -827,7 +716,7 @@ class TestSamplerReuse:
 
     def test_hybrid_sampler_is_built_once_for_check_and_solve(self, monkeypatch):
         make_remote_available(monkeypatch, leap_module)
-        fake = FakeLeapHybridSampler()
+        fake = FakeLeapHybridSampler(assignments=BEST)
         factory = CountingFactory(fake)
         service = make_service(
             LeapHybridBQMBackend(sampler_factory=factory),
@@ -844,7 +733,7 @@ class TestSamplerReuse:
 
     def test_failed_construction_is_not_cached(self, monkeypatch):
         make_remote_available(monkeypatch, qpu_module)
-        fake = FakeQPUSampler()
+        fake = FakeQPUSampler(assignments=BEST)
         factory = CountingFactory(fake, failures=[RequestTimeout("connect timed out")])
         service = make_service(
             DWaveQPUBackend(sampler_factory=factory), "dwave_qpu", allow_remote=True
@@ -862,7 +751,10 @@ class TestSamplerReuse:
 class TestSuccessfulRemoteSolve:
     def solve(self, monkeypatch):
         make_remote_available(monkeypatch, qpu_module)
-        fake = FakeQPUSampler(assignments=[{"a": 0, "b": 0}, {"a": 1, "b": 0}])
+        fake = FakeQPUSampler(
+            assignments=[{"a": 0, "b": 0}, {"a": 1, "b": 0}],
+            info=FAKE_MINIMAL_SAMPLESET_INFO,
+        )
         service = make_qpu_service(fake, allow_remote=True)
         return fake, service.solve(make_problem())
 
@@ -963,6 +855,81 @@ class TestRemoteRetryPolicy:
 
         assert result.warnings == []
         assert result.infeasibility_proven is False
+
+    def test_user_requested_single_attempt_emits_no_warning(self, monkeypatch):
+        # max_retries=0 means the user asked for one attempt: policy blocked
+        # nothing, so REMOTE_RETRIES_DISABLED would be a false report.
+        fake, result = self.solve(
+            monkeypatch, allow_remote_retries=False, max_retries=0
+        )
+
+        assert result.status == "infeasible"
+        assert len(result.attempts) == 1
+        assert fake.sample_calls == 1
+        assert result.warnings == []
+        assert "server policy" not in (result.message or "")
+
+    def test_warning_only_when_policy_actually_cut_retries(self, monkeypatch):
+        _, cut = self.solve(monkeypatch, allow_remote_retries=False, max_retries=1)
+        _, not_cut = self.solve(monkeypatch, allow_remote_retries=False, max_retries=0)
+
+        assert [warning.code for warning in cut.warnings] == ["REMOTE_RETRIES_DISABLED"]
+        assert not_cut.warnings == []
+
+
+class FailAfterFirstQPUSampler(FakeQPUSampler):
+    """Returns its assignments on the first call and raises on every later one."""
+
+    def __init__(self, failure: Exception, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.failure = failure
+
+    def sample(self, bqm, **kwargs) -> dimod.SampleSet:
+        if self.sample_calls >= 1:
+            self.raise_on_sample = self.failure
+        return super().sample(bqm, **kwargs)
+
+
+class TestSolverErrorAfterACompletedAttempt:
+    """A failure on a retry must not discard the completed attempt's metadata:
+    quota was spent on it and the caller needs to see that."""
+
+    def solve(self, monkeypatch):
+        make_remote_available(monkeypatch, qpu_module)
+        fake = FailAfterFirstQPUSampler(
+            RequestTimeout("remote solve timed out"),
+            assignments=[{"a": 0, "b": 0}],
+            info=FAKE_MINIMAL_SAMPLESET_INFO,
+        )
+        service = make_qpu_service(
+            fake, allow_remote=True, allow_remote_retries=True
+        )
+        return fake, service.solve(make_zero_infeasible_problem(max_retries=1))
+
+    def test_second_attempt_failure_is_a_solver_error(self, monkeypatch):
+        fake, result = self.solve(monkeypatch)
+
+        assert fake.sample_calls == 2
+        assert result.status == "solver_error"
+        assert result.errors[0].code == "REMOTE_TIMEOUT"
+        assert [attempt.attempt for attempt in result.attempts] == [1]
+
+    def test_first_attempt_metadata_is_kept(self, monkeypatch):
+        _, result = self.solve(monkeypatch)
+
+        assert result.metadata is not None
+        assert result.metadata.backend == "dwave_qpu"
+        assert result.metadata.timing_us == {"qpu_access_time": 12345.0}
+
+    def test_failure_on_the_first_attempt_has_no_metadata(self, monkeypatch):
+        make_remote_available(monkeypatch, qpu_module)
+        fake = FakeQPUSampler(raise_on_sample=RequestTimeout("timed out"))
+        service = make_qpu_service(fake, allow_remote=True)
+
+        result = service.solve(make_problem())
+
+        assert result.status == "solver_error"
+        assert result.metadata is None
 
 
 class TestSolverError:

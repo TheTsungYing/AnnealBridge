@@ -10,8 +10,9 @@ from annealbridge.solvers.dwave_qpu import DWaveQPUBackend
 from annealbridge.solvers.exact import ExactSolverBackend
 from annealbridge.solvers.leap_hybrid_bqm import LeapHybridBQMBackend
 from annealbridge.solvers.metadata import (
-    SolverExecutionMetadata,
-    ocean_token_configured,
+    REASON_CONFIG_INVALID,
+    REASON_CREDENTIALS_MISSING,
+    REASON_NOT_INSTALLED,
     redact,
     sanitize_sampleset_info,
 )
@@ -22,13 +23,14 @@ __all__ = [
     "DWaveQPUBackend",
     "ExactSolverBackend",
     "LeapHybridBQMBackend",
+    "REASON_CONFIG_INVALID",
+    "REASON_CREDENTIALS_MISSING",
+    "REASON_NOT_INSTALLED",
     "RawSolverResult",
     "SimulatedAnnealingBackend",
     "SolverBackend",
     "SolverCapabilities",
-    "SolverExecutionMetadata",
     "SolverRegistry",
-    "ocean_token_configured",
     "redact",
     "sanitize_sampleset_info",
 ]

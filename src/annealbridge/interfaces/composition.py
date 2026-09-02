@@ -8,7 +8,7 @@ Importing it has no side effects: the environment is read only when
 
 from dataclasses import dataclass
 
-from annealbridge.config import ServerSettings
+from annealbridge.config import ServerSettings, load_settings
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.solvers import SolverRegistry
 
@@ -33,7 +33,7 @@ def build_state_from_policy(
 
 
 def build_state(settings: ServerSettings | None = None) -> AppState:
-    settings = settings if settings is not None else ServerSettings()
+    settings = settings if settings is not None else load_settings()
     return build_state_from_policy(settings.to_policy())
 
 

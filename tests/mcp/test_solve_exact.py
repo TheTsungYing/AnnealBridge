@@ -11,16 +11,12 @@ from mcp import Client
 
 from annealbridge.interfaces.mcp import mcp
 
-# tests/mcp has no __init__.py, so pytest puts this directory on sys.path and
-# the sibling conftest is importable as a top-level module.
-from conftest import load_example
-
 pytestmark = pytest.mark.anyio
 
 KNAPSACK_OPTIMUM_VALUE = 17.0
 
 
-async def test_solve_knapsack_on_exact_backend():
+async def test_solve_knapsack_on_exact_backend(load_example):
     problem = load_example("knapsack.json", backend="exact")
 
     async with Client(mcp) as client:

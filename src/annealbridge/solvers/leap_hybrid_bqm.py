@@ -5,7 +5,6 @@ this module — and the default registry that instantiates the backend —
 imports cleanly without the ``dwave`` extra installed (spec §4).
 """
 
-import importlib.util
 import logging
 import threading
 from typing import Any, Callable, TypeVar
@@ -18,7 +17,8 @@ from annealbridge.solvers.base import (
     sampleset_to_arrays,
 )
 from annealbridge.solvers.metadata import (
-    ocean_config_status,
+    classify_exception,
+    dwave_availability,
     redact,
     sanitize_sampleset_info,
 )
@@ -65,15 +65,6 @@ _SAMPLER_INIT_EXCEPTION_CODES = {
     "ConfigFileError": "DWAVE_CONFIG_INVALID",
     "ValueError": "DWAVE_CONFIG_INVALID",
 }
-_DEFAULT_CODE = "REMOTE_SOLVER_ERROR"
-
-
-def _dwave_system_installed() -> bool:
-    """Return whether ``dwave.system`` is importable, without importing it."""
-    try:
-        return importlib.util.find_spec("dwave.system") is not None
-    except (ImportError, ValueError):
-        return False
 
 
 def _default_sampler_factory() -> Any:
@@ -81,14 +72,6 @@ def _default_sampler_factory() -> Any:
     from dwave.system import LeapHybridSampler
 
     return LeapHybridSampler()
-
-
-def _classify_exception(exc: Exception, codes: dict[str, str]) -> str:
-    for klass in type(exc).__mro__:
-        code = codes.get(klass.__name__)
-        if code is not None:
-            return code
-    return _DEFAULT_CODE
 
 
 def _call_ocean(what: str, codes: dict[str, str], fn: Callable[[], _T]) -> _T:
@@ -106,7 +89,7 @@ def _call_ocean(what: str, codes: dict[str, str], fn: Callable[[], _T]) -> _T:
     except Exception as exc:
         error = SolverExecutionError(
             redact(f"{what}: {type(exc).__name__}: {exc}"),
-            code=_classify_exception(exc, codes),
+            code=classify_exception(exc, codes),
         )
     raise error
 
@@ -146,19 +129,8 @@ class LeapHybridBQMBackend:
         return _CAPABILITIES
 
     def is_available(self) -> tuple[bool, str | None]:
-        """Check installability and credentials. No network I/O.
-
-        Reasons are categorical strings only and never contain config
-        values (spec §10).
-        """
-        if not _dwave_system_installed():
-            return (False, "dwave-system not installed")
-        status = ocean_config_status()
-        if status == "invalid":
-            return (False, "D-Wave configuration invalid")
-        if status == "missing":
-            return (False, "D-Wave credentials not configured")
-        return (True, None)
+        """Installability and credentials, via the shared check. No network I/O."""
+        return dwave_availability()
 
     @property
     def name(self) -> str:

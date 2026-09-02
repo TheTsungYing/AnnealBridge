@@ -14,7 +14,6 @@ against: a sampleset that only fails when it is *resolved*
 import sys
 import traceback
 
-import dimod
 import pytest
 
 from annealbridge.compiler import BQMCompiler
@@ -22,169 +21,36 @@ from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import (
     CompiledProblem,
     DWaveQPUOptions,
-    OptimizationProblem,
     SolverPreferences,
 )
 from annealbridge.solvers import DWaveQPUBackend, SolverCapabilities
-import annealbridge.solvers.dwave_qpu as qpu_module
-
-# Matches the DEV-[A-Za-z0-9]{20,} redaction pattern; never a real token.
-FAKE_TOKEN = "DEV-FAKETOKEN1234567890abcdefghij"
-
-# Nested QPU timing (whitelist keys) plus dirty keys that sanitization must
-# drop. The embedding context is NOT part of this dict: EmbeddingComposite
-# only populates it when return_embedding=True is requested, so the fake
-# injects it separately (see FakeQPUSampler.embedding_context).
-FAKE_SAMPLESET_INFO = {
-    "timing": {
-        "qpu_access_time": 12345,
-        "qpu_sampling_time": 6789,
-        "qpu_anneal_time_per_sample": 20,
-    },
-    "problem_id": "fake-problem-id-456",
-    "messages": [{"nested": "structure"}],
-    "raw_blob": b"\x00\x01\x02",
-    "unexpected": {"deep": ("tuple", object())},
-}
-
-# Longest chain is "a" (3 qubits) → embedding_max_chain_length == 3.
-FAKE_EMBEDDING_CONTEXT = {"embedding": {"a": (0, 1, 2), "b": (3,), "slack": (4, 5)}}
-
-
-# The backend classifies Ocean exceptions by class name (dwave-cloud-client
-# and dwave-system are not installed in mock CI), so the fakes carry the
-# real names.
-class SolverAuthenticationError(Exception):
-    """Fake of dwave.cloud's SolverAuthenticationError."""
-
-
-class RequestTimeout(Exception):
-    """Fake of dwave.cloud's RequestTimeout."""
-
-
-class EmbeddingError(Exception):
-    """Fake of dwave.embedding's EmbeddingError."""
-
-
-class SolverFailureError(Exception):
-    """Fake of dwave.cloud's SolverFailureError (raised while resolving)."""
-
-
-class SolverNotFoundError(Exception):
-    """Fake of dwave.cloud's SolverNotFoundError."""
-
-
-class ConfigFileError(Exception):
-    """Fake of dwave.cloud's ConfigFileError."""
-
-
-class ValidationError(ValueError):
-    """Fake of pydantic's ValidationError, which subclasses ValueError."""
-
-
-class FakeQPUSampler:
-    """Fake with the EmbeddingComposite surface the backend touches.
-
-    ``lazy=True`` reproduces Ocean's real shape: ``sample()`` returns
-    immediately with a ``SampleSet.from_future`` whose hook only runs (and
-    only fails) when the sampleset is resolved.
-    """
-
-    def __init__(
-        self,
-        raise_on_sample: Exception | None = None,
-        include_chain_break_fraction: bool = True,
-        info: dict | None = None,
-        lazy: bool = False,
-        embedding_context: dict | str | None = FAKE_EMBEDDING_CONTEXT,
-    ) -> None:
-        self.raise_on_sample = raise_on_sample
-        self.include_chain_break_fraction = include_chain_break_fraction
-        self.info = FAKE_SAMPLESET_INFO if info is None else info
-        self.lazy = lazy
-        self.embedding_context = embedding_context
-        self.sample_bqm = None
-        self.sample_kwargs = None
-        self.sample_calls = 0
-
-    def _build_sampleset(self, bqm, kwargs: dict) -> dimod.SampleSet:
-        if self.raise_on_sample is not None:
-            raise self.raise_on_sample
-        variables = list(bqm.variables)
-        rows = [
-            {variable: 0 for variable in variables},
-            {**{variable: 0 for variable in variables}, variables[0]: 1},
-        ]
-        vectors = {}
-        if self.include_chain_break_fraction:
-            vectors["chain_break_fraction"] = [0.0, 0.25]
-        info = dict(self.info)
-        # EmbeddingComposite only reports the embedding when asked to.
-        if self.embedding_context is not None and kwargs.get("return_embedding"):
-            info["embedding_context"] = self.embedding_context
-        return dimod.SampleSet.from_samples(
-            rows,
-            vartype=dimod.BINARY,
-            energy=[bqm.energy(row) for row in rows],
-            info=info,
-            **vectors,
-        )
-
-    def sample(self, bqm, **kwargs) -> dimod.SampleSet:
-        self.sample_bqm = bqm
-        self.sample_kwargs = kwargs
-        self.sample_calls += 1
-        if self.lazy:
-            return dimod.SampleSet.from_future(
-                object(), lambda _future: self._build_sampleset(bqm, kwargs)
-            )
-        return self._build_sampleset(bqm, kwargs)
-
-
-class CountingFactory:
-    """``sampler_factory`` seam that counts calls and can fail the first one."""
-
-    def __init__(self, sampler=None, fail_first: Exception | None = None) -> None:
-        self.sampler = sampler if sampler is not None else FakeQPUSampler()
-        self.fail_first = fail_first
-        self.calls = 0
-
-    def __call__(self):
-        self.calls += 1
-        if self.fail_first is not None and self.calls == 1:
-            raise self.fail_first
-        return self.sampler
+import annealbridge.solvers.metadata as metadata_module
+from annealbridge.solvers.metadata import (
+    REASON_CONFIG_INVALID,
+    REASON_CREDENTIALS_MISSING,
+    REASON_NOT_INSTALLED,
+)
+from tests.remote_mock.conftest import (
+    FAKE_EMBEDDING_CONTEXT,
+    FAKE_TOKEN,
+    ConfigFileError,
+    CountingFactory,
+    EmbeddingError,
+    FakeQPUSampler,
+    RequestTimeout,
+    SolverAuthenticationError,
+    SolverFailureError,
+    SolverNotFoundError,
+    ValidationError,
+    make_problem,
+)
 
 
 def make_compiled_problem(hard_penalty: float = 100.0) -> CompiledProblem:
     """Minimal 0/1 problem: maximize 2a + b s.t. a + b <= 1 (adds slack)."""
-    problem = OptimizationProblem.model_validate(
-        {
-            "name": "dwave qpu mock problem",
-            "variables": [{"name": "a"}, {"name": "b"}],
-            "objective": {
-                "direction": "maximize",
-                "linear_terms": [
-                    {"variable": "a", "coefficient": 2},
-                    {"variable": "b", "coefficient": 1},
-                ],
-            },
-            "constraints": [
-                {
-                    "id": "at_most_one",
-                    "type": "hard",
-                    "terms": [
-                        {"variable": "a", "coefficient": 1},
-                        {"variable": "b", "coefficient": 1},
-                    ],
-                    "operator": "<=",
-                    "rhs": 1,
-                }
-            ],
-            "solver": {"backend": "dwave_qpu"},
-        }
+    return BQMCompiler().compile(
+        make_problem(backend="dwave_qpu"), hard_penalty=hard_penalty
     )
-    return BQMCompiler().compile(problem, hard_penalty=hard_penalty)
 
 
 def make_preferences(
@@ -565,7 +431,7 @@ class TestSamplerInitExceptionClassification:
     def test_factory_exceptions_map_to_codes_and_are_redacted(
         self, exception, expected_code
     ):
-        factory = CountingFactory(fail_first=exception)
+        factory = CountingFactory(FakeQPUSampler(), failures=[exception])
         backend = DWaveQPUBackend(sampler_factory=factory)
 
         with pytest.raises(SolverExecutionError) as exc_info:
@@ -589,7 +455,9 @@ class TestSamplerInitExceptionClassification:
     ):
         # The sampling-stage table maps ValueError to EMBEDDING_FAILED;
         # telling the agent to shrink the problem would be wrong here.
-        backend = DWaveQPUBackend(sampler_factory=CountingFactory(fail_first=exception))
+        backend = DWaveQPUBackend(
+            sampler_factory=CountingFactory(FakeQPUSampler(), failures=[exception])
+        )
 
         with pytest.raises(SolverExecutionError) as exc_info:
             backend.solve(make_compiled_problem(), make_preferences())
@@ -685,7 +553,8 @@ class TestOriginalExceptionIsNotReachable:
 
     def test_factory_failure_has_no_cause_or_context(self):
         factory = CountingFactory(
-            fail_first=SolverNotFoundError(f"Authorization: Bearer {FAKE_TOKEN}")
+            FakeQPUSampler(),
+            failures=[SolverNotFoundError(f"Authorization: Bearer {FAKE_TOKEN}")],
         )
         backend = DWaveQPUBackend(sampler_factory=factory)
 
@@ -704,7 +573,7 @@ class TestSamplerCaching:
     backend instance — and a failed construction is never cached."""
 
     def test_sampler_is_built_once_per_backend(self):
-        factory = CountingFactory()
+        factory = CountingFactory(FakeQPUSampler())
         backend = DWaveQPUBackend(sampler_factory=factory)
         compiled = make_compiled_problem()
 
@@ -716,7 +585,8 @@ class TestSamplerCaching:
 
     def test_failed_construction_is_not_cached(self):
         factory = CountingFactory(
-            fail_first=SolverAuthenticationError(f"denied, token={FAKE_TOKEN}")
+            FakeQPUSampler(),
+            failures=[SolverAuthenticationError(f"denied, token={FAKE_TOKEN}")],
         )
         backend = DWaveQPUBackend(sampler_factory=factory)
         compiled = make_compiled_problem()
@@ -732,7 +602,7 @@ class TestSamplerCaching:
         assert factory.sampler.sample_calls == 1
 
     def test_each_backend_instance_builds_its_own_sampler(self):
-        factory = CountingFactory()
+        factory = CountingFactory(FakeQPUSampler())
         compiled = make_compiled_problem()
 
         DWaveQPUBackend(sampler_factory=factory).solve(compiled, make_preferences())
@@ -746,7 +616,7 @@ class TestResolveTimeLimit:
     question must not build a sampler (let alone submit anything)."""
 
     def test_resolve_time_limit_is_none_without_touching_the_factory(self):
-        factory = CountingFactory()
+        factory = CountingFactory(FakeQPUSampler())
         backend = DWaveQPUBackend(sampler_factory=factory)
 
         assert backend.resolve_time_limit(make_compiled_problem(), make_preferences()) is None
@@ -755,34 +625,28 @@ class TestResolveTimeLimit:
 
 
 class TestIsAvailable:
-    def test_dwave_system_not_installed(self, monkeypatch):
-        monkeypatch.setattr(qpu_module, "_dwave_system_installed", lambda: False)
+    """The backend answers through the shared check in solvers.metadata, so
+    the installability / credential probes are patched there."""
 
-        assert DWaveQPUBackend().is_available() == (
-            False,
-            "dwave-system not installed",
-        )
+    def test_dwave_system_not_installed(self, monkeypatch):
+        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: False)
+
+        assert DWaveQPUBackend().is_available() == (False, REASON_NOT_INSTALLED)
 
     def test_credentials_not_configured(self, monkeypatch):
-        monkeypatch.setattr(qpu_module, "_dwave_system_installed", lambda: True)
-        monkeypatch.setattr(qpu_module, "ocean_config_status", lambda: "missing")
+        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
+        monkeypatch.setattr(metadata_module, "ocean_config_status", lambda: "missing")
 
-        assert DWaveQPUBackend().is_available() == (
-            False,
-            "D-Wave credentials not configured",
-        )
+        assert DWaveQPUBackend().is_available() == (False, REASON_CREDENTIALS_MISSING)
 
     def test_configuration_invalid(self, monkeypatch):
-        monkeypatch.setattr(qpu_module, "_dwave_system_installed", lambda: True)
-        monkeypatch.setattr(qpu_module, "ocean_config_status", lambda: "invalid")
+        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
+        monkeypatch.setattr(metadata_module, "ocean_config_status", lambda: "invalid")
 
-        assert DWaveQPUBackend().is_available() == (
-            False,
-            "D-Wave configuration invalid",
-        )
+        assert DWaveQPUBackend().is_available() == (False, REASON_CONFIG_INVALID)
 
     def test_available_when_installed_and_configured(self, monkeypatch):
-        monkeypatch.setattr(qpu_module, "_dwave_system_installed", lambda: True)
-        monkeypatch.setattr(qpu_module, "ocean_config_status", lambda: "ok")
+        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
+        monkeypatch.setattr(metadata_module, "ocean_config_status", lambda: "ok")
 
         assert DWaveQPUBackend().is_available() == (True, None)

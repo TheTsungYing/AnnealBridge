@@ -7,6 +7,7 @@ Lives outside the ``mcp`` subpackage so the CLI ``capabilities`` command can
 use the same source without the ``[mcp]`` extra installed.
 """
 
+from functools import cache
 from typing import get_args
 
 from pydantic import BaseModel
@@ -57,6 +58,18 @@ def _policy_limits(name: str, policy: ExecutionPolicy) -> dict[str, float | int]
     return {}
 
 
+@cache
+def _problem_json_schema() -> dict:
+    """The problem JSON schema, generated once per process.
+
+    ``model_json_schema()`` walks the whole model tree (~3 ms) and the
+    result is a pure function of the model classes, so it is safe to cache
+    for the process lifetime. Availability is deliberately *not* cached:
+    credentials can change between calls.
+    """
+    return OptimizationProblem.model_json_schema()
+
+
 def build_capabilities(
     registry: SolverRegistry, policy: ExecutionPolicy
 ) -> OptimizationCapabilities:
@@ -98,5 +111,5 @@ def build_capabilities(
         supported_objective_terms=["linear", "quadratic"],
         inequality_requires_integer_coefficients=True,
         backends=backends,
-        problem_json_schema=OptimizationProblem.model_json_schema(),
+        problem_json_schema=_problem_json_schema(),
     )

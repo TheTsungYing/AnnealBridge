@@ -11,18 +11,16 @@ live environment-variable candidate that :func:`redact` resolves. With the
 env var set, ``ocean_config_status()`` already reports ``"ok"`` (the
 ``dwave`` extra is not installed, so the env var is the only config
 source), which is exactly the path under test — only
-``_dwave_system_installed`` is patched.
+``dwave_system_installed`` is patched.
 """
 
 import logging
 import traceback
 
-import dimod
 import pytest
 
 from annealbridge.compiler import BQMCompiler
 from annealbridge.exceptions import SolverExecutionError
-from annealbridge.models import OptimizationProblem
 from annealbridge.orchestration import OptimizationService
 from annealbridge.orchestration.policy import ExecutionPolicy
 from annealbridge.solvers import (
@@ -30,81 +28,28 @@ from annealbridge.solvers import (
     LeapHybridBQMBackend,
     SolverRegistry,
 )
-import annealbridge.solvers.dwave_qpu as qpu_module
+import annealbridge.solvers.metadata as metadata_module
+from tests.remote_mock.conftest import (
+    FAKE_UNPATTERNED_TOKEN,
+    FakeLeapHybridSampler,
+    FakeQPUSampler,
+    make_problem,
+)
 
-# Hyphenated on purpose: not matched by the DEV- pattern. Never a real token.
-FAKE_TOKEN = "DEV-FAKE-TOKEN-1234567890abcdefghij"
-
-
-class LeakyQPUSampler:
-    """Fake sampler whose failure text embeds the configured token.
-
-    ``lazy=True`` mimics Ocean: ``sample()`` returns a
-    ``SampleSet.from_future`` and the failure only surfaces when the
-    sampleset is resolved.
-    """
-
-    def __init__(self, message: str, lazy: bool = False) -> None:
-        self.message = message
-        self.lazy = lazy
-        self.sample_calls = 0
-
-    def sample(self, bqm, **kwargs):
-        self.sample_calls += 1
-        if self.lazy:
-            def hook(future):
-                raise RuntimeError(self.message)
-
-            return dimod.SampleSet.from_future(object(), hook)
-        raise RuntimeError(self.message)
-
-
-class LeakyLeapHybridSampler(LeakyQPUSampler):
-    """Hybrid flavour: also exposes ``min_time_limit``."""
-
-    def min_time_limit(self, bqm) -> float:
-        return 3.0
-
-
-def make_problem() -> OptimizationProblem:
-    """maximize 2a + b s.t. a + b <= 1 on the remote QPU backend."""
-    return OptimizationProblem.model_validate(
-        {
-            "name": "credential leak problem",
-            "variables": [{"name": "a"}, {"name": "b"}],
-            "objective": {
-                "direction": "maximize",
-                "linear_terms": [
-                    {"variable": "a", "coefficient": 2},
-                    {"variable": "b", "coefficient": 1},
-                ],
-            },
-            "constraints": [
-                {
-                    "id": "at_most_one",
-                    "type": "hard",
-                    "terms": [
-                        {"variable": "a", "coefficient": 1},
-                        {"variable": "b", "coefficient": 1},
-                    ],
-                    "operator": "<=",
-                    "rhs": 1,
-                }
-            ],
-            "solver": {"backend": "dwave_qpu"},
-        }
-    )
+# Hyphenated on purpose: not matched by the DEV- pattern, so only the live
+# environment-variable candidate can mask it. Never a real token.
+FAKE_TOKEN = FAKE_UNPATTERNED_TOKEN
 
 
 def solve_with_leaky_sampler(monkeypatch, caplog, message: str, *, lazy: bool = False):
     """Run a full remote solve whose sampler raises ``message``."""
     monkeypatch.setenv("DWAVE_API_TOKEN", FAKE_TOKEN)
-    monkeypatch.setattr(qpu_module, "_dwave_system_installed", lambda: True)
+    monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
     # The env token alone makes ocean_config_status() report "ok"; that path
     # is under test, so it is deliberately not patched.
-    assert qpu_module.ocean_config_status() == "ok"
+    assert metadata_module.ocean_config_status() == "ok"
 
-    fake = LeakyQPUSampler(message, lazy=lazy)
+    fake = FakeQPUSampler(raise_on_sample=RuntimeError(message), lazy=lazy)
     service = OptimizationService(
         registry=SolverRegistry({"dwave_qpu": DWaveQPUBackend(lambda: fake)}),
         policy=ExecutionPolicy(allow_remote=True),
@@ -236,7 +181,9 @@ class TestExceptionChainCarriesNoToken:
 
     @pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
     def test_qpu_sample_failure(self, lazy):
-        fake = LeakyQPUSampler(f"rejected token={FAKE_TOKEN}", lazy=lazy)
+        fake = FakeQPUSampler(
+            raise_on_sample=RuntimeError(f"rejected token={FAKE_TOKEN}"), lazy=lazy
+        )
         backend = DWaveQPUBackend(sampler_factory=lambda: fake)
 
         with pytest.raises(SolverExecutionError) as exc_info:
@@ -258,7 +205,9 @@ class TestExceptionChainCarriesNoToken:
 
     @pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
     def test_hybrid_sample_failure(self, lazy):
-        fake = LeakyLeapHybridSampler(f"rejected token={FAKE_TOKEN}", lazy=lazy)
+        fake = FakeLeapHybridSampler(
+            raise_on_sample=RuntimeError(f"rejected token={FAKE_TOKEN}"), lazy=lazy
+        )
         backend = LeapHybridBQMBackend(sampler_factory=lambda: fake)
 
         with pytest.raises(SolverExecutionError) as exc_info:

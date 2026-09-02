@@ -7,15 +7,11 @@ never caught up with a soft term worth 1000 * 2^2 = 4000 energy, so every
 attempt reported zero feasible samples although ``x = 1, y = 0`` is feasible.
 """
 
-import json
-from pathlib import Path
-
 import pytest
 
 from annealbridge.models import OptimizationProblem
 from annealbridge.orchestration import OptimizationService
 
-KNAPSACK_PATH = Path(__file__).resolve().parents[2] / "examples" / "knapsack.json"
 KNAPSACK_OPTIMUM_VALUE = 17.0
 SEED = 1
 
@@ -85,39 +81,41 @@ class TestSoftWeightDominatesObjective:
         assert sa.attempts[0].penalty == pytest.approx(exact.attempts[0].penalty)
 
 
-def knapsack_with_soft_take_everything(weight: float) -> OptimizationProblem:
+@pytest.fixture
+def knapsack_with_soft_take_everything(load_example):
     """The Phase 1 knapsack plus a soft 'take every item' preference.
 
     Taking all four items weighs 18 > capacity 10, so the soft preference
     pulls straight into the infeasible region; with ``weight`` far above the
     objective scale (31) the old objective-only penalty could not compete.
     """
-    data = json.loads(KNAPSACK_PATH.read_text())
-    data["constraints"].append(
-        {
-            "id": "take_everything",
-            "type": "soft",
-            "weight": weight,
-            "terms": [
-                {"variable": name, "coefficient": 1}
-                for name in ("item_a", "item_b", "item_c", "item_d")
-            ],
-            "operator": "==",
-            "rhs": 4,
-        }
-    )
-    data["solver"] = {
-        "backend": "simulated_annealing",
-        "seed": SEED,
-        "num_reads": 100,
-    }
-    return OptimizationProblem.model_validate(data)
+
+    def _build(weight: float) -> OptimizationProblem:
+        data = load_example(
+            "knapsack.json", backend="simulated_annealing", seed=SEED, num_reads=100
+        )
+        data["constraints"].append(
+            {
+                "id": "take_everything",
+                "type": "soft",
+                "weight": weight,
+                "terms": [
+                    {"variable": name, "coefficient": 1}
+                    for name in ("item_a", "item_b", "item_c", "item_d")
+                ],
+                "operator": "==",
+                "rhs": 4,
+            }
+        )
+        return OptimizationProblem.model_validate(data)
+
+    return _build
 
 
 class TestKnapsackWithDominantSoftWeight:
     WEIGHT = 10_000.0
 
-    def test_simulated_annealing_stays_feasible(self):
+    def test_simulated_annealing_stays_feasible(self, knapsack_with_soft_take_everything):
         result = OptimizationService().solve(knapsack_with_soft_take_everything(self.WEIGHT))
 
         assert result.status == "success"
@@ -130,12 +128,12 @@ class TestKnapsackWithDominantSoftWeight:
             )
             assert total_weight <= 10
 
-    def test_penalty_scale_includes_soft_bound(self):
+    def test_penalty_scale_includes_soft_bound(self, knapsack_with_soft_take_everything):
         # objective_scale 31; soft max |sum - 4| over binaries is 4 -> 10000 * 16.
         result = OptimizationService().solve(knapsack_with_soft_take_everything(self.WEIGHT))
         assert result.attempts[0].penalty == pytest.approx((31.0 + 160_000.0) * 2.0)
 
-    def test_best_solution_is_the_feasible_ranking_optimum(self):
+    def test_best_solution_is_the_feasible_ranking_optimum(self, knapsack_with_soft_take_everything):
         # No feasible subset holds more than two items (the lightest three,
         # b + c + d, weigh 12 > 10), so every two-item subset carries the same
         # soft violation (4 - 2)^2 and ranking falls back to the objective:

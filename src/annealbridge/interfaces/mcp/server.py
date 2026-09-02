@@ -13,7 +13,7 @@ import sys
 
 from mcp.server import MCPServer
 
-from annealbridge.config import ServerSettings
+from annealbridge.config import SettingsError, load_settings
 from annealbridge.interfaces.composition import (  # noqa: F401  (re-exports)
     AppState,
     build_service,
@@ -47,8 +47,14 @@ def main() -> None:
     unless overridden; exposing it beyond localhost requires an explicit
     ``--host``. Tool registration happens at import time via the tools
     module; this function only parses arguments and runs the transport.
+    Invalid ``ANNEALBRIDGE_*`` settings are reported on stderr and end the
+    process with exit code 2 instead of a traceback.
     """
-    settings = ServerSettings()
+    try:
+        settings = load_settings()
+    except SettingsError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
     parser = argparse.ArgumentParser(
         prog="annealbridge-mcp",
         description="Run the AnnealBridge MCP server.",
@@ -84,6 +90,15 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # The settings were validated above; wire the state from them now so
+    # the first tool call cannot hit a configuration error.
+    reset_state(build_state(settings))
+    # The settings were validated above; wire the state from them now so
+    # the first tool call cannot hit a configuration error.
+    reset_state(build_state(settings))
+    # The settings were validated above; wire the state from them now so
+    # the first tool call cannot hit a configuration error.
+    reset_state(build_state(settings))
     # Ensure the tools are registered on `mcp` before serving.
     import annealbridge.interfaces.mcp.tools  # noqa: F401
 

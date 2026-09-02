@@ -1,13 +1,12 @@
 """CLI tests for the spec §30 commands (capabilities, export-schema, solve errors)."""
 
 import json
-from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from annealbridge.interfaces.cli.main import app
-
-EXAMPLES_DIR = Path(__file__).resolve().parents[2] / "examples"
+from tests.conftest import EXAMPLES_DIR
 
 runner = CliRunner()
 
@@ -108,3 +107,35 @@ class TestExportSchema:
         schema = json.loads(result.output)
         assert "properties" in schema
         assert "variables" in schema["properties"]
+
+
+class TestInvalidSettings:
+    """A bad ANNEALBRIDGE_* value is a configuration error: a clear message
+    on stderr and exit code 2, never a traceback."""
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["capabilities"],
+            ["solve", str(EXAMPLES_DIR / "knapsack.json")],
+        ],
+        ids=["capabilities", "solve"],
+    )
+    def test_reports_the_variable_and_exits_2(self, monkeypatch, args):
+        monkeypatch.setenv("ANNEALBRIDGE_MAX_CONCURRENT_SOLVES", "-1")
+
+        result = runner.invoke(app, args)
+
+        assert result.exit_code == 2
+        text = _output(result)
+        assert "Error: Invalid server settings" in text
+        assert "ANNEALBRIDGE_MAX_CONCURRENT_SOLVES" in text
+        assert "Traceback" not in text
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+
+    def test_export_schema_does_not_need_settings(self, monkeypatch):
+        monkeypatch.setenv("ANNEALBRIDGE_MAX_CONCURRENT_SOLVES", "-1")
+
+        result = runner.invoke(app, ["export-schema"])
+
+        assert result.exit_code == 0

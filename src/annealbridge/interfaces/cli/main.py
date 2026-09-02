@@ -12,8 +12,9 @@ from typing import Optional, get_args
 import typer
 from pydantic import ValidationError
 
+from annealbridge.config import SettingsError
 from annealbridge.interfaces.capabilities import BackendCapability, build_capabilities
-from annealbridge.interfaces.composition import build_service, build_state
+from annealbridge.interfaces.composition import AppState, build_state
 from annealbridge.models import OptimizationProblem, SolveResult, SolverPreferences
 
 app = typer.Typer(
@@ -49,6 +50,33 @@ def _load_problem(path: Path) -> OptimizationProblem:
         for err in exc.errors():
             location = ".".join(str(part) for part in err["loc"])
             typer.echo(f"  {location}: {err['msg']}", err=True)
+        raise typer.Exit(code=2)
+
+
+def _build_state() -> AppState:
+    """Wire the service from the environment, exiting cleanly on bad settings."""
+    try:
+        return build_state()
+    except SettingsError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=2)
+
+
+def _build_state() -> AppState:
+    """Wire the service from the environment, exiting cleanly on bad settings."""
+    try:
+        return build_state()
+    except SettingsError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=2)
+
+
+def _build_state() -> AppState:
+    """Wire the service from the environment, exiting cleanly on bad settings."""
+    try:
+        return build_state()
+    except SettingsError as exc:
+        typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=2)
 
 
@@ -166,7 +194,7 @@ def solve(
         problem = _override_backend(problem, backend)
 
     # Same composition root as the MCP server (spec §30).
-    result = build_service().solve(problem)
+    result = _build_state().service.solve(problem)
 
     if json_output:
         typer.echo(result.model_dump_json(indent=2))
@@ -213,7 +241,7 @@ def _render_capabilities_table(backends: list[BackendCapability]) -> str:
 @app.command()
 def capabilities() -> None:
     """List backends with availability, policy status and limits (spec §30)."""
-    state = build_state()
+    state = _build_state()
     caps = build_capabilities(state.registry, state.policy)
     typer.echo(_render_capabilities_table(caps.backends))
 

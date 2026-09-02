@@ -1,14 +1,9 @@
 """Retry scenario: tiny penalty forces SA retries; exact never retries (spec §32)."""
 
-import json
-from pathlib import Path
-
 import pytest
 
 from annealbridge.models import OptimizationProblem
 from annealbridge.orchestration import OptimizationService
-
-KNAPSACK_PATH = Path(__file__).resolve().parents[2] / "examples" / "knapsack.json"
 
 # objective_scale = 10 + 8 + 7 + 6 = 31, so multiplier 0.01 gives an
 # initial hard penalty of 0.31. At that strength every over-weight subset
@@ -23,14 +18,18 @@ SEED = 0
 KNAPSACK_OPTIMUM_VALUE = 17.0
 
 
-def load_problem(**solver_overrides) -> OptimizationProblem:
-    data = json.loads(KNAPSACK_PATH.read_text())
-    data["solver"] = {**data.get("solver", {}), **solver_overrides}
-    return OptimizationProblem.model_validate(data)
+@pytest.fixture
+def load_problem(load_example):
+    def _load(**solver_overrides) -> OptimizationProblem:
+        return OptimizationProblem.model_validate(
+            load_example("knapsack.json", **solver_overrides)
+        )
+
+    return _load
 
 
 class TestSimulatedAnnealingRetry:
-    def solve(self):
+    def solve(self, load_problem):
         problem = load_problem(
             backend="simulated_annealing",
             seed=SEED,
@@ -39,8 +38,8 @@ class TestSimulatedAnnealingRetry:
         )
         return OptimizationService().solve(problem)
 
-    def test_retries_then_succeeds(self):
-        result = self.solve()
+    def test_retries_then_succeeds(self, load_problem):
+        result = self.solve(load_problem)
 
         assert result.status == "success"
         assert len(result.attempts) > 1
@@ -50,8 +49,8 @@ class TestSimulatedAnnealingRetry:
             KNAPSACK_OPTIMUM_VALUE
         )
 
-    def test_penalty_increases_each_attempt(self):
-        result = self.solve()
+    def test_penalty_increases_each_attempt(self, load_problem):
+        result = self.solve(load_problem)
 
         penalties = [attempt.penalty for attempt in result.attempts]
         assert penalties[0] == pytest.approx(31.0 * TINY_MULTIPLIER)
@@ -59,19 +58,19 @@ class TestSimulatedAnnealingRetry:
             assert current == pytest.approx(previous * 2.0)
             assert current > previous
 
-    def test_attempt_numbers_are_sequential(self):
-        result = self.solve()
+    def test_attempt_numbers_are_sequential(self, load_problem):
+        result = self.solve(load_problem)
         assert [attempt.attempt for attempt in result.attempts] == list(
             range(1, len(result.attempts) + 1)
         )
 
-    def test_retries_are_bounded_by_max_retries(self):
-        result = self.solve()
+    def test_retries_are_bounded_by_max_retries(self, load_problem):
+        result = self.solve(load_problem)
         assert len(result.attempts) <= 1 + 3  # default max_retries = 3
 
 
 class TestExactNeverRetries:
-    def test_exact_backend_solves_in_one_attempt(self):
+    def test_exact_backend_solves_in_one_attempt(self, load_problem):
         # Same tiny penalty multiplier: the exhaustive backend still sees
         # every assignment, so feasible solutions are found regardless of
         # lambda and no retry is ever attempted (spec §19, §45).

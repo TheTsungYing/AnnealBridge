@@ -13,7 +13,6 @@ the sampleset is resolved.
 import sys
 import traceback
 
-import dimod
 import pytest
 
 from annealbridge.compiler import BQMCompiler
@@ -21,152 +20,35 @@ from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import (
     CompiledProblem,
     LeapHybridBQMOptions,
-    OptimizationProblem,
     SolverPreferences,
 )
 from annealbridge.solvers import LeapHybridBQMBackend, SolverCapabilities
-import annealbridge.solvers.leap_hybrid_bqm as leap_module
-
-FAKE_MIN_TIME_LIMIT = 3.0
-
-# Matches the DEV-[A-Za-z0-9]{20,} redaction pattern; never a real token.
-FAKE_TOKEN = "DEV-FAKETOKEN1234567890abcdefghij"
-
-# Whitelist timing keys plus dirty keys that sanitization must drop.
-FAKE_SAMPLESET_INFO = {
-    "run_time": 2900000,
-    "charge_time": 2871000,
-    "qpu_access_time": 12345,
-    "problem_id": "fake-problem-id-123",
-    "messages": [{"nested": "structure"}],
-    "raw_blob": b"\x00\x01\x02",
-    "unexpected": {"deep": ("tuple", object())},
-}
-
-
-# The backend classifies Ocean exceptions by class name (dwave-cloud-client
-# is not installed in mock CI), so the fakes carry the real names.
-class SolverAuthenticationError(Exception):
-    """Fake of dwave.cloud's SolverAuthenticationError."""
-
-
-class RequestTimeout(Exception):
-    """Fake of dwave.cloud's RequestTimeout."""
-
-
-class SolverFailureError(Exception):
-    """Fake of dwave.cloud's SolverFailureError (raised while resolving)."""
-
-
-class SolverNotFoundError(Exception):
-    """Fake of dwave.cloud's SolverNotFoundError."""
-
-
-class ConfigFileError(Exception):
-    """Fake of dwave.cloud's ConfigFileError."""
-
-
-class ValidationError(ValueError):
-    """Fake of pydantic's ValidationError, which subclasses ValueError."""
-
-
-class FakeLeapHybridSampler:
-    """Fake with the LeapHybridSampler surface the backend touches.
-
-    ``lazy=True`` reproduces Ocean's real shape: ``sample()`` returns
-    immediately with a ``SampleSet.from_future`` whose hook only runs (and
-    only fails) when the sampleset is resolved.
-    """
-
-    def __init__(
-        self,
-        raise_on_sample: Exception | None = None,
-        raise_on_min_time_limit: Exception | None = None,
-        lazy: bool = False,
-    ) -> None:
-        self.raise_on_sample = raise_on_sample
-        self.raise_on_min_time_limit = raise_on_min_time_limit
-        self.lazy = lazy
-        self.min_time_limit_bqm = None
-        self.min_time_limit_calls = 0
-        self.sample_bqm = None
-        self.sample_kwargs = None
-        self.sample_calls = 0
-
-    def min_time_limit(self, bqm) -> float:
-        self.min_time_limit_bqm = bqm
-        self.min_time_limit_calls += 1
-        if self.raise_on_min_time_limit is not None:
-            raise self.raise_on_min_time_limit
-        return FAKE_MIN_TIME_LIMIT
-
-    def _build_sampleset(self, bqm) -> dimod.SampleSet:
-        if self.raise_on_sample is not None:
-            raise self.raise_on_sample
-        # Hybrid solvers typically return exactly one sample.
-        assignment = {variable: 0 for variable in bqm.variables}
-        return dimod.SampleSet.from_samples(
-            assignment,
-            vartype=dimod.BINARY,
-            energy=bqm.energy(assignment),
-            info=dict(FAKE_SAMPLESET_INFO),
-        )
-
-    def sample(self, bqm, **kwargs) -> dimod.SampleSet:
-        self.sample_bqm = bqm
-        self.sample_kwargs = kwargs
-        self.sample_calls += 1
-        if self.lazy:
-            return dimod.SampleSet.from_future(
-                object(), lambda _future: self._build_sampleset(bqm)
-            )
-        return self._build_sampleset(bqm)
-
-
-class CountingFactory:
-    """``sampler_factory`` seam that counts calls and can fail the first one."""
-
-    def __init__(self, sampler=None, fail_first: Exception | None = None) -> None:
-        self.sampler = sampler if sampler is not None else FakeLeapHybridSampler()
-        self.fail_first = fail_first
-        self.calls = 0
-
-    def __call__(self):
-        self.calls += 1
-        if self.fail_first is not None and self.calls == 1:
-            raise self.fail_first
-        return self.sampler
+import annealbridge.solvers.metadata as metadata_module
+from annealbridge.solvers.metadata import (
+    REASON_CONFIG_INVALID,
+    REASON_CREDENTIALS_MISSING,
+    REASON_NOT_INSTALLED,
+)
+from tests.remote_mock.conftest import (
+    FAKE_MIN_TIME_LIMIT,
+    FAKE_TOKEN,
+    ConfigFileError,
+    CountingFactory,
+    FakeLeapHybridSampler,
+    RequestTimeout,
+    SolverAuthenticationError,
+    SolverFailureError,
+    SolverNotFoundError,
+    ValidationError,
+    make_problem,
+)
 
 
 def make_compiled_problem() -> CompiledProblem:
     """Minimal 0/1 problem: maximize 2a + b s.t. a + b <= 1 (adds slack)."""
-    problem = OptimizationProblem.model_validate(
-        {
-            "name": "leap hybrid mock problem",
-            "variables": [{"name": "a"}, {"name": "b"}],
-            "objective": {
-                "direction": "maximize",
-                "linear_terms": [
-                    {"variable": "a", "coefficient": 2},
-                    {"variable": "b", "coefficient": 1},
-                ],
-            },
-            "constraints": [
-                {
-                    "id": "at_most_one",
-                    "type": "hard",
-                    "terms": [
-                        {"variable": "a", "coefficient": 1},
-                        {"variable": "b", "coefficient": 1},
-                    ],
-                    "operator": "<=",
-                    "rhs": 1,
-                }
-            ],
-            "solver": {"backend": "leap_hybrid_bqm"},
-        }
+    return BQMCompiler().compile(
+        make_problem(backend="leap_hybrid_bqm"), hard_penalty=100.0
     )
-    return BQMCompiler().compile(problem, hard_penalty=100.0)
 
 
 def make_preferences(time_limit_seconds: float | None = None) -> SolverPreferences:
@@ -406,7 +288,9 @@ class TestSamplerInitExceptionClassification:
         self, exception, expected_code
     ):
         backend = LeapHybridBQMBackend(
-            sampler_factory=CountingFactory(fail_first=exception)
+            sampler_factory=CountingFactory(
+                FakeLeapHybridSampler(), failures=[exception]
+            )
         )
 
         with pytest.raises(SolverExecutionError) as exc_info:
@@ -429,7 +313,9 @@ class TestSamplerInitExceptionClassification:
         self, exception
     ):
         backend = LeapHybridBQMBackend(
-            sampler_factory=CountingFactory(fail_first=exception)
+            sampler_factory=CountingFactory(
+                FakeLeapHybridSampler(), failures=[exception]
+            )
         )
 
         with pytest.raises(SolverExecutionError) as exc_info:
@@ -511,7 +397,8 @@ class TestOriginalExceptionIsNotReachable:
     def test_factory_failure_has_no_cause_or_context(self):
         backend = LeapHybridBQMBackend(
             sampler_factory=CountingFactory(
-                fail_first=SolverNotFoundError(f"Authorization: Bearer {FAKE_TOKEN}")
+                FakeLeapHybridSampler(),
+                failures=[SolverNotFoundError(f"Authorization: Bearer {FAKE_TOKEN}")],
             )
         )
 
@@ -530,7 +417,7 @@ class TestSamplerCaching:
     once per backend instance — and a failed construction is never cached."""
 
     def test_sampler_is_built_once_per_backend(self):
-        factory = CountingFactory()
+        factory = CountingFactory(FakeLeapHybridSampler())
         backend = LeapHybridBQMBackend(sampler_factory=factory)
         compiled = make_compiled_problem()
 
@@ -542,7 +429,8 @@ class TestSamplerCaching:
 
     def test_failed_construction_is_not_cached(self):
         factory = CountingFactory(
-            fail_first=SolverAuthenticationError(f"denied, token={FAKE_TOKEN}")
+            FakeLeapHybridSampler(),
+            failures=[SolverAuthenticationError(f"denied, token={FAKE_TOKEN}")],
         )
         backend = LeapHybridBQMBackend(sampler_factory=factory)
         compiled = make_compiled_problem()
@@ -558,7 +446,7 @@ class TestSamplerCaching:
         assert factory.sampler.sample_calls == 1
 
     def test_each_backend_instance_builds_its_own_sampler(self):
-        factory = CountingFactory()
+        factory = CountingFactory(FakeLeapHybridSampler())
         compiled = make_compiled_problem()
 
         LeapHybridBQMBackend(sampler_factory=factory).solve(
@@ -640,7 +528,8 @@ class TestResolveTimeLimit:
     def test_factory_failure_during_resolve_is_config_invalid(self):
         backend = LeapHybridBQMBackend(
             sampler_factory=CountingFactory(
-                fail_first=ValueError(f"invalid region, token={FAKE_TOKEN}")
+                FakeLeapHybridSampler(),
+                failures=[ValueError(f"invalid region, token={FAKE_TOKEN}")],
             )
         )
 
@@ -653,34 +542,31 @@ class TestResolveTimeLimit:
 
 
 class TestIsAvailable:
-    def test_dwave_system_not_installed(self, monkeypatch):
-        monkeypatch.setattr(leap_module, "_dwave_system_installed", lambda: False)
+    """The backend answers through the shared check in solvers.metadata, so
+    the installability / credential probes are patched there."""
 
-        assert LeapHybridBQMBackend().is_available() == (
-            False,
-            "dwave-system not installed",
-        )
+    def test_dwave_system_not_installed(self, monkeypatch):
+        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: False)
+
+        assert LeapHybridBQMBackend().is_available() == (False, REASON_NOT_INSTALLED)
 
     def test_credentials_not_configured(self, monkeypatch):
-        monkeypatch.setattr(leap_module, "_dwave_system_installed", lambda: True)
-        monkeypatch.setattr(leap_module, "ocean_config_status", lambda: "missing")
+        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
+        monkeypatch.setattr(metadata_module, "ocean_config_status", lambda: "missing")
 
         assert LeapHybridBQMBackend().is_available() == (
             False,
-            "D-Wave credentials not configured",
+            REASON_CREDENTIALS_MISSING,
         )
 
     def test_configuration_invalid(self, monkeypatch):
-        monkeypatch.setattr(leap_module, "_dwave_system_installed", lambda: True)
-        monkeypatch.setattr(leap_module, "ocean_config_status", lambda: "invalid")
+        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
+        monkeypatch.setattr(metadata_module, "ocean_config_status", lambda: "invalid")
 
-        assert LeapHybridBQMBackend().is_available() == (
-            False,
-            "D-Wave configuration invalid",
-        )
+        assert LeapHybridBQMBackend().is_available() == (False, REASON_CONFIG_INVALID)
 
     def test_available_when_installed_and_configured(self, monkeypatch):
-        monkeypatch.setattr(leap_module, "_dwave_system_installed", lambda: True)
-        monkeypatch.setattr(leap_module, "ocean_config_status", lambda: "ok")
+        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
+        monkeypatch.setattr(metadata_module, "ocean_config_status", lambda: "ok")
 
         assert LeapHybridBQMBackend().is_available() == (True, None)

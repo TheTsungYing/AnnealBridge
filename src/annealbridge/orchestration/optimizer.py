@@ -24,12 +24,16 @@ from annealbridge.models import (
     SolveAttempt,
     SolveError,
     SolveResult,
+    SolverExecutionMetadata,
     SolverPreferences,
     catalog_error,
 )
 from annealbridge.orchestration.policy import ExecutionPolicy
 from annealbridge.penalty import PenaltyStrategy, ScaledPenaltyStrategy
 from annealbridge.solvers import (
+    REASON_CONFIG_INVALID,
+    REASON_CREDENTIALS_MISSING,
+    REASON_NOT_INSTALLED,
     RawSolverResult,
     SolverBackend,
     SolverRegistry,
@@ -269,12 +273,9 @@ def process_candidates(
 # service stays backend-agnostic (overview principle 4). Unknown reasons
 # (and a bare ``(False, None)``) fall back to BACKEND_UNAVAILABLE.
 _AVAILABILITY_MAP: dict[str, tuple[str, str]] = {
-    "dwave-system not installed": ("backend_unavailable", "BACKEND_NOT_INSTALLED"),
-    "D-Wave credentials not configured": (
-        "backend_unavailable",
-        "REMOTE_CREDENTIALS_MISSING",
-    ),
-    "D-Wave configuration invalid": ("configuration_error", "DWAVE_CONFIG_INVALID"),
+    REASON_NOT_INSTALLED: ("backend_unavailable", "BACKEND_NOT_INSTALLED"),
+    REASON_CREDENTIALS_MISSING: ("backend_unavailable", "REMOTE_CREDENTIALS_MISSING"),
+    REASON_CONFIG_INVALID: ("configuration_error", "DWAVE_CONFIG_INVALID"),
 }
 
 
@@ -314,14 +315,7 @@ class OptimizationService:
                 problem.name,
                 len(errors),
             )
-            return SolveResult(
-                status="invalid_problem",
-                backend=None,
-                objective_direction=None,
-                solutions=[],
-                attempts=[],
-                errors=errors,
-            )
+            return self._failure("invalid_problem", None, None, errors)
 
         direction = problem.objective.direction
         backend_name = problem.solver.backend
@@ -339,7 +333,7 @@ class OptimizationService:
                 [catalog_error("UNKNOWN_BACKEND", message)],
             )
 
-        gate_result = self._gate_backend(backend, direction)
+        gate_result = self._gate_backend(backend_name, backend, direction)
         if gate_result is not None:
             return gate_result
 
@@ -371,8 +365,13 @@ class OptimizationService:
         errors: list[SolveError],
         *,
         attempts: list[SolveAttempt] | None = None,
+        metadata: SolverExecutionMetadata | None = None,
     ) -> SolveResult:
-        """Build a no-solutions SolveResult for a structured failure."""
+        """Build a no-solutions SolveResult for a structured failure.
+
+        ``metadata`` carries the last completed attempt's facts (e.g. quota
+        spent on a remote solve) when a later attempt failed.
+        """
         return SolveResult(
             status=status,
             backend=backend,
@@ -380,30 +379,45 @@ class OptimizationService:
             solutions=[],
             attempts=attempts or [],
             errors=errors,
+            metadata=metadata,
             message=errors[0].message,
         )
 
+    @staticmethod
+    def _limit_error(
+        code: str, label: str, value: object, maximum: object
+    ) -> SolveError:
+        """A §14 step 9 preference-limit error in the shared wording."""
+        return catalog_error(
+            code, f"{label} {value} exceeds the server maximum of {maximum}"
+        )
+
     def _gate_backend(
-        self, backend: SolverBackend, direction: str
+        self, backend_name: str, backend: SolverBackend, direction: str
     ) -> SolveResult | None:
         """§14 steps 3–5: policy and availability gates, in spec order.
 
         Returns a failure result, or None when the backend may run. Never
         substitutes another backend (no silent fallback).
+
+        ``enabled_backends`` holds registry keys — the names the user
+        requests and the capabilities view reports — so the gate compares
+        ``backend_name`` (the requested key), not ``capabilities.name``,
+        which a custom registry may register under a different key.
         """
         caps = backend.capabilities
         if (
             self._policy.enabled_backends is not None
-            and caps.name not in self._policy.enabled_backends
+            and backend_name not in self._policy.enabled_backends
         ):
             return self._failure(
                 "backend_unavailable",
-                caps.name,
+                backend_name,
                 direction,
                 [
                     catalog_error(
                         "BACKEND_DISABLED_BY_POLICY",
-                        f"Backend '{caps.name}' is disabled by server "
+                        f"Backend '{backend_name}' is disabled by server "
                         f"policy; enabled backends: "
                         f"{', '.join(sorted(self._policy.enabled_backends))}",
                     )
@@ -457,10 +471,11 @@ class OptimizationService:
         if caps.remote and caps.supports_num_reads:
             if preferences.num_reads > policy.max_qpu_reads:
                 errors.append(
-                    catalog_error(
+                    self._limit_error(
                         "QPU_READS_LIMIT",
-                        f"num_reads {preferences.num_reads} exceeds the "
-                        f"server maximum of {policy.max_qpu_reads}",
+                        "num_reads",
+                        preferences.num_reads,
+                        policy.max_qpu_reads,
                     )
                 )
             annealing_time = (
@@ -473,10 +488,11 @@ class OptimizationService:
                 and annealing_time > policy.max_qpu_annealing_time_us
             ):
                 errors.append(
-                    catalog_error(
+                    self._limit_error(
                         "QPU_ANNEALING_TIME_LIMIT",
-                        f"annealing_time_us {annealing_time} exceeds the "
-                        f"server maximum of {policy.max_qpu_annealing_time_us}",
+                        "annealing_time_us",
+                        annealing_time,
+                        policy.max_qpu_annealing_time_us,
                     )
                 )
         if caps.remote and caps.supports_time_limit:
@@ -494,10 +510,11 @@ class OptimizationService:
                 and time_limit > policy.max_remote_time_seconds
             ):
                 errors.append(
-                    catalog_error(
+                    self._limit_error(
                         "REMOTE_TIME_LIMIT",
-                        f"time_limit_seconds {time_limit} exceeds the "
-                        f"server maximum of {policy.max_remote_time_seconds}",
+                        "time_limit_seconds",
+                        time_limit,
+                        policy.max_remote_time_seconds,
                     )
                 )
         return errors
@@ -560,6 +577,9 @@ class OptimizationService:
             )
 
         attempts: list[SolveAttempt] = []
+        # Declared outside the try so a failure on a later attempt can still
+        # report the last completed attempt's metadata.
+        raw: RawSolverResult | None = None
         try:
             max_attempts = self._max_attempts(backend, problem.solver)
             penalty = self._penalty_strategy.initial_penalty(problem)
@@ -571,7 +591,6 @@ class OptimizationService:
                 self._penalty_strategy.penalty_scale(problem),
                 penalty,
             )
-            raw: RawSolverResult | None = None
 
             for attempt in range(1, max_attempts + 1):
                 compiled = self._compiler.compile(problem, penalty)
@@ -648,9 +667,12 @@ class OptimizationService:
                     penalty = self._penalty_strategy.next_penalty(penalty, attempt)
 
             warnings: list[SolveError] = []
+            # Only a real cut deserves a warning: with max_retries == 0 the
+            # user asked for a single attempt and policy blocked nothing.
             remote_retries_blocked = (
                 backend.capabilities.remote
                 and not self._policy.allow_remote_retries
+                and problem.solver.max_retries > 0
             )
             # An exhaustive backend proves infeasibility only by actually
             # enumerating assignments: zero samples back is not a proof.
@@ -722,4 +744,5 @@ class OptimizationService:
                 direction,
                 [catalog_error(code, str(exc))],
                 attempts=attempts,
+                metadata=raw.metadata if raw is not None else None,
             )

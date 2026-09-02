@@ -1,5 +1,8 @@
 """Unit tests for the execution policy defaults (Phase 2 spec §8)."""
 
+import pytest
+from pydantic import ValidationError
+
 from annealbridge.orchestration import ExecutionPolicy as ExportedExecutionPolicy
 from annealbridge.orchestration.policy import ExecutionPolicy
 
@@ -57,3 +60,37 @@ class TestExecutionPolicyOverrides:
 class TestExecutionPolicyExport:
     def test_package_export_is_the_same_class(self):
         assert ExportedExecutionPolicy is ExecutionPolicy
+
+
+class TestExecutionPolicyBounds:
+    """Every limit has a lower bound: a zero or negative ceiling is a config
+    error, not a policy (max_concurrent_solves=-1 would even break the
+    service's BoundedSemaphore at the first solve)."""
+
+    LIMIT_FIELDS = [
+        "exact_max_variables",
+        "max_qpu_reads",
+        "max_qpu_annealing_time_us",
+        "max_remote_time_seconds",
+        "max_concurrent_solves",
+    ]
+
+    @pytest.mark.parametrize("field", LIMIT_FIELDS)
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_non_positive_limit_is_rejected(self, field, value):
+        with pytest.raises(ValidationError) as exc_info:
+            ExecutionPolicy(**{field: value})
+
+        assert [error["loc"] for error in exc_info.value.errors()] == [(field,)]
+
+    @pytest.mark.parametrize("field", LIMIT_FIELDS)
+    def test_smallest_positive_limit_is_accepted(self, field):
+        policy = ExecutionPolicy(**{field: 1})
+
+        assert getattr(policy, field) == 1
+
+    def test_service_cannot_be_built_from_an_invalid_concurrency_limit(self):
+        # Previously the bare ValueError surfaced from threading.BoundedSemaphore
+        # on the first solve; now the policy itself refuses the value.
+        with pytest.raises(ValidationError):
+            ExecutionPolicy(max_concurrent_solves=-1)

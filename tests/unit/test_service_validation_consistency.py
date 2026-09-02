@@ -149,6 +149,24 @@ class TestNoVariables:
         assert result.errors[0].recommended_action
         assert result.attempts == []
 
+    def test_message_mirrors_the_first_error(self):
+        # invalid_problem is built like every other failure: message is the
+        # first error's text, never None.
+        problem = OptimizationProblem(
+            name="no-variables",
+            variables=[],
+            objective=Objective(direction="minimize", linear_terms=[]),
+            constraints=[],
+            solver=SolverPreferences(backend="exact"),
+        )
+
+        result = OptimizationService().solve(problem)
+
+        assert result.message is not None
+        assert result.message == result.errors[0].message
+        assert result.backend is None
+        assert result.objective_direction is None
+
 
 class FakeFailingCompiler:
     """A compiler that refuses everything, to exercise the §27 fallback."""

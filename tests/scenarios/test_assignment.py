@@ -1,13 +1,9 @@
 """Assignment scenario through the full service pipeline (spec §31, §34)."""
 
-from pathlib import Path
-
 import pytest
 
 from annealbridge.models import OptimizationProblem
 from annealbridge.orchestration import OptimizationService
-
-ASSIGNMENT_PATH = Path(__file__).resolve().parents[2] / "examples" / "assignment.json"
 
 # Cost matrix (workers x tasks):
 #           clean  cook  drive
@@ -35,12 +31,16 @@ ASSIGNMENT_OPTIMUM = {
 }
 
 
-def load_problem() -> OptimizationProblem:
-    return OptimizationProblem.model_validate_json(ASSIGNMENT_PATH.read_text())
+@pytest.fixture
+def load_problem(load_example):
+    def _load() -> OptimizationProblem:
+        return OptimizationProblem.model_validate(load_example("assignment.json"))
+
+    return _load
 
 
 class TestAssignmentExact:
-    def test_exact_backend_finds_minimum_cost(self):
+    def test_exact_backend_finds_minimum_cost(self, load_problem):
         problem = load_problem()
         assert problem.solver.backend == "exact"
         # 9 variables, equality constraints only (no slack), within the
@@ -59,7 +59,7 @@ class TestAssignmentExact:
         assert best.objective_value == pytest.approx(ASSIGNMENT_OPTIMUM_COST)
         assert best.variables == ASSIGNMENT_OPTIMUM
 
-    def test_all_one_hot_constraints_satisfied(self):
+    def test_all_one_hot_constraints_satisfied(self, load_problem):
         result = OptimizationService().solve(load_problem())
 
         best = result.solutions[0]
@@ -70,7 +70,7 @@ class TestAssignmentExact:
             assert evaluation.satisfied is True
             assert evaluation.actual_value == pytest.approx(1.0)
 
-    def test_every_returned_solution_is_a_valid_assignment(self):
+    def test_every_returned_solution_is_a_valid_assignment(self, load_problem):
         result = OptimizationService().solve(load_problem())
 
         assert result.solutions
@@ -79,7 +79,7 @@ class TestAssignmentExact:
             # A valid assignment selects exactly 3 of the 9 variables.
             assert sum(solution.variables.values()) == 3
 
-    def test_ranking_is_ascending_for_minimize(self):
+    def test_ranking_is_ascending_for_minimize(self, load_problem):
         result = OptimizationService().solve(load_problem())
         scores = [solution.ranking_score for solution in result.solutions]
         assert scores == sorted(scores)

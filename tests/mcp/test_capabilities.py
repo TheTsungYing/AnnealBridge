@@ -5,6 +5,9 @@ from mcp import Client
 
 from annealbridge.interfaces.mcp import mcp
 from annealbridge.solvers import (
+    REASON_CONFIG_INVALID,
+    REASON_CREDENTIALS_MISSING,
+    REASON_NOT_INSTALLED,
     DWaveQPUBackend,
     ExactSolverBackend,
     LeapHybridBQMBackend,
@@ -23,9 +26,9 @@ BACKEND_CLASSES = (
 # The categorical strings is_available() may return for the D-Wave backends;
 # they must never contain configuration values (spec §10).
 DWAVE_UNAVAILABLE_REASONS = {
-    "dwave-system not installed",
-    "D-Wave credentials not configured",
-    "D-Wave configuration invalid",
+    REASON_NOT_INSTALLED,
+    REASON_CREDENTIALS_MISSING,
+    REASON_CONFIG_INVALID,
 }
 
 

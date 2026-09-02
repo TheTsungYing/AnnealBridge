@@ -4,7 +4,9 @@ import os
 
 import pytest
 
-from annealbridge.config import ServerSettings
+from pydantic import ValidationError
+
+from annealbridge.config import ServerSettings, SettingsError, load_settings
 from annealbridge.orchestration.policy import ExecutionPolicy
 
 ENV_PREFIX = "ANNEALBRIDGE_"
@@ -156,3 +158,82 @@ class TestToPolicy:
         assert "http_port" not in ExecutionPolicy.model_fields
         assert not hasattr(policy, "http_host")
         assert not hasattr(policy, "http_port")
+
+
+class TestLimitBounds:
+    """The env-driven limits carry the same lower bounds as ExecutionPolicy,
+    so a bad environment fails at startup rather than at the first solve."""
+
+    LIMIT_SUFFIXES = [
+        "EXACT_MAX_VARIABLES",
+        "MAX_QPU_READS",
+        "MAX_QPU_ANNEALING_TIME_US",
+        "MAX_REMOTE_TIME_SECONDS",
+        "MAX_CONCURRENT_SOLVES",
+    ]
+
+    @pytest.mark.parametrize("suffix", LIMIT_SUFFIXES)
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_non_positive_limit_is_rejected(self, clean_env, suffix, value):
+        clean_env.setenv(ENV_PREFIX + suffix, value)
+
+        with pytest.raises(ValidationError) as exc_info:
+            ServerSettings()
+
+        assert [error["loc"] for error in exc_info.value.errors()] == [
+            (suffix.lower(),)
+        ]
+
+    @pytest.mark.parametrize("suffix", LIMIT_SUFFIXES)
+    def test_smallest_positive_limit_is_accepted(self, clean_env, suffix):
+        clean_env.setenv(ENV_PREFIX + suffix, "1")
+
+        assert getattr(ServerSettings(), suffix.lower()) == 1
+
+
+class TestLoadSettings:
+    def test_valid_environment_returns_settings(self, clean_env):
+        clean_env.setenv("ANNEALBRIDGE_MAX_CONCURRENT_SOLVES", "2")
+
+        settings = load_settings()
+
+        assert isinstance(settings, ServerSettings)
+        assert settings.max_concurrent_solves == 2
+
+    def test_invalid_value_raises_settings_error_naming_the_variable(self, clean_env):
+        clean_env.setenv("ANNEALBRIDGE_MAX_CONCURRENT_SOLVES", "-1")
+
+        with pytest.raises(SettingsError) as exc_info:
+            load_settings()
+
+        message = str(exc_info.value)
+        assert "Invalid server settings" in message
+        assert "ANNEALBRIDGE_MAX_CONCURRENT_SOLVES" in message
+        assert "greater than or equal to 1" in message
+        assert "-1" in message
+
+    def test_every_invalid_field_is_listed(self, clean_env):
+        clean_env.setenv("ANNEALBRIDGE_MAX_CONCURRENT_SOLVES", "0")
+        clean_env.setenv("ANNEALBRIDGE_MAX_QPU_READS", "0")
+        clean_env.setenv("ANNEALBRIDGE_HTTP_PORT", "not-a-port")
+
+        with pytest.raises(SettingsError) as exc_info:
+            load_settings()
+
+        message = str(exc_info.value)
+        assert "(3 error(s))" in message
+        for variable in (
+            "ANNEALBRIDGE_MAX_CONCURRENT_SOLVES",
+            "ANNEALBRIDGE_MAX_QPU_READS",
+            "ANNEALBRIDGE_HTTP_PORT",
+        ):
+            assert variable in message
+
+    def test_settings_error_is_a_value_error_without_a_pydantic_chain(self, clean_env):
+        clean_env.setenv("ANNEALBRIDGE_EXACT_MAX_VARIABLES", "-5")
+
+        with pytest.raises(ValueError) as exc_info:
+            load_settings()
+
+        assert isinstance(exc_info.value, SettingsError)
+        assert exc_info.value.__cause__ is None

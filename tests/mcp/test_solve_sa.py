@@ -10,10 +10,6 @@ from mcp import Client
 
 from annealbridge.interfaces.mcp import mcp
 
-# tests/mcp has no __init__.py, so pytest puts this directory on sys.path and
-# the sibling conftest is importable as a top-level module.
-from conftest import load_example
-
 pytestmark = pytest.mark.anyio
 
 
@@ -24,7 +20,7 @@ async def solve(problem: dict) -> dict:
         return result.structured_content
 
 
-async def test_seeded_sa_run_returns_a_feasible_solution():
+async def test_seeded_sa_run_returns_a_feasible_solution(load_example):
     problem = load_example(
         "knapsack.json", backend="simulated_annealing", seed=42
     )
@@ -35,7 +31,7 @@ async def test_seeded_sa_run_returns_a_feasible_solution():
     assert content["solutions"][0]["hard_constraints_satisfied"] is True
 
 
-async def test_same_seed_gives_identical_solutions():
+async def test_same_seed_gives_identical_solutions(load_example):
     problem = load_example(
         "knapsack.json", backend="simulated_annealing", seed=42
     )

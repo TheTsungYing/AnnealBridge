@@ -10,8 +10,8 @@ import pytest
 
 from annealbridge.models import SolverExecutionMetadata
 from annealbridge.solvers.metadata import (
+    _resolve_ocean_config,
     ocean_config_status,
-    ocean_token_configured,
     redact,
     sanitize_sampleset_info,
 )
@@ -217,14 +217,43 @@ class TestOceanConfigStatus:
         assert ocean_config_status() == "missing"
 
 
-class TestOceanTokenConfigured:
-    def test_false_without_env_token(self, monkeypatch) -> None:
+class TestResolveOceanConfig:
+    """The single lazy touch of ``dwave.cloud.config`` behind both
+    ``ocean_config_status()`` and ``redact()``."""
+
+    def test_missing_without_any_source(self, monkeypatch) -> None:
         _block_ocean_config_import(monkeypatch)
 
-        assert ocean_token_configured() is False
+        assert _resolve_ocean_config() == ("missing", None)
 
-    def test_true_with_env_token(self, monkeypatch) -> None:
+    def test_env_token_counts_as_configured_but_is_not_the_config_token(
+        self, monkeypatch
+    ) -> None:
         _block_ocean_config_import(monkeypatch)
         monkeypatch.setenv(ENV_VAR, FAKE_ENV_TOKEN)
 
-        assert ocean_token_configured() is True
+        # The env var is reported through _env_token() for redaction; the
+        # config-token slot only ever carries what load_config() returned.
+        assert _resolve_ocean_config() == ("ok", None)
+
+    def test_config_token_is_returned_with_ok(self, monkeypatch) -> None:
+        _install_fake_ocean_config(monkeypatch, lambda: {"token": FAKE_TOKEN})
+
+        assert _resolve_ocean_config() == ("ok", FAKE_TOKEN)
+
+    def test_unparseable_config_is_invalid_even_with_env_token(
+        self, monkeypatch
+    ) -> None:
+        def broken_load_config():
+            raise RuntimeError("bad dwave.conf")
+
+        _install_fake_ocean_config(monkeypatch, broken_load_config)
+        monkeypatch.setenv(ENV_VAR, FAKE_ENV_TOKEN)
+
+        assert _resolve_ocean_config() == ("invalid", None)
+        assert ocean_config_status() == "invalid"
+
+    def test_empty_config_token_is_missing(self, monkeypatch) -> None:
+        _install_fake_ocean_config(monkeypatch, lambda: {"token": ""})
+
+        assert _resolve_ocean_config() == ("missing", None)

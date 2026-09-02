@@ -20,10 +20,6 @@ from mcp import Client
 
 from annealbridge.interfaces.mcp import mcp
 
-# tests/mcp has no __init__.py, so pytest puts this directory on sys.path and
-# the sibling conftest is importable as a top-level module.
-from conftest import load_example
-
 pytestmark = pytest.mark.anyio
 
 
@@ -55,7 +51,7 @@ UNKNOWN_VARIABLE_PROBLEM = {
 }
 
 
-async def test_remote_backend_is_refused_without_a_fallback():
+async def test_remote_backend_is_refused_without_a_fallback(load_example):
     # The autouse fixture injects the default policy, where allow_remote is
     # False; the gate fires before any availability probe.
     problem = load_example("knapsack.json", backend="dwave_qpu")
@@ -72,7 +68,7 @@ async def test_remote_backend_is_refused_without_a_fallback():
     assert content["solutions"] == []
 
 
-async def test_wrong_type_in_payload_is_an_sdk_tool_error():
+async def test_wrong_type_in_payload_is_an_sdk_tool_error(load_example):
     problem = copy.deepcopy(load_example("knapsack.json", backend="exact"))
     problem["objective"]["linear_terms"][0]["coefficient"] = "abc"
 

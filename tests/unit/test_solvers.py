@@ -1,7 +1,5 @@
 """Unit tests for the solver backends (spec §20–§22, §33)."""
 
-from pathlib import Path
-
 import pytest
 
 from annealbridge.compiler import BQMCompiler
@@ -11,8 +9,6 @@ from annealbridge.solvers import (
     SimulatedAnnealingBackend,
     SolverCapabilities,
 )
-
-KNAPSACK_PATH = Path(__file__).resolve().parents[2] / "examples" / "knapsack.json"
 
 # Knapsack (spec §30): capacity 10, items A(w6,v10) B(w5,v8) C(w4,v7) D(w3,v6).
 # {A, C} has weight 6 + 4 = 10 (feasible) and value 10 + 7 = 17; every other
@@ -26,16 +22,24 @@ KNAPSACK_OPTIMUM_SELECTION = {"item_a": 1, "item_b": 0, "item_c": 1, "item_d": 0
 HARD_PENALTY = 100.0
 
 
-def load_knapsack() -> OptimizationProblem:
-    return OptimizationProblem.model_validate_json(KNAPSACK_PATH.read_text())
+@pytest.fixture
+def load_knapsack(load_example):
+    def _load() -> OptimizationProblem:
+        return OptimizationProblem.model_validate(load_example("knapsack.json"))
+
+    return _load
 
 
-def compile_knapsack() -> CompiledProblem:
-    return BQMCompiler().compile(load_knapsack(), hard_penalty=HARD_PENALTY)
+@pytest.fixture
+def compile_knapsack(load_knapsack):
+    def _compile() -> CompiledProblem:
+        return BQMCompiler().compile(load_knapsack(), hard_penalty=HARD_PENALTY)
+
+    return _compile
 
 
 class TestKnapsackExample:
-    def test_example_file_parses(self):
+    def test_example_file_parses(self, load_knapsack):
         problem = load_knapsack()
         assert problem.name == "knapsack"
         assert [v.name for v in problem.variables] == [
@@ -75,12 +79,12 @@ class TestExactSolverBackend:
         assert backend.name == backend.capabilities.name
         assert backend.is_exhaustive == backend.capabilities.exhaustive
 
-    def test_resolve_time_limit_is_none(self):
+    def test_resolve_time_limit_is_none(self, compile_knapsack):
         # A local backend never submits a time limit (Phase 2 spec §10).
         compiled = compile_knapsack()
         assert ExactSolverBackend().resolve_time_limit(compiled, SolverPreferences()) is None
 
-    def test_finds_known_optimum(self):
+    def test_finds_known_optimum(self, compile_knapsack):
         compiled = compile_knapsack()
         result = ExactSolverBackend().solve(compiled, SolverPreferences())
 
@@ -96,7 +100,7 @@ class TestExactSolverBackend:
         # (zero penalty), so energy == -objective.
         assert result.energies[best_index] == pytest.approx(-KNAPSACK_OPTIMUM_VALUE)
 
-    def test_returns_all_samples(self):
+    def test_returns_all_samples(self, compile_knapsack):
         compiled = compile_knapsack()
         result = ExactSolverBackend().solve(compiled, SolverPreferences())
 
@@ -106,7 +110,7 @@ class TestExactSolverBackend:
         assert len(result.energies) == result.num_samples
         assert result.num_samples > 0
 
-    def test_samples_include_internal_variables(self):
+    def test_samples_include_internal_variables(self, compile_knapsack):
         compiled = compile_knapsack()
         result = ExactSolverBackend().solve(compiled, SolverPreferences())
 
@@ -143,14 +147,14 @@ class TestSimulatedAnnealingBackend:
         assert backend.name == backend.capabilities.name
         assert backend.is_exhaustive == backend.capabilities.exhaustive
 
-    def test_resolve_time_limit_is_none(self):
+    def test_resolve_time_limit_is_none(self, compile_knapsack):
         compiled = compile_knapsack()
         assert (
             SimulatedAnnealingBackend().resolve_time_limit(compiled, SolverPreferences())
             is None
         )
 
-    def test_same_seed_is_reproducible(self):
+    def test_same_seed_is_reproducible(self, compile_knapsack):
         compiled = compile_knapsack()
         preferences = SolverPreferences(num_reads=20, num_sweeps=100, seed=42)
         backend = SimulatedAnnealingBackend()
@@ -162,7 +166,7 @@ class TestSimulatedAnnealingBackend:
         assert first.samples.tolist() == second.samples.tolist()
         assert first.energies.tolist() == second.energies.tolist()
 
-    def test_returns_all_reads(self):
+    def test_returns_all_reads(self, compile_knapsack):
         compiled = compile_knapsack()
         preferences = SolverPreferences(num_reads=20, num_sweeps=100, seed=7)
         result = SimulatedAnnealingBackend().solve(compiled, preferences)
@@ -173,7 +177,7 @@ class TestSimulatedAnnealingBackend:
         assert len(result.energies) == preferences.num_reads
         assert result.num_samples > 0
 
-    def test_none_seed_still_solves(self):
+    def test_none_seed_still_solves(self, compile_knapsack):
         compiled = compile_knapsack()
         preferences = SolverPreferences(num_reads=5, num_sweeps=50, seed=None)
         result = SimulatedAnnealingBackend().solve(compiled, preferences)
