@@ -67,6 +67,25 @@ class SolverBackend(Protocol):
         """Alias for ``capabilities.exhaustive``."""
         ...
 
+    def resolve_time_limit(
+        self,
+        compiled_problem: CompiledProblem,
+        preferences: SolverPreferences,
+    ) -> float | None:
+        """Return the time limit (seconds) :meth:`solve` would submit, or None.
+
+        Backends whose ``capabilities.supports_time_limit`` is False return
+        None. A backend that supports a time limit returns the *effective*
+        value — the user's preference combined with whatever floor the
+        backend applies (e.g. a remote sampler's minimum for this problem
+        size) — so the service can compare it against policy *before*
+        anything is submitted. Must not submit a problem; must be
+        deterministic for the same ``(compiled_problem, preferences)`` so
+        :meth:`solve` reuses the same value. May raise
+        :class:`~annealbridge.exceptions.SolverExecutionError`.
+        """
+        ...
+
     def solve(
         self,
         compiled_problem: CompiledProblem,

@@ -60,6 +60,14 @@ class SimulatedAnnealingBackend:
         """Alias for ``capabilities.exhaustive``."""
         return self.capabilities.exhaustive
 
+    def resolve_time_limit(
+        self,
+        compiled_problem: CompiledProblem,
+        preferences: SolverPreferences,
+    ) -> float | None:
+        """Local backend without a time limit: always None."""
+        return None
+
     def solve(
         self,
         compiled_problem: CompiledProblem,

@@ -73,8 +73,10 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "the problem or solver options, or try another backend."
     ),
     "DWAVE_CONFIG_INVALID": (
-        "The D-Wave configuration exists but cannot be parsed; fix or "
-        "remove the config on the server, or use a local backend."
+        "The D-Wave configuration is invalid: it cannot be parsed, or a "
+        "value such as region, endpoint, profile, timeout or solver "
+        "selection is rejected; fix or remove the config on the server, or "
+        "use a local backend."
     ),
     "BACKEND_UNAVAILABLE": (
         "The backend reported it is unavailable; see the message for the "

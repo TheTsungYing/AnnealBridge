@@ -1,12 +1,18 @@
-"""Mock tests for DWaveQPUBackend (Phase 2 spec §15, §15.1, §27).
+"""Mock tests for DWaveQPUBackend (Phase 2 spec §15, §15.1, §19, §27).
 
 Never talks to real D-Wave: a fake sampler is injected through the
 backend's ``sampler_factory`` seam and returns a real ``dimod.SampleSet``
 whose ``info`` carries fake QPU timing, an embedding context and dirty
 keys that must not survive sanitization.
+
+The fake also reproduces the two Ocean behaviours the backend defends
+against: a sampleset that only fails when it is *resolved*
+(``SampleSet.from_future``), and an ``embedding_context`` that appears in
+``info`` only when ``return_embedding=True`` was actually requested.
 """
 
 import sys
+import traceback
 
 import dimod
 import pytest
@@ -25,22 +31,24 @@ import annealbridge.solvers.dwave_qpu as qpu_module
 # Matches the DEV-[A-Za-z0-9]{20,} redaction pattern; never a real token.
 FAKE_TOKEN = "DEV-FAKETOKEN1234567890abcdefghij"
 
-# Nested QPU timing (whitelist keys), an embedding context, and dirty keys
-# that sanitization must drop.
+# Nested QPU timing (whitelist keys) plus dirty keys that sanitization must
+# drop. The embedding context is NOT part of this dict: EmbeddingComposite
+# only populates it when return_embedding=True is requested, so the fake
+# injects it separately (see FakeQPUSampler.embedding_context).
 FAKE_SAMPLESET_INFO = {
     "timing": {
         "qpu_access_time": 12345,
         "qpu_sampling_time": 6789,
         "qpu_anneal_time_per_sample": 20,
     },
-    "embedding_context": {
-        "embedding": {"a": (0, 1, 2), "b": (3,), "slack": (4, 5)},
-    },
     "problem_id": "fake-problem-id-456",
     "messages": [{"nested": "structure"}],
     "raw_blob": b"\x00\x01\x02",
     "unexpected": {"deep": ("tuple", object())},
 }
+
+# Longest chain is "a" (3 qubits) → embedding_max_chain_length == 3.
+FAKE_EMBEDDING_CONTEXT = {"embedding": {"a": (0, 1, 2), "b": (3,), "slack": (4, 5)}}
 
 
 # The backend classifies Ocean exceptions by class name (dwave-cloud-client
@@ -58,24 +66,48 @@ class EmbeddingError(Exception):
     """Fake of dwave.embedding's EmbeddingError."""
 
 
+class SolverFailureError(Exception):
+    """Fake of dwave.cloud's SolverFailureError (raised while resolving)."""
+
+
+class SolverNotFoundError(Exception):
+    """Fake of dwave.cloud's SolverNotFoundError."""
+
+
+class ConfigFileError(Exception):
+    """Fake of dwave.cloud's ConfigFileError."""
+
+
+class ValidationError(ValueError):
+    """Fake of pydantic's ValidationError, which subclasses ValueError."""
+
+
 class FakeQPUSampler:
-    """Fake with the EmbeddingComposite surface the backend touches."""
+    """Fake with the EmbeddingComposite surface the backend touches.
+
+    ``lazy=True`` reproduces Ocean's real shape: ``sample()`` returns
+    immediately with a ``SampleSet.from_future`` whose hook only runs (and
+    only fails) when the sampleset is resolved.
+    """
 
     def __init__(
         self,
         raise_on_sample: Exception | None = None,
         include_chain_break_fraction: bool = True,
         info: dict | None = None,
+        lazy: bool = False,
+        embedding_context: dict | str | None = FAKE_EMBEDDING_CONTEXT,
     ) -> None:
         self.raise_on_sample = raise_on_sample
         self.include_chain_break_fraction = include_chain_break_fraction
         self.info = FAKE_SAMPLESET_INFO if info is None else info
+        self.lazy = lazy
+        self.embedding_context = embedding_context
         self.sample_bqm = None
         self.sample_kwargs = None
+        self.sample_calls = 0
 
-    def sample(self, bqm, **kwargs) -> dimod.SampleSet:
-        self.sample_bqm = bqm
-        self.sample_kwargs = kwargs
+    def _build_sampleset(self, bqm, kwargs: dict) -> dimod.SampleSet:
         if self.raise_on_sample is not None:
             raise self.raise_on_sample
         variables = list(bqm.variables)
@@ -86,13 +118,42 @@ class FakeQPUSampler:
         vectors = {}
         if self.include_chain_break_fraction:
             vectors["chain_break_fraction"] = [0.0, 0.25]
+        info = dict(self.info)
+        # EmbeddingComposite only reports the embedding when asked to.
+        if self.embedding_context is not None and kwargs.get("return_embedding"):
+            info["embedding_context"] = self.embedding_context
         return dimod.SampleSet.from_samples(
             rows,
             vartype=dimod.BINARY,
             energy=[bqm.energy(row) for row in rows],
-            info=dict(self.info),
+            info=info,
             **vectors,
         )
+
+    def sample(self, bqm, **kwargs) -> dimod.SampleSet:
+        self.sample_bqm = bqm
+        self.sample_kwargs = kwargs
+        self.sample_calls += 1
+        if self.lazy:
+            return dimod.SampleSet.from_future(
+                object(), lambda _future: self._build_sampleset(bqm, kwargs)
+            )
+        return self._build_sampleset(bqm, kwargs)
+
+
+class CountingFactory:
+    """``sampler_factory`` seam that counts calls and can fail the first one."""
+
+    def __init__(self, sampler=None, fail_first: Exception | None = None) -> None:
+        self.sampler = sampler if sampler is not None else FakeQPUSampler()
+        self.fail_first = fail_first
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        if self.fail_first is not None and self.calls == 1:
+            raise self.fail_first
+        return self.sampler
 
 
 def make_compiled_problem(hard_penalty: float = 100.0) -> CompiledProblem:
@@ -185,7 +246,11 @@ class TestParameterForwarding:
     def test_num_reads_and_auto_scale_always_forwarded(self):
         fake, _, _ = solve_with_fake(SolverPreferences(backend="dwave_qpu"))
 
-        assert fake.sample_kwargs == {"num_reads": 100, "auto_scale": True}
+        assert fake.sample_kwargs == {
+            "num_reads": 100,
+            "auto_scale": True,
+            "return_embedding": True,
+        }
 
     def test_full_options_forwarded(self):
         fake, _, _ = solve_with_fake(
@@ -202,6 +267,7 @@ class TestParameterForwarding:
             "annealing_time": 20.0,
             "chain_strength": 3.5,
             "auto_scale": False,
+            "return_embedding": True,
         }
 
     def test_chain_strength_none_is_omitted(self):
@@ -215,7 +281,11 @@ class TestParameterForwarding:
 
         fake, _, _ = solve_with_fake(preferences)
 
-        assert fake.sample_kwargs == {"num_reads": 7, "auto_scale": True}
+        assert fake.sample_kwargs == {
+            "num_reads": 7,
+            "auto_scale": True,
+            "return_embedding": True,
+        }
 
     def test_bqm_is_forwarded_unchanged(self):
         fake, compiled, _ = solve_with_fake(make_preferences())
@@ -238,7 +308,36 @@ class TestParameterForwarding:
             "auto_scale",
             "annealing_time",
             "chain_strength",
+            "return_embedding",
         }
+
+
+class TestReturnEmbedding:
+    """Spec §15: ``return_embedding=True`` is always requested, because
+    EmbeddingComposite otherwise leaves ``info["embedding_context"]`` out."""
+
+    def test_return_embedding_is_always_requested(self):
+        fake, _, _ = solve_with_fake(make_preferences())
+
+        assert fake.sample_kwargs["return_embedding"] is True
+
+    def test_fake_omits_embedding_context_without_the_kwarg(self):
+        # Guards the fake itself: the embedding context is only reported
+        # when asked for, so the backend test above proves a real request.
+        fake = FakeQPUSampler()
+
+        sampleset = fake.sample(make_compiled_problem().model)
+
+        assert "embedding_context" not in sampleset.info
+
+    def test_fake_reports_embedding_context_with_the_kwarg(self):
+        fake = FakeQPUSampler()
+
+        sampleset = fake.sample(
+            make_compiled_problem().model, return_embedding=True
+        )
+
+        assert sampleset.info["embedding_context"] == FAKE_EMBEDDING_CONTEXT
 
 
 class TestChainStrengthIndependence:
@@ -343,10 +442,11 @@ class TestMetadataSanitization:
         ids=["absent", "context-not-dict", "embedding-not-dict", "empty", "no-len"],
     )
     def test_malformed_embedding_context_yields_none(self, embedding_context):
-        info = {"timing": {"qpu_access_time": 1}}
-        if embedding_context is not None:
-            info["embedding_context"] = embedding_context
-        fake = FakeQPUSampler(info=info)
+        # embedding_context=None means the sampler never injects the key.
+        fake = FakeQPUSampler(
+            info={"timing": {"qpu_access_time": 1}},
+            embedding_context=embedding_context,
+        )
 
         _, _, result = solve_with_fake(make_preferences(), fake=fake)
 
@@ -416,6 +516,240 @@ class TestExceptionClassification:
 
         assert exc_info.value.code == "REMOTE_AUTH_FAILED"
         assert FAKE_TOKEN not in str(exc_info.value)
+
+
+class TestSamplerInitExceptionClassification:
+    """Spec §15: sampler construction has its own classification table.
+
+    ``DWaveSampler()`` runs Client.from_config() / get_solver(), so a
+    ValueError there is a *configuration* problem — never an embedding one.
+    """
+
+    @pytest.mark.parametrize(
+        ("exception", "expected_code"),
+        [
+            (ValueError(f"invalid region, token={FAKE_TOKEN}"), "DWAVE_CONFIG_INVALID"),
+            (
+                ValidationError(f"1 validation error, token={FAKE_TOKEN}"),
+                "DWAVE_CONFIG_INVALID",
+            ),
+            (
+                SolverNotFoundError(f"no solver matches, token={FAKE_TOKEN}"),
+                "DWAVE_CONFIG_INVALID",
+            ),
+            (
+                ConfigFileError(f"bad dwave.conf, token={FAKE_TOKEN}"),
+                "DWAVE_CONFIG_INVALID",
+            ),
+            (
+                SolverAuthenticationError(f"invalid token={FAKE_TOKEN}"),
+                "REMOTE_AUTH_FAILED",
+            ),
+            (RequestTimeout(f"timed out, token={FAKE_TOKEN}"), "REMOTE_TIMEOUT"),
+            (
+                RuntimeError(f"client exploded, token={FAKE_TOKEN}"),
+                "REMOTE_SOLVER_ERROR",
+            ),
+        ],
+        ids=[
+            "value_error",
+            "validation_error",
+            "solver_not_found",
+            "config_file_error",
+            "auth",
+            "timeout",
+            "other",
+        ],
+    )
+    def test_factory_exceptions_map_to_codes_and_are_redacted(
+        self, exception, expected_code
+    ):
+        factory = CountingFactory(fail_first=exception)
+        backend = DWaveQPUBackend(sampler_factory=factory)
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(make_compiled_problem(), make_preferences())
+
+        assert exc_info.value.code == expected_code
+        message = str(exc_info.value)
+        assert FAKE_TOKEN not in message
+        assert "***" in message
+
+    @pytest.mark.parametrize(
+        "exception",
+        [
+            ValueError(f"invalid endpoint, token={FAKE_TOKEN}"),
+            ValidationError(f"1 validation error, token={FAKE_TOKEN}"),
+        ],
+        ids=["value_error", "validation_error"],
+    )
+    def test_factory_value_error_is_config_invalid_not_embedding_failed(
+        self, exception
+    ):
+        # The sampling-stage table maps ValueError to EMBEDDING_FAILED;
+        # telling the agent to shrink the problem would be wrong here.
+        backend = DWaveQPUBackend(sampler_factory=CountingFactory(fail_first=exception))
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(make_compiled_problem(), make_preferences())
+
+        assert exc_info.value.code == "DWAVE_CONFIG_INVALID"
+        assert exc_info.value.code != "EMBEDDING_FAILED"
+        assert FAKE_TOKEN not in str(exc_info.value)
+        assert "***" in str(exc_info.value)
+
+    def test_sample_stage_value_error_still_means_embedding_failed(self):
+        # The two tables really are independent: the same type, a different
+        # stage, a different code.
+        fake = FakeQPUSampler(raise_on_sample=ValueError("no embedding found"))
+        backend = DWaveQPUBackend(sampler_factory=lambda: fake)
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(make_compiled_problem(), make_preferences())
+
+        assert exc_info.value.code == "EMBEDDING_FAILED"
+
+
+class TestLazySampleSetResolution:
+    """Spec §15/§19: the backend resolves the sampleset inside the guarded
+    call, so a failure that only surfaces on resolve is still classified and
+    redacted."""
+
+    def test_lazy_success_matches_the_eager_result(self):
+        eager, _, expected = solve_with_fake(make_preferences())
+        lazy, _, result = solve_with_fake(
+            make_preferences(), fake=FakeQPUSampler(lazy=True)
+        )
+
+        assert lazy.sample_calls == 1
+        assert result.samples == expected.samples
+        assert result.energies == expected.energies
+        assert result.backend == expected.backend
+        assert result.metadata.model_dump() == expected.metadata.model_dump()
+        assert result.metadata.embedding_max_chain_length == 3
+
+    @pytest.mark.parametrize(
+        ("exception", "expected_code"),
+        [
+            (RequestTimeout(f"timed out, token={FAKE_TOKEN}"), "REMOTE_TIMEOUT"),
+            (
+                SolverFailureError(f"solver failed, token={FAKE_TOKEN}"),
+                "REMOTE_SOLVER_ERROR",
+            ),
+            (RuntimeError(f"boom, token={FAKE_TOKEN}"), "REMOTE_SOLVER_ERROR"),
+        ],
+        ids=["timeout", "solver_failure", "other"],
+    )
+    def test_failure_on_resolve_is_classified_and_redacted(
+        self, exception, expected_code
+    ):
+        fake = FakeQPUSampler(lazy=True, raise_on_sample=exception)
+        backend = DWaveQPUBackend(sampler_factory=lambda: fake)
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(make_compiled_problem(), make_preferences())
+
+        assert exc_info.value.code == expected_code
+        message = str(exc_info.value)
+        assert FAKE_TOKEN not in message
+        assert "***" in message
+        # sample() itself returned normally: the failure happened on resolve.
+        assert fake.sample_calls == 1
+        assert fake.sample_kwargs == {
+            "num_reads": 100,
+            "auto_scale": True,
+            "return_embedding": True,
+        }
+
+
+class TestOriginalExceptionIsNotReachable:
+    """Spec §19: the wrapped error carries no chain back to the original,
+    so a traceback dump cannot print credential-bearing text."""
+
+    def test_sample_failure_has_no_cause_or_context(self):
+        fake = FakeQPUSampler(
+            raise_on_sample=RuntimeError(f"solver exploded, token={FAKE_TOKEN}")
+        )
+        backend = DWaveQPUBackend(sampler_factory=lambda: fake)
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(make_compiled_problem(), make_preferences())
+
+        error = exc_info.value
+        assert error.__cause__ is None
+        assert error.__context__ is None
+        formatted = "".join(traceback.format_exception(error))
+        assert FAKE_TOKEN not in formatted
+
+    def test_factory_failure_has_no_cause_or_context(self):
+        factory = CountingFactory(
+            fail_first=SolverNotFoundError(f"Authorization: Bearer {FAKE_TOKEN}")
+        )
+        backend = DWaveQPUBackend(sampler_factory=factory)
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(make_compiled_problem(), make_preferences())
+
+        error = exc_info.value
+        assert error.__cause__ is None
+        assert error.__context__ is None
+        formatted = "".join(traceback.format_exception(error))
+        assert FAKE_TOKEN not in formatted
+
+
+class TestSamplerCaching:
+    """Spec §15: DWaveSampler() is expensive, so it is built once per
+    backend instance — and a failed construction is never cached."""
+
+    def test_sampler_is_built_once_per_backend(self):
+        factory = CountingFactory()
+        backend = DWaveQPUBackend(sampler_factory=factory)
+        compiled = make_compiled_problem()
+
+        backend.solve(compiled, make_preferences())
+        backend.solve(compiled, make_preferences())
+
+        assert factory.calls == 1
+        assert factory.sampler.sample_calls == 2
+
+    def test_failed_construction_is_not_cached(self):
+        factory = CountingFactory(
+            fail_first=SolverAuthenticationError(f"denied, token={FAKE_TOKEN}")
+        )
+        backend = DWaveQPUBackend(sampler_factory=factory)
+        compiled = make_compiled_problem()
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(compiled, make_preferences())
+        assert exc_info.value.code == "REMOTE_AUTH_FAILED"
+
+        result = backend.solve(compiled, make_preferences())
+
+        assert factory.calls == 2
+        assert result.backend == "dwave_qpu"
+        assert factory.sampler.sample_calls == 1
+
+    def test_each_backend_instance_builds_its_own_sampler(self):
+        factory = CountingFactory()
+        compiled = make_compiled_problem()
+
+        DWaveQPUBackend(sampler_factory=factory).solve(compiled, make_preferences())
+        DWaveQPUBackend(sampler_factory=factory).solve(compiled, make_preferences())
+
+        assert factory.calls == 2
+
+
+class TestResolveTimeLimit:
+    """Spec §16/§20: the QPU takes no time limit, and answering that
+    question must not build a sampler (let alone submit anything)."""
+
+    def test_resolve_time_limit_is_none_without_touching_the_factory(self):
+        factory = CountingFactory()
+        backend = DWaveQPUBackend(sampler_factory=factory)
+
+        assert backend.resolve_time_limit(make_compiled_problem(), make_preferences()) is None
+        assert factory.calls == 0
+        assert factory.sampler.sample_calls == 0
 
 
 class TestIsAvailable:

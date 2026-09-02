@@ -16,6 +16,7 @@ from annealbridge.exceptions import OptimizerError
 from annealbridge.models import (
     RECOMMENDED_ACTIONS,
     RETRYABLE_CODES,
+    CompiledProblem,
     Objective,
     OptimizationProblem,
     Solution,
@@ -364,6 +365,10 @@ class OptimizationService:
                     )
                 )
         if caps.remote and caps.supports_time_limit:
+            # Only the user's own value is known before compile. The
+            # *effective* value (floored at the sampler minimum, which
+            # depends on the compiled size) is checked per attempt in
+            # _effective_time_limit_error, before anything is submitted.
             time_limit = (
                 preferences.leap_hybrid_bqm.time_limit_seconds
                 if preferences.leap_hybrid_bqm is not None
@@ -381,6 +386,35 @@ class OptimizationService:
                     )
                 )
         return errors
+
+    def _effective_time_limit_error(
+        self,
+        backend: SolverBackend,
+        compiled: CompiledProblem,
+        preferences: SolverPreferences,
+    ) -> SolveError | None:
+        """§14 step 9, compiled-dependent part of the hybrid time limit.
+
+        A time-limited remote backend may raise the user's value to its own
+        minimum for this problem size (spec §16), so the number actually
+        submitted can exceed policy even when the user gave none. Ask the
+        backend for the effective value and refuse *before* submission.
+        Never clamps. The backend never sees the policy; the service never
+        sees the backend's minimum rule.
+        """
+        caps = backend.capabilities
+        if not (caps.remote and caps.supports_time_limit):
+            return None
+        effective = backend.resolve_time_limit(compiled, preferences)
+        maximum = self._policy.max_remote_time_seconds
+        if effective is None or effective <= maximum:
+            return None
+        return _catalog_error(
+            "REMOTE_TIME_LIMIT",
+            f"effective time_limit_seconds {effective} (the requested value "
+            f"raised to the solver's minimum for this problem size) exceeds "
+            f"the server maximum of {maximum}",
+        )
 
     def _max_attempts(
         self, backend: SolverBackend, preferences: SolverPreferences
@@ -438,6 +472,17 @@ class OptimizationService:
                                 f"{self._policy.exact_max_variables}",
                             )
                         ],
+                        attempts=attempts,
+                    )
+                time_limit_error = self._effective_time_limit_error(
+                    backend, compiled, problem.solver
+                )
+                if time_limit_error is not None:
+                    return self._failure(
+                        "resource_limit_exceeded",
+                        backend.name,
+                        direction,
+                        [time_limit_error],
                         attempts=attempts,
                     )
                 raw = backend.solve(compiled, problem.solver)

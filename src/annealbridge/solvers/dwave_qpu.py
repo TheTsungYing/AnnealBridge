@@ -7,7 +7,8 @@ imports cleanly without the ``dwave`` extra installed (spec §4).
 
 import importlib.util
 import logging
-from typing import Any, Callable
+import threading
+from typing import Any, Callable, TypeVar
 
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import (
@@ -28,6 +29,8 @@ from annealbridge.solvers.metadata import (
 
 logger = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
 _CAPABILITIES = SolverCapabilities(
     name="dwave_qpu",
     remote=True,
@@ -46,18 +49,36 @@ _CAPABILITIES = SolverCapabilities(
     ),
 )
 
-# Ocean exception class names → catalog error codes. Matched by name across
+# Ocean exception class names → catalog error codes, matched by name across
 # the exception's MRO so classification works (and is testable with fakes)
-# without dwave-cloud-client installed. ValueError is listed because
-# EmbeddingComposite raises a bare ValueError when no embedding is found
-# (spec §15); the MRO walk starts at the most-derived class, so any named
-# Ocean exception that happens to subclass ValueError still wins.
-_EXCEPTION_NAME_TO_CODE = {
+# without dwave-cloud-client installed. The MRO walk starts at the
+# most-derived class, so a named Ocean exception that happens to subclass
+# ValueError still wins over the ValueError entry.
+#
+# Two tables because the *same* exception type means different things
+# depending on the stage:
+#
+# - Sampling stage (spec §15): EmbeddingComposite raises a bare ValueError
+#   when no embedding is found → EMBEDDING_FAILED.
+# - Sampler construction: DWaveSampler() runs Client.from_config() and
+#   get_solver(); a ValueError there (including pydantic's ValidationError,
+#   a ValueError subclass) means an invalid region / endpoint / profile /
+#   timeout / solver selection — a configuration problem, never an
+#   embedding one. Telling the agent to "shrink the problem" would be wrong.
+_SAMPLE_EXCEPTION_CODES = {
     "EmbeddingError": "EMBEDDING_FAILED",
     "ValueError": "EMBEDDING_FAILED",
     "SolverAuthenticationError": "REMOTE_AUTH_FAILED",
     "RequestTimeout": "REMOTE_TIMEOUT",
 }
+_SAMPLER_INIT_EXCEPTION_CODES = {
+    "SolverAuthenticationError": "REMOTE_AUTH_FAILED",
+    "RequestTimeout": "REMOTE_TIMEOUT",
+    "SolverNotFoundError": "DWAVE_CONFIG_INVALID",
+    "ConfigFileError": "DWAVE_CONFIG_INVALID",
+    "ValueError": "DWAVE_CONFIG_INVALID",
+}
+_DEFAULT_CODE = "REMOTE_SOLVER_ERROR"
 
 
 def _dwave_system_installed() -> bool:
@@ -75,12 +96,44 @@ def _default_sampler_factory() -> Any:
     return EmbeddingComposite(DWaveSampler())
 
 
-def _classify_exception(exc: Exception) -> str:
+def _classify_exception(exc: Exception, codes: dict[str, str]) -> str:
     for klass in type(exc).__mro__:
-        code = _EXCEPTION_NAME_TO_CODE.get(klass.__name__)
+        code = codes.get(klass.__name__)
         if code is not None:
             return code
-    return "REMOTE_SOLVER_ERROR"
+    return _DEFAULT_CODE
+
+
+def _call_ocean(what: str, codes: dict[str, str], fn: Callable[[], _T]) -> _T:
+    """Run ``fn`` and convert any failure into a redacted SolverExecutionError.
+
+    The wrapped error is raised *after* the ``except`` block has finished,
+    so it carries neither ``__cause__`` nor ``__context__``: the original
+    exception (whose text may embed credentials) is not reachable from the
+    error that leaves the solver layer, and ``traceback.format_exception``
+    / ``logger.exception`` cannot print it (spec §19). The original class
+    name is kept in the message because it is categorical, not secret.
+    """
+    try:
+        return fn()
+    except Exception as exc:
+        error = SolverExecutionError(
+            redact(f"{what}: {type(exc).__name__}: {exc}"),
+            code=_classify_exception(exc, codes),
+        )
+    raise error
+
+
+def _resolved(sampleset: Any) -> Any:
+    """Force a lazy (``SampleSet.from_future``) sampleset to resolve now.
+
+    Ocean samplers return samplesets whose cloud request only completes on
+    first attribute access; resolving inside the guarded call is what
+    routes RequestTimeout / SolverFailureError through classification and
+    redaction instead of letting them escape later, unclassified.
+    """
+    sampleset.resolve()
+    return sampleset
 
 
 def _average_chain_break_fraction(sampleset: Any) -> float | None:
@@ -127,14 +180,22 @@ class DWaveQPUBackend:
     """Solves the compiled BQM directly on a D-Wave QPU.
 
     ``sampler_factory`` is the single test seam: production uses the default
-    (``EmbeddingComposite(DWaveSampler())``), tests inject a fake. Chain
-    strength is the user-provided option or Ocean's default — never derived
-    from the compiled hard penalty (spec §15.1). Chain breaks are resolved
-    by Ocean's default ``majority_vote``; no chain-break kwarg is forwarded.
+    (``EmbeddingComposite(DWaveSampler())``), tests inject a fake. The
+    sampler is built lazily on first use and cached for the lifetime of the
+    backend instance — ``DWaveSampler()`` fetches the whole working graph
+    and starts worker threads, so rebuilding it per solve (or per retry)
+    would be wasteful; a failed construction is never cached.
+
+    Chain strength is the user-provided option or Ocean's default — never
+    derived from the compiled hard penalty (spec §15.1). Chain breaks are
+    resolved by Ocean's default ``majority_vote``; no chain-break kwarg is
+    forwarded.
     """
 
     def __init__(self, sampler_factory: Callable[[], Any] | None = None) -> None:
         self._sampler_factory = sampler_factory
+        self._sampler: Any | None = None
+        self._sampler_lock = threading.Lock()
 
     @property
     def capabilities(self) -> SolverCapabilities:
@@ -165,6 +226,27 @@ class DWaveQPUBackend:
         """Alias for ``capabilities.exhaustive``."""
         return self.capabilities.exhaustive
 
+    def resolve_time_limit(
+        self,
+        compiled_problem: CompiledProblem,
+        preferences: SolverPreferences,
+    ) -> float | None:
+        """The QPU takes no time limit: always None."""
+        return None
+
+    def _get_sampler(self) -> Any:
+        """Return the cached sampler, building it on first use.
+
+        Raw factory exceptions propagate; callers wrap them. Only a
+        successful construction is cached, so a transient failure does not
+        poison the backend.
+        """
+        with self._sampler_lock:
+            if self._sampler is None:
+                factory = self._sampler_factory or _default_sampler_factory
+                self._sampler = factory()
+            return self._sampler
+
     def solve(
         self,
         compiled_problem: CompiledProblem,
@@ -176,32 +258,37 @@ class DWaveQPUBackend:
         (µs, only when the user set one), ``chain_strength`` (omitted when
         None so Ocean's default applies) and ``auto_scale``. ``seed`` /
         ``num_sweeps`` are meaningless for the QPU and never forwarded.
-        Policy ceilings are enforced by the service layer, not here.
+        ``return_embedding=True`` is always passed: EmbeddingComposite only
+        populates ``info["embedding_context"]`` (the source of
+        ``embedding_max_chain_length``) when asked to. Policy ceilings are
+        enforced by the service layer, not here.
         """
         bqm = compiled_problem.model
         options = preferences.dwave_qpu or DWaveQPUOptions()
 
-        # Assembled outside the try block: only Ocean exceptions may reach
-        # the classifier (which maps bare ValueError to EMBEDDING_FAILED).
+        # Assembled outside any guarded call: only Ocean exceptions may
+        # reach the classifier (which maps bare ValueError to
+        # EMBEDDING_FAILED at the sampling stage).
         sample_kwargs: dict[str, Any] = {
             "num_reads": preferences.num_reads,
             "auto_scale": options.auto_scale,
+            "return_embedding": True,
         }
         if options.annealing_time_us is not None:
             sample_kwargs["annealing_time"] = options.annealing_time_us
         if options.chain_strength is not None:
             sample_kwargs["chain_strength"] = options.chain_strength
 
-        try:
-            factory = self._sampler_factory or _default_sampler_factory
-            sampler = factory()
-            sampleset = sampler.sample(bqm, **sample_kwargs)
-        except Exception as exc:
-            code = _classify_exception(exc)
-            raise SolverExecutionError(
-                redact(f"D-Wave QPU solve failed: {exc}"),
-                code=code,
-            ) from exc
+        sampler = _call_ocean(
+            "D-Wave QPU sampler could not be created",
+            _SAMPLER_INIT_EXCEPTION_CODES,
+            self._get_sampler,
+        )
+        sampleset = _call_ocean(
+            "D-Wave QPU solve failed",
+            _SAMPLE_EXCEPTION_CODES,
+            lambda: _resolved(sampler.sample(bqm, **sample_kwargs)),
+        )
 
         samples, energies = sampleset_to_lists(sampleset)
         metadata = sanitize_sampleset_info(sampleset.info, backend=self.name)

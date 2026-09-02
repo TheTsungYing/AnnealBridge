@@ -1,12 +1,17 @@
-"""Mock tests for LeapHybridBQMBackend (Phase 2 spec §16, §27).
+"""Mock tests for LeapHybridBQMBackend (Phase 2 spec §16, §19, §27).
 
 Never talks to real D-Wave: a fake sampler is injected through the
 backend's ``sampler_factory`` seam and returns a real ``dimod.SampleSet``
 whose ``info`` carries fake timing plus dirty keys that must not survive
 sanitization.
+
+The fake also reproduces Ocean's lazy sampleset: with ``lazy=True``,
+``sample()`` returns immediately and the cloud failure only surfaces when
+the sampleset is resolved.
 """
 
 import sys
+import traceback
 
 import dimod
 import pytest
@@ -49,22 +54,53 @@ class RequestTimeout(Exception):
     """Fake of dwave.cloud's RequestTimeout."""
 
 
-class FakeLeapHybridSampler:
-    """Fake with the LeapHybridSampler surface the backend touches."""
+class SolverFailureError(Exception):
+    """Fake of dwave.cloud's SolverFailureError (raised while resolving)."""
 
-    def __init__(self, raise_on_sample: Exception | None = None) -> None:
+
+class SolverNotFoundError(Exception):
+    """Fake of dwave.cloud's SolverNotFoundError."""
+
+
+class ConfigFileError(Exception):
+    """Fake of dwave.cloud's ConfigFileError."""
+
+
+class ValidationError(ValueError):
+    """Fake of pydantic's ValidationError, which subclasses ValueError."""
+
+
+class FakeLeapHybridSampler:
+    """Fake with the LeapHybridSampler surface the backend touches.
+
+    ``lazy=True`` reproduces Ocean's real shape: ``sample()`` returns
+    immediately with a ``SampleSet.from_future`` whose hook only runs (and
+    only fails) when the sampleset is resolved.
+    """
+
+    def __init__(
+        self,
+        raise_on_sample: Exception | None = None,
+        raise_on_min_time_limit: Exception | None = None,
+        lazy: bool = False,
+    ) -> None:
         self.raise_on_sample = raise_on_sample
+        self.raise_on_min_time_limit = raise_on_min_time_limit
+        self.lazy = lazy
         self.min_time_limit_bqm = None
+        self.min_time_limit_calls = 0
         self.sample_bqm = None
         self.sample_kwargs = None
+        self.sample_calls = 0
 
     def min_time_limit(self, bqm) -> float:
         self.min_time_limit_bqm = bqm
+        self.min_time_limit_calls += 1
+        if self.raise_on_min_time_limit is not None:
+            raise self.raise_on_min_time_limit
         return FAKE_MIN_TIME_LIMIT
 
-    def sample(self, bqm, **kwargs) -> dimod.SampleSet:
-        self.sample_bqm = bqm
-        self.sample_kwargs = kwargs
+    def _build_sampleset(self, bqm) -> dimod.SampleSet:
         if self.raise_on_sample is not None:
             raise self.raise_on_sample
         # Hybrid solvers typically return exactly one sample.
@@ -75,6 +111,31 @@ class FakeLeapHybridSampler:
             energy=bqm.energy(assignment),
             info=dict(FAKE_SAMPLESET_INFO),
         )
+
+    def sample(self, bqm, **kwargs) -> dimod.SampleSet:
+        self.sample_bqm = bqm
+        self.sample_kwargs = kwargs
+        self.sample_calls += 1
+        if self.lazy:
+            return dimod.SampleSet.from_future(
+                object(), lambda _future: self._build_sampleset(bqm)
+            )
+        return self._build_sampleset(bqm)
+
+
+class CountingFactory:
+    """``sampler_factory`` seam that counts calls and can fail the first one."""
+
+    def __init__(self, sampler=None, fail_first: Exception | None = None) -> None:
+        self.sampler = sampler if sampler is not None else FakeLeapHybridSampler()
+        self.fail_first = fail_first
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        if self.fail_first is not None and self.calls == 1:
+            raise self.fail_first
+        return self.sampler
 
 
 def make_compiled_problem() -> CompiledProblem:
@@ -117,8 +178,9 @@ def make_preferences(time_limit_seconds: float | None = None) -> SolverPreferenc
 
 def solve_with_fake(
     preferences: SolverPreferences,
+    fake: FakeLeapHybridSampler | None = None,
 ) -> tuple[FakeLeapHybridSampler, CompiledProblem, object]:
-    fake = FakeLeapHybridSampler()
+    fake = fake if fake is not None else FakeLeapHybridSampler()
     backend = LeapHybridBQMBackend(sampler_factory=lambda: fake)
     compiled = make_compiled_problem()
     result = backend.solve(compiled, preferences)
@@ -294,6 +356,298 @@ class TestExceptionClassification:
 
         assert exc_info.value.code == "REMOTE_AUTH_FAILED"
         assert FAKE_TOKEN not in str(exc_info.value)
+
+
+class TestSamplerInitExceptionClassification:
+    """Spec §16: sampler construction has its own classification table.
+
+    ``LeapHybridSampler()`` runs Client.from_config() / get_solver(), so a
+    ValueError there is a *configuration* problem, not a solve failure.
+    """
+
+    @pytest.mark.parametrize(
+        ("exception", "expected_code"),
+        [
+            (ValueError(f"invalid region, token={FAKE_TOKEN}"), "DWAVE_CONFIG_INVALID"),
+            (
+                ValidationError(f"1 validation error, token={FAKE_TOKEN}"),
+                "DWAVE_CONFIG_INVALID",
+            ),
+            (
+                SolverNotFoundError(f"no solver matches, token={FAKE_TOKEN}"),
+                "DWAVE_CONFIG_INVALID",
+            ),
+            (
+                ConfigFileError(f"bad dwave.conf, token={FAKE_TOKEN}"),
+                "DWAVE_CONFIG_INVALID",
+            ),
+            (
+                SolverAuthenticationError(f"invalid token={FAKE_TOKEN}"),
+                "REMOTE_AUTH_FAILED",
+            ),
+            (RequestTimeout(f"timed out, token={FAKE_TOKEN}"), "REMOTE_TIMEOUT"),
+            (
+                RuntimeError(f"client exploded, token={FAKE_TOKEN}"),
+                "REMOTE_SOLVER_ERROR",
+            ),
+        ],
+        ids=[
+            "value_error",
+            "validation_error",
+            "solver_not_found",
+            "config_file_error",
+            "auth",
+            "timeout",
+            "other",
+        ],
+    )
+    def test_factory_exceptions_map_to_codes_and_are_redacted(
+        self, exception, expected_code
+    ):
+        backend = LeapHybridBQMBackend(
+            sampler_factory=CountingFactory(fail_first=exception)
+        )
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(make_compiled_problem(), make_preferences(None))
+
+        assert exc_info.value.code == expected_code
+        message = str(exc_info.value)
+        assert FAKE_TOKEN not in message
+        assert "***" in message
+
+    @pytest.mark.parametrize(
+        "exception",
+        [
+            ValueError(f"invalid endpoint, token={FAKE_TOKEN}"),
+            ValidationError(f"1 validation error, token={FAKE_TOKEN}"),
+        ],
+        ids=["value_error", "validation_error"],
+    )
+    def test_factory_value_error_is_config_invalid_not_embedding_failed(
+        self, exception
+    ):
+        backend = LeapHybridBQMBackend(
+            sampler_factory=CountingFactory(fail_first=exception)
+        )
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(make_compiled_problem(), make_preferences(None))
+
+        assert exc_info.value.code == "DWAVE_CONFIG_INVALID"
+        assert exc_info.value.code != "EMBEDDING_FAILED"
+        assert FAKE_TOKEN not in str(exc_info.value)
+        assert "***" in str(exc_info.value)
+
+
+class TestLazySampleSetResolution:
+    """Spec §16/§19: the backend resolves the sampleset inside the guarded
+    call, so a failure that only surfaces on resolve is still classified and
+    redacted."""
+
+    def test_lazy_success_matches_the_eager_result(self):
+        _, _, expected = solve_with_fake(make_preferences(None))
+        lazy, _, result = solve_with_fake(
+            make_preferences(None), fake=FakeLeapHybridSampler(lazy=True)
+        )
+
+        assert lazy.sample_calls == 1
+        assert result.samples == expected.samples
+        assert result.energies == expected.energies
+        assert result.backend == expected.backend
+        assert result.metadata.model_dump() == expected.metadata.model_dump()
+
+    @pytest.mark.parametrize(
+        ("exception", "expected_code"),
+        [
+            (RequestTimeout(f"timed out, token={FAKE_TOKEN}"), "REMOTE_TIMEOUT"),
+            (
+                SolverFailureError(f"solver failed, token={FAKE_TOKEN}"),
+                "REMOTE_SOLVER_ERROR",
+            ),
+            (RuntimeError(f"boom, token={FAKE_TOKEN}"), "REMOTE_SOLVER_ERROR"),
+        ],
+        ids=["timeout", "solver_failure", "other"],
+    )
+    def test_failure_on_resolve_is_classified_and_redacted(
+        self, exception, expected_code
+    ):
+        fake = FakeLeapHybridSampler(lazy=True, raise_on_sample=exception)
+        backend = LeapHybridBQMBackend(sampler_factory=lambda: fake)
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(make_compiled_problem(), make_preferences(None))
+
+        assert exc_info.value.code == expected_code
+        message = str(exc_info.value)
+        assert FAKE_TOKEN not in message
+        assert "***" in message
+        # sample() itself returned normally: the failure happened on resolve.
+        assert fake.sample_calls == 1
+        assert fake.sample_kwargs == {"time_limit": FAKE_MIN_TIME_LIMIT}
+
+
+class TestOriginalExceptionIsNotReachable:
+    """Spec §19: the wrapped error carries no chain back to the original,
+    so a traceback dump cannot print credential-bearing text."""
+
+    def test_sample_failure_has_no_cause_or_context(self):
+        fake = FakeLeapHybridSampler(
+            raise_on_sample=RuntimeError(f"solver exploded, token={FAKE_TOKEN}")
+        )
+        backend = LeapHybridBQMBackend(sampler_factory=lambda: fake)
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(make_compiled_problem(), make_preferences(None))
+
+        error = exc_info.value
+        assert error.__cause__ is None
+        assert error.__context__ is None
+        formatted = "".join(traceback.format_exception(error))
+        assert FAKE_TOKEN not in formatted
+
+    def test_factory_failure_has_no_cause_or_context(self):
+        backend = LeapHybridBQMBackend(
+            sampler_factory=CountingFactory(
+                fail_first=SolverNotFoundError(f"Authorization: Bearer {FAKE_TOKEN}")
+            )
+        )
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(make_compiled_problem(), make_preferences(None))
+
+        error = exc_info.value
+        assert error.__cause__ is None
+        assert error.__context__ is None
+        formatted = "".join(traceback.format_exception(error))
+        assert FAKE_TOKEN not in formatted
+
+
+class TestSamplerCaching:
+    """Spec §16: LeapHybridSampler() fetches solver metadata, so it is built
+    once per backend instance — and a failed construction is never cached."""
+
+    def test_sampler_is_built_once_per_backend(self):
+        factory = CountingFactory()
+        backend = LeapHybridBQMBackend(sampler_factory=factory)
+        compiled = make_compiled_problem()
+
+        backend.solve(compiled, make_preferences(None))
+        backend.solve(compiled, make_preferences(None))
+
+        assert factory.calls == 1
+        assert factory.sampler.sample_calls == 2
+
+    def test_failed_construction_is_not_cached(self):
+        factory = CountingFactory(
+            fail_first=SolverAuthenticationError(f"denied, token={FAKE_TOKEN}")
+        )
+        backend = LeapHybridBQMBackend(sampler_factory=factory)
+        compiled = make_compiled_problem()
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(compiled, make_preferences(None))
+        assert exc_info.value.code == "REMOTE_AUTH_FAILED"
+
+        result = backend.solve(compiled, make_preferences(None))
+
+        assert factory.calls == 2
+        assert result.backend == "leap_hybrid_bqm"
+        assert factory.sampler.sample_calls == 1
+
+    def test_each_backend_instance_builds_its_own_sampler(self):
+        factory = CountingFactory()
+        compiled = make_compiled_problem()
+
+        LeapHybridBQMBackend(sampler_factory=factory).solve(
+            compiled, make_preferences(None)
+        )
+        LeapHybridBQMBackend(sampler_factory=factory).solve(
+            compiled, make_preferences(None)
+        )
+
+        assert factory.calls == 2
+
+
+class TestResolveTimeLimit:
+    """Spec §16/§20: the service must be able to learn the effective time
+    limit *before* anything is submitted."""
+
+    @pytest.mark.parametrize(
+        ("user_time_limit", "expected"),
+        [
+            (None, FAKE_MIN_TIME_LIMIT),
+            (10.0, 10.0),
+            (1.0, FAKE_MIN_TIME_LIMIT),
+        ],
+        ids=["no-preference", "above-minimum", "below-minimum"],
+    )
+    def test_effective_time_limit_without_submitting(self, user_time_limit, expected):
+        fake = FakeLeapHybridSampler()
+        backend = LeapHybridBQMBackend(sampler_factory=lambda: fake)
+        compiled = make_compiled_problem()
+
+        resolved = backend.resolve_time_limit(compiled, make_preferences(user_time_limit))
+
+        assert resolved == expected
+        assert fake.sample_calls == 0
+        assert fake.min_time_limit_bqm is compiled.model
+
+    def test_options_object_missing_entirely_uses_sampler_minimum(self):
+        fake = FakeLeapHybridSampler()
+        backend = LeapHybridBQMBackend(sampler_factory=lambda: fake)
+        preferences = SolverPreferences(backend="leap_hybrid_bqm")
+        assert preferences.leap_hybrid_bqm is None
+
+        assert (
+            backend.resolve_time_limit(make_compiled_problem(), preferences)
+            == FAKE_MIN_TIME_LIMIT
+        )
+        assert fake.sample_calls == 0
+
+    @pytest.mark.parametrize(
+        "user_time_limit", [None, 10.0, 1.0], ids=["none", "above", "below"]
+    )
+    def test_solve_submits_exactly_the_resolved_time_limit(self, user_time_limit):
+        fake = FakeLeapHybridSampler()
+        backend = LeapHybridBQMBackend(sampler_factory=lambda: fake)
+        compiled = make_compiled_problem()
+        preferences = make_preferences(user_time_limit)
+
+        result = backend.solve(compiled, preferences)
+
+        expected = backend.resolve_time_limit(compiled, preferences)
+        assert result.metadata.effective_time_limit_seconds == expected
+        assert fake.sample_kwargs == {"time_limit": expected}
+
+    def test_min_time_limit_failure_is_classified_and_redacted(self):
+        fake = FakeLeapHybridSampler(
+            raise_on_min_time_limit=RuntimeError(f"exploded, token={FAKE_TOKEN}")
+        )
+        backend = LeapHybridBQMBackend(sampler_factory=lambda: fake)
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.resolve_time_limit(make_compiled_problem(), make_preferences(None))
+
+        assert exc_info.value.code == "REMOTE_SOLVER_ERROR"
+        message = str(exc_info.value)
+        assert FAKE_TOKEN not in message
+        assert "***" in message
+        assert fake.sample_calls == 0
+
+    def test_factory_failure_during_resolve_is_config_invalid(self):
+        backend = LeapHybridBQMBackend(
+            sampler_factory=CountingFactory(
+                fail_first=ValueError(f"invalid region, token={FAKE_TOKEN}")
+            )
+        )
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.resolve_time_limit(make_compiled_problem(), make_preferences(None))
+
+        assert exc_info.value.code == "DWAVE_CONFIG_INVALID"
+        assert FAKE_TOKEN not in str(exc_info.value)
+        assert "***" in str(exc_info.value)
 
 
 class TestIsAvailable:

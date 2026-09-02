@@ -75,6 +75,11 @@ class TestExactSolverBackend:
         assert backend.name == backend.capabilities.name
         assert backend.is_exhaustive == backend.capabilities.exhaustive
 
+    def test_resolve_time_limit_is_none(self):
+        # A local backend never submits a time limit (Phase 2 spec §10).
+        compiled = compile_knapsack()
+        assert ExactSolverBackend().resolve_time_limit(compiled, SolverPreferences()) is None
+
     def test_finds_known_optimum(self):
         compiled = compile_knapsack()
         result = ExactSolverBackend().solve(compiled, SolverPreferences())
@@ -135,6 +140,13 @@ class TestSimulatedAnnealingBackend:
         backend = SimulatedAnnealingBackend()
         assert backend.name == backend.capabilities.name
         assert backend.is_exhaustive == backend.capabilities.exhaustive
+
+    def test_resolve_time_limit_is_none(self):
+        compiled = compile_knapsack()
+        assert (
+            SimulatedAnnealingBackend().resolve_time_limit(compiled, SolverPreferences())
+            is None
+        )
 
     def test_same_seed_is_reproducible(self):
         compiled = compile_knapsack()
