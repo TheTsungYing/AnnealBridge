@@ -92,6 +92,14 @@ class TestCapabilities:
         assert isinstance(capabilities, SolverCapabilities)
         assert capabilities.name == "dwave_qpu"
         assert capabilities.requires_embedding is True
+        # Spec 7.1: the two policy-limited QPU parameters, as declarations.
+        assert [
+            (limit.preference, limit.limit, limit.error_code)
+            for limit in capabilities.parameter_limits
+        ] == [
+            ("num_reads", "reads", "QPU_READS_LIMIT"),
+            ("dwave_qpu.annealing_time_us", "annealing_time_us", "QPU_ANNEALING_TIME_LIMIT"),
+        ]
         assert capabilities.supports_num_sweeps is False
         assert capabilities.remote is True
         assert capabilities.heuristic is True

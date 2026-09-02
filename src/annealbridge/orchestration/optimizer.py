@@ -28,6 +28,7 @@ from annealbridge.models import (
     SolverPreferences,
     catalog_error,
 )
+from annealbridge.orchestration.limits import gate_errors, preference_limit_errors
 from annealbridge.orchestration.policy import ExecutionPolicy
 from annealbridge.penalty import PenaltyStrategy, ScaledPenaltyStrategy
 from annealbridge.solvers import (
@@ -265,20 +266,6 @@ def process_candidates(
     return solutions, len(candidates), int(len(feasible))
 
 
-# AvailabilityStatus.category → (result status, default error code), per
-# Phase 3a spec §8.2. Keyed on the structured category, never on a backend's
-# reason text, so the service stays backend-agnostic (overview principle
-# 4). A backend may name a more specific ``error_code`` on its status
-# (e.g. the D-Wave backends report DWAVE_CONFIG_INVALID); the default here
-# only applies when it does not.
-_AVAILABILITY_MAP: dict[str, tuple[str, str]] = {
-    "not_installed": ("backend_unavailable", "BACKEND_NOT_INSTALLED"),
-    "credentials_missing": ("backend_unavailable", "REMOTE_CREDENTIALS_MISSING"),
-    "config_invalid": ("configuration_error", "BACKEND_CONFIG_INVALID"),
-    "unavailable": ("backend_unavailable", "BACKEND_UNAVAILABLE"),
-}
-
-
 class OptimizationService:
     """End-to-end solve pipeline over pluggable components (spec §28)."""
 
@@ -297,9 +284,26 @@ class OptimizationService:
         self._registry: SolverRegistry = (
             registry if registry is not None else SolverRegistry.default()
         )
+        self._check_declared_limits()
         # Concurrency slots are per service instance (spec §14); a CLI-style
         # single call is unaffected.
         self._solve_slots = threading.BoundedSemaphore(policy.max_concurrent_solves)
+
+    def _check_declared_limits(self) -> None:
+        """Spec §11.3: every declared limit key must have a policy value.
+
+        A backend that declares a ceiling the policy cannot supply would
+        otherwise run unlimited; that is a composition-root error, raised
+        at construction rather than reported per solve.
+        """
+        for name in self._registry.names():
+            caps = self._registry.get(name).capabilities
+            for declaration in caps.parameter_limits:
+                if self._policy.limit(declaration.limit) is None:
+                    raise ValueError(
+                        f"backend '{name}' declares limit '{declaration.limit}' "
+                        f"but the policy has no value for it"
+                    )
 
     def solve(self, problem: OptimizationProblem) -> SolveResult:
         """Solve ``problem`` and return a structured :class:`SolveResult`.
@@ -383,140 +387,27 @@ class OptimizationService:
             message=errors[0].message,
         )
 
-    @staticmethod
-    def _limit_error(
-        code: str, label: str, value: object, maximum: object
-    ) -> SolveError:
-        """A §14 step 9 preference-limit error in the shared wording."""
-        return catalog_error(
-            code, f"{label} {value} exceeds the server maximum of {maximum}"
-        )
-
     def _gate_backend(
         self, backend_name: str, backend: SolverBackend, direction: str
     ) -> SolveResult | None:
-        """§14 steps 3–5: policy and availability gates, in spec order.
-
-        Returns a failure result, or None when the backend may run. Never
-        substitutes another backend (no silent fallback).
-
-        ``enabled_backends`` holds registry keys — the names the user
-        requests and the capabilities view reports — so the gate compares
-        ``backend_name`` (the requested key), not ``capabilities.name``,
-        which a custom registry may register under a different key.
-        """
-        caps = backend.capabilities
-        if (
-            self._policy.enabled_backends is not None
-            and backend_name not in self._policy.enabled_backends
-        ):
-            return self._failure(
-                "backend_unavailable",
-                backend_name,
-                direction,
-                [
-                    catalog_error(
-                        "BACKEND_DISABLED_BY_POLICY",
-                        f"Backend '{backend_name}' is disabled by server "
-                        f"policy; enabled backends: "
-                        f"{', '.join(sorted(self._policy.enabled_backends))}",
-                    )
-                ],
-            )
-        if caps.remote and not self._policy.allow_remote:
-            return self._failure(
-                "backend_unavailable",
-                caps.name,
-                direction,
-                [
-                    catalog_error(
-                        "REMOTE_DISABLED",
-                        f"Backend '{caps.name}' is remote and remote "
-                        f"solving is disabled by server policy",
-                    )
-                ],
-            )
-        availability = backend.is_available()
-        if not availability.available:
-            status, default_code = _AVAILABILITY_MAP[availability.category]
-            code = availability.error_code or default_code
-            return self._failure(
-                status,
-                caps.name,
-                direction,
-                [
-                    catalog_error(
-                        code,
-                        f"Backend '{caps.name}' is unavailable: "
-                        f"{availability.detail or 'no reason reported'}",
-                    )
-                ],
-            )
-        return None
+        """§16.2 steps 3–5 via :func:`gate_errors`; None when the backend may run."""
+        gate = gate_errors(backend_name, backend, self._policy)
+        if gate is None:
+            return None
+        status, reported_name, errors = gate
+        return self._failure(status, reported_name, direction, errors)
 
     def _preference_limit_errors(
         self, backend: SolverBackend, preferences: SolverPreferences
     ) -> list[SolveError]:
-        """§14 step 9, preference-driven part. Never clamps.
+        """§16.2 step 8: the backend's declared parameter limits. Never clamps.
 
-        Dispatched on capabilities, not backend names: QPU-class limits
-        apply to remote backends that take num_reads, the hybrid time limit
-        to remote backends that take a time limit. All violations are
-        collected so the caller can fix everything in one go.
+        Only the user's own values are known before compile. The
+        *effective* hybrid time limit (floored at the sampler minimum, which
+        depends on the compiled size) is checked per attempt in
+        _effective_time_limit_error, before anything is submitted.
         """
-        caps = backend.capabilities
-        policy = self._policy
-        errors: list[SolveError] = []
-        if caps.remote and caps.supports_num_reads:
-            if preferences.num_reads > policy.max_qpu_reads:
-                errors.append(
-                    self._limit_error(
-                        "QPU_READS_LIMIT",
-                        "num_reads",
-                        preferences.num_reads,
-                        policy.max_qpu_reads,
-                    )
-                )
-            annealing_time = (
-                preferences.dwave_qpu.annealing_time_us
-                if preferences.dwave_qpu is not None
-                else None
-            )
-            if (
-                annealing_time is not None
-                and annealing_time > policy.max_qpu_annealing_time_us
-            ):
-                errors.append(
-                    self._limit_error(
-                        "QPU_ANNEALING_TIME_LIMIT",
-                        "annealing_time_us",
-                        annealing_time,
-                        policy.max_qpu_annealing_time_us,
-                    )
-                )
-        if caps.remote and caps.supports_time_limit:
-            # Only the user's own value is known before compile. The
-            # *effective* value (floored at the sampler minimum, which
-            # depends on the compiled size) is checked per attempt in
-            # _effective_time_limit_error, before anything is submitted.
-            time_limit = (
-                preferences.leap_hybrid_bqm.time_limit_seconds
-                if preferences.leap_hybrid_bqm is not None
-                else None
-            )
-            if (
-                time_limit is not None
-                and time_limit > policy.max_remote_time_seconds
-            ):
-                errors.append(
-                    self._limit_error(
-                        "REMOTE_TIME_LIMIT",
-                        "time_limit_seconds",
-                        time_limit,
-                        policy.max_remote_time_seconds,
-                    )
-                )
-        return errors
+        return preference_limit_errors(backend.capabilities, preferences, self._policy)
 
     def _effective_time_limit_error(
         self,
@@ -537,7 +428,7 @@ class OptimizationService:
         if not (caps.remote and caps.supports_time_limit):
             return None
         effective = backend.resolve_time_limit(compiled, preferences)
-        maximum = self._policy.max_remote_time_seconds
+        maximum = self._policy.limit("time_seconds")
         if effective is None or effective <= maximum:
             return None
         return catalog_error(
@@ -595,9 +486,10 @@ class OptimizationService:
                 compiled = self._compiler.compile(problem, penalty)
                 # §14 step 9: this limit needs compiled info (slack included),
                 # so it runs after compile. Never clamp, never fall back.
+                variable_limit = self._policy.limit("variables")
                 if (
                     backend.is_exhaustive
-                    and compiled.num_variables > self._policy.exact_max_variables
+                    and compiled.num_variables > variable_limit
                 ):
                     return self._failure(
                         "resource_limit_exceeded",
@@ -610,7 +502,7 @@ class OptimizationService:
                                 f"{compiled.num_variables} variables "
                                 f"(including internal), exceeding the "
                                 f"exact solver limit of "
-                                f"{self._policy.exact_max_variables}",
+                                f"{variable_limit}",
                             )
                         ],
                         attempts=attempts,

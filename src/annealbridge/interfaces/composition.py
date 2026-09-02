@@ -8,7 +8,7 @@ Importing it has no side effects: the environment is read only when
 
 from dataclasses import dataclass
 
-from annealbridge.config import ServerSettings, load_settings
+from annealbridge.config import ServerSettings, SettingsError, load_settings
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.solvers import SolverRegistry
 
@@ -28,7 +28,12 @@ def build_state_from_policy(
     # The registry is kept alongside the service because the capabilities
     # view needs it directly; the service's copy is a private attribute.
     registry = registry if registry is not None else SolverRegistry.default()
-    service = OptimizationService(registry=registry, policy=policy)
+    try:
+        service = OptimizationService(registry=registry, policy=policy)
+    except ValueError as exc:
+        # A backend declares a limit key the policy has no value for (spec
+        # §11.3): a configuration error, reported like any other bad setting.
+        raise SettingsError(f"Invalid server settings: {exc}") from None
     return AppState(policy=policy, registry=registry, service=service)
 
 

@@ -45,19 +45,6 @@ class OptimizationCapabilities(BaseModel):
     problem_json_schema: dict
 
 
-def _policy_limits(name: str, policy: ExecutionPolicy) -> dict[str, float | int]:
-    if name == "exact":
-        return {"max_variables": policy.exact_max_variables}
-    if name == "dwave_qpu":
-        return {
-            "max_reads": policy.max_qpu_reads,
-            "max_annealing_time_us": policy.max_qpu_annealing_time_us,
-        }
-    if name == "leap_hybrid_bqm":
-        return {"max_time_seconds": policy.max_remote_time_seconds}
-    return {}
-
-
 @cache
 def _problem_json_schema() -> dict:
     """The problem JSON schema, generated once per process.
@@ -94,7 +81,7 @@ def build_capabilities(
                 exhaustive=caps.exhaustive,
                 supports_seed=caps.supports_seed,
                 returns_multiple_samples=caps.returns_multiple_samples,
-                limits=_policy_limits(name, policy),
+                limits=policy.limits_for(caps),
                 description=caps.description,
             )
         )

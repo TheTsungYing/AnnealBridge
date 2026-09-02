@@ -1,14 +1,15 @@
-"""Server settings read from the environment (Phase 2 spec §9).
+"""Server settings read from the environment (Phase 2 spec §9, 3a §11).
 
 Composition root only: just ``annealbridge.interfaces.*`` may import this
 package (spec §4). D-Wave credentials deliberately stay out of these
 settings — Ocean's native config handles them (spec §18).
 """
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsError as PydanticSettingsError
 
-from annealbridge.orchestration.policy import ExecutionPolicy
+from annealbridge.orchestration.policy import ExecutionPolicy, validate_limits
 
 
 class SettingsError(ValueError):
@@ -24,7 +25,8 @@ class ServerSettings(BaseSettings):
 
     The limit fields mirror :class:`ExecutionPolicy`, bounds included, so an
     invalid environment is rejected here — before a policy is built and long
-    before the first solve.
+    before the first solve. ``limits`` is read from ``ANNEALBRIDGE_LIMITS``
+    as a JSON object (e.g. ``'{"iterations": 100000}'``).
     """
 
     model_config = SettingsConfigDict(env_prefix="ANNEALBRIDGE_")
@@ -36,8 +38,16 @@ class ServerSettings(BaseSettings):
     max_qpu_annealing_time_us: float = Field(default=2000.0, gt=0)
     max_remote_time_seconds: int = Field(default=300, ge=1)
     max_concurrent_solves: int = Field(default=4, ge=1)
+    limits: dict[str, float] = Field(default_factory=dict)
     http_host: str = "127.0.0.1"
     http_port: int = 8000
+
+    @field_validator("limits")
+    @classmethod
+    def _validate_limits(cls, value: dict[str, float]) -> dict[str, float]:
+        # Same rule as ExecutionPolicy, applied at the environment boundary
+        # so the operator sees ANNEALBRIDGE_LIMITS named in the error.
+        return validate_limits(value)
 
     def to_policy(self) -> ExecutionPolicy:
         """Build the :class:`ExecutionPolicy` these settings describe."""
@@ -49,6 +59,7 @@ class ServerSettings(BaseSettings):
             max_qpu_annealing_time_us=self.max_qpu_annealing_time_us,
             max_remote_time_seconds=self.max_remote_time_seconds,
             max_concurrent_solves=self.max_concurrent_solves,
+            limits=self.limits,
         )
 
 
@@ -57,6 +68,9 @@ def load_settings() -> ServerSettings:
 
     Raises :class:`SettingsError` with an operator-readable message instead
     of letting pydantic's ``ValidationError`` (and its traceback) escape.
+    A value that cannot even be parsed (an ``ANNEALBRIDGE_LIMITS`` that is
+    not JSON) surfaces from pydantic-settings as its own ``SettingsError``
+    — a ``ValueError`` without ``.errors()`` — and is converted the same way.
     """
     try:
         return ServerSettings()
@@ -67,3 +81,5 @@ def load_settings() -> ServerSettings:
             variable = f"{ServerSettings.model_config['env_prefix']}{field}".upper()
             lines.append(f"  {variable}: {error['msg']} (got {error['input']!r})")
         raise SettingsError("\n".join(lines)) from None
+    except PydanticSettingsError as exc:
+        raise SettingsError(f"Invalid server settings: {exc}") from None

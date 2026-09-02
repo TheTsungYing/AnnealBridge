@@ -13,6 +13,7 @@ from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers.base import (
     AvailabilityStatus,
+    ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
     sampleset_to_arrays,
@@ -38,6 +39,13 @@ _CAPABILITIES = SolverCapabilities(
     supports_time_limit=True,
     supported_model_types=["bqm"],
     returns_multiple_samples=False,
+    parameter_limits=[
+        ParameterLimit(
+            preference="leap_hybrid_bqm.time_limit_seconds",
+            limit="time_seconds",
+            error_code="REMOTE_TIME_LIMIT",
+        ),
+    ],
     description=(
         "D-Wave Leap cloud hybrid (classical + quantum) BQM solver for "
         "large problems. Typically returns a single sample per solve, so "

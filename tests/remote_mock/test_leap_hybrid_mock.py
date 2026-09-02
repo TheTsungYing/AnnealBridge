@@ -86,6 +86,11 @@ class TestCapabilities:
         assert capabilities.supports_seed is False
         assert capabilities.supports_num_reads is False
         assert capabilities.supports_time_limit is True
+        # Spec 7.1: the hybrid time limit is a declaration, not a name check.
+        assert [
+            (limit.preference, limit.limit, limit.error_code)
+            for limit in capabilities.parameter_limits
+        ] == [("leap_hybrid_bqm.time_limit_seconds", "time_seconds", "REMOTE_TIME_LIMIT")]
         assert capabilities.supported_model_types == ["bqm"]
         assert capabilities.returns_multiple_samples is False
 

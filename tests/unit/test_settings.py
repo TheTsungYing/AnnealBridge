@@ -5,6 +5,7 @@ import os
 import pytest
 
 from pydantic import ValidationError
+from pydantic_settings import SettingsError as PydanticSettingsError
 
 from annealbridge.config import ServerSettings, SettingsError, load_settings
 from annealbridge.orchestration.policy import ExecutionPolicy
@@ -20,6 +21,7 @@ ENV_SUFFIXES = [
     "MAX_QPU_ANNEALING_TIME_US",
     "MAX_REMOTE_TIME_SECONDS",
     "MAX_CONCURRENT_SOLVES",
+    "LIMITS",
     "HTTP_HOST",
     "HTTP_PORT",
 ]
@@ -237,3 +239,88 @@ class TestLoadSettings:
 
         assert isinstance(exc_info.value, SettingsError)
         assert exc_info.value.__cause__ is None
+
+
+class TestGenericLimits:
+    """Phase 3a §11: ``ANNEALBRIDGE_LIMITS`` is a JSON object of custom keys."""
+
+    def test_defaults_to_empty(self, clean_env):
+        settings = ServerSettings()
+
+        assert settings.limits == {}
+        assert settings.to_policy().limits == {}
+
+    def test_json_object_is_parsed_into_floats(self, clean_env):
+        clean_env.setenv("ANNEALBRIDGE_LIMITS", '{"iterations": 100}')
+
+        settings = load_settings()
+
+        assert settings.limits == {"iterations": 100.0}
+        assert isinstance(settings.limits["iterations"], float)
+
+    def test_limits_reach_the_policy(self, clean_env):
+        clean_env.setenv("ANNEALBRIDGE_LIMITS", '{"iterations": 100, "bits": 2048}')
+
+        policy = load_settings().to_policy()
+
+        assert policy.limits == {"iterations": 100.0, "bits": 2048.0}
+        assert policy.limit("iterations") == 100.0
+        assert policy.limit("bits") == 2048.0
+
+    def test_non_json_value_comes_from_pydantic_settings_not_validation(self, clean_env):
+        # Documents the source: pydantic-settings raises its own SettingsError
+        # (a ValueError without .errors()), not pydantic's ValidationError.
+        clean_env.setenv("ANNEALBRIDGE_LIMITS", "not json")
+
+        with pytest.raises(PydanticSettingsError) as exc_info:
+            ServerSettings()
+
+        assert not isinstance(exc_info.value, ValidationError)
+        assert not hasattr(exc_info.value, "errors")
+
+    def test_non_json_value_is_a_project_settings_error(self, clean_env):
+        clean_env.setenv("ANNEALBRIDGE_LIMITS", "not json")
+
+        with pytest.raises(SettingsError) as exc_info:
+            load_settings()
+
+        message = str(exc_info.value)
+        assert message.startswith("Invalid server settings: ")
+        assert "limits" in message
+        assert exc_info.value.__cause__ is None
+
+    def test_compatibility_key_is_rejected_naming_the_variable(self, clean_env):
+        clean_env.setenv("ANNEALBRIDGE_LIMITS", '{"reads": 5}')
+
+        with pytest.raises(SettingsError) as exc_info:
+            load_settings()
+
+        message = str(exc_info.value)
+        assert "ANNEALBRIDGE_LIMITS" in message
+        assert "max_qpu_reads" in message
+
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_non_positive_value_is_rejected_naming_the_variable(self, clean_env, value):
+        clean_env.setenv("ANNEALBRIDGE_LIMITS", '{"iterations": %s}' % value)
+
+        with pytest.raises(SettingsError) as exc_info:
+            load_settings()
+
+        assert "ANNEALBRIDGE_LIMITS" in str(exc_info.value)
+
+    def test_old_env_names_still_drive_the_compatibility_keys(self, clean_env):
+        clean_env.setenv("ANNEALBRIDGE_EXACT_MAX_VARIABLES", "8")
+        clean_env.setenv("ANNEALBRIDGE_MAX_QPU_READS", "50")
+        clean_env.setenv("ANNEALBRIDGE_MAX_QPU_ANNEALING_TIME_US", "123.5")
+        clean_env.setenv("ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS", "30")
+        clean_env.setenv("ANNEALBRIDGE_LIMITS", '{"iterations": 100}')
+
+        policy = load_settings().to_policy()
+
+        assert policy.limit("variables") == 8
+        assert policy.limit("reads") == 50
+        assert policy.limit("annealing_time_us") == 123.5
+        assert policy.limit("time_seconds") == 30
+        assert policy.limit("iterations") == 100.0
+        # The generic mapping never shadows the four Phase 2 keys.
+        assert set(policy.limits) == {"iterations"}

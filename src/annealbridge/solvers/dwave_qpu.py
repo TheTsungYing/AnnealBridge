@@ -17,6 +17,7 @@ from annealbridge.models import (
 )
 from annealbridge.solvers.base import (
     AvailabilityStatus,
+    ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
     sampleset_to_arrays,
@@ -43,6 +44,16 @@ _CAPABILITIES = SolverCapabilities(
     supported_model_types=["bqm"],
     returns_multiple_samples=True,
     requires_embedding=True,
+    parameter_limits=[
+        ParameterLimit(
+            preference="num_reads", limit="reads", error_code="QPU_READS_LIMIT"
+        ),
+        ParameterLimit(
+            preference="dwave_qpu.annealing_time_us",
+            limit="annealing_time_us",
+            error_code="QPU_ANNEALING_TIME_LIMIT",
+        ),
+    ],
     description=(
         "D-Wave quantum annealer accessed through "
         "EmbeddingComposite(DWaveSampler()). Minor-embedding and chain-break "
