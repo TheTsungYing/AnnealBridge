@@ -10,6 +10,7 @@
 > - 補齊 Problem Validator 檢查項目，`version` 改為 Literal
 > - 統一 constraint schema 為 `terms`（移除 `expression.terms` 寫法）
 > - `penalty_multiplier` 可由 SolverPreferences 覆寫
+> - Hard penalty 量級改以 `penalty_scale = objective_scale + soft 項能量上界` 計算（§18）：修正 soft weight 遠大於 objective 時 SA 找不到 feasible 解的問題；`objective_scale` 語意不變（仍為 objective-only，供 Agent 判讀 soft weight）
 
 ---
 
@@ -312,11 +313,13 @@ Hard constraint 使用相同形式，但係數改為 `hard_penalty`。
 
 ### 10.3 weight 的單位
 
-`weight` 的單位是 **objective 的單位**。也就是說「違反一單位的平方 ≈ 損失 weight 單位的 objective」。若 objective 係數在千位而 weight 為 5，該 soft constraint 幾乎沒有作用。Phase 1 不自動正規化，但 README 必須明確說明，且 constraint trace 需輸出 `objective_scale` 讓 Agent 判斷。
+`weight` 的單位是 **objective 的單位**。也就是說「違反一單位的平方 ≈ 損失 weight 單位的 objective」。若 objective 係數在千位而 weight 為 5，該 soft constraint 幾乎沒有作用。Phase 1 不自動正規化，但 README 必須明確說明，且 constraint trace 需輸出 `objective_scale` 讓 Agent 判斷。`objective_scale` 只看 objective（不含任何 soft weight），否則 Agent 用它判讀 weight 會變成循環參照。
 
 ### 10.4 Hard penalty 與 soft weight 不得混用
 
 兩者在程式碼中須使用不同的欄位與不同的來源；不得把 `weight` 當成 hard penalty 的 fallback。
+
+PenaltyStrategy 在決定 hard penalty 的**量級**時，會把 soft 項可能貢獻的能量範圍納入上界（§18 `penalty_scale`）。這不是混用：hard penalty 仍由程式從問題結構算出，weight 從未被當成 penalty 的值或備用值使用，只是 penalty 必須壓過的能量地形多了 soft 項這一塊。
 
 ---
 
@@ -465,7 +468,7 @@ class CompiledProblem(BaseModel):
     internal_variables: set[str]
     constraint_trace: list[ConstraintTrace]
     hard_penalty: float
-    objective_scale: float         # PenaltyStrategy 估出的 scale，供 Agent 判讀 soft weight
+    objective_scale: float         # objective-only scale（§18），供 Agent 判讀 soft weight；不含 soft 項
     num_variables: int             # 含 internal
 ```
 
@@ -479,18 +482,36 @@ class CompiledProblem(BaseModel):
 class PenaltyStrategy(Protocol):
     def initial_penalty(self, problem: OptimizationProblem) -> float: ...
     def next_penalty(self, previous: float, attempt: int) -> float: ...
-    def objective_scale(self, problem: OptimizationProblem) -> float: ...
+    def objective_scale(self, problem: OptimizationProblem) -> float: ...   # objective-only
+    def penalty_scale(self, problem: OptimizationProblem) -> float: ...     # objective + soft 上界
 ```
 
 Phase 1 實作 `ScaledPenaltyStrategy`：
 
 ```python
 objective_scale = max(1.0, sum(|linear coeffs|) + sum(|quadratic coeffs|))
-initial_penalty = objective_scale * problem.solver.penalty_multiplier
+soft_bound      = Σ_{soft c} weight_c × D_c²
+penalty_scale   = objective_scale + soft_bound
+initial_penalty = penalty_scale * problem.solver.penalty_multiplier
 next_penalty    = previous * 2
 ```
 
-說明：對 binary 變數而言 `objective_scale` 已是 objective 變動範圍的上界，理論上 `multiplier >= 1` 即足以讓任何 hard violation 不划算。`multiplier = 2` 是保險，retry 是二次保險。
+其中 `D_c` 是 soft constraint `c` 依 §10.2 編譯後、平方括號內線性式在**所有** binary assignment（含 compiler 為它產生的 slack bits）上的最大絕對值。lhs 上下界用累加後的係數算（同 §12 / §14 的 `lhs_min` / `lhs_max`）：
+
+| 情形 | `D_c` |
+|---|---|
+| `==` | `max(abs(lhs_min − rhs), abs(lhs_max − rhs))` |
+| inequality，正規化為 `<=` 後 slack range `S >= 0` | `max(abs(lhs_min − rhs), abs(lhs_max + S − rhs))`（slack 全開時剛好加 `S`） |
+| inequality，redundant（`lhs_max <= rhs`） | `0`（compiler 不產生任何項） |
+| soft inequality，trivially infeasible（`S < 0`） | 同 `==` 的公式（compiler 已 clamp 成 0 個 slack bit） |
+
+單一 constraint 的 `weight × D²` 是該 soft 項能量的精確最大值；逐條相加得到的 `soft_bound` 是全部 soft 項總和的保守上界（不會低估）。整個計算是純算術（`validation/estimates.py`），不建 BQM，deterministic。
+
+說明：對 binary 變數而言 `objective_scale` 是 objective 變動範圍的上界，`soft_bound` 是 soft 項總能量的上界，兩者相加就是 hard penalty 必須壓過的「非懲罰能量地形」。推導：任一違反 hard constraint 的 assignment，其違反量至少 1（inequality 係數為整數；equality 若係數與 rhs 為整數亦然），能量 `>= objective_min + λ`；最佳 feasible assignment 的能量 `<= objective_max + soft_bound`。因此 `λ > penalty_scale >= (objective_max − objective_min) + soft_bound` 即保證 BQM 的 global minimum 是 feasible；`multiplier = 1` 時保證沒有 infeasible assignment **嚴格**優於最佳 feasible 解，`multiplier = 2` 是保險，retry 是二次保險。若 equality constraint 有非整數係數，最小違反量可能小於 1，此保證不成立（與 v1 相同，不另處理）。
+
+沒有 soft constraint 時 `soft_bound = 0`，`penalty_scale == objective_scale`，Phase 1 既有問題（knapsack / assignment / retry）的 penalty 數值完全不變。
+
+`objective_scale` 保持 objective-only：它是 Agent（與 Phase 2 validator 的 `SOFT_WEIGHT_SMALL` warning）判讀 soft weight 相對 objective 大小的基準，若把 weight 混進去會變成循環參照。`penalty_scale` 只用來決定 hard penalty 的量級（§10.4）。
 
 注意 penalty 過大會讓 SA 的 energy landscape 過於崎嶇而降低找到 feasible 解的機率。因此：
 

@@ -74,6 +74,84 @@ def compute_objective_scale(objective: Objective) -> float:
     return max(1.0, total)
 
 
+def _max_abs_affine(coefficients: dict[str, float], constant: float) -> float:
+    """Return ``max |sum(c_i * y_i) + constant|`` over binary ``y_i``.
+
+    An affine function of independent binary variables attains its extremes
+    at the all-negative / all-positive vertices, so the maximum absolute
+    value is exactly ``max(|lhs_min + constant|, |lhs_max + constant|)``.
+    """
+    lhs_min, lhs_max = lhs_bounds(coefficients)
+    return max(abs(lhs_min + constant), abs(lhs_max + constant))
+
+
+def compute_soft_energy_bound(constraint: Constraint) -> float:
+    """Upper bound on the energy one soft constraint can add to the BQM.
+
+    Mirrors the compiler's squared form (spec §10.2): ``weight * (sum(a_i x_i)
+    [+ slack] - rhs)^2``. The maximum of the squared affine term over every
+    binary assignment (declared variables *and* the slack bits the compiler
+    will generate) is ``weight * D^2`` with ``D`` from :func:`_max_abs_affine`;
+    for a single constraint this is the exact maximum, not just a bound.
+
+    Case analysis follows ``encode_slack`` so the two can never drift:
+
+    - ``==``: no slack, ``D = max(|lhs_min - rhs|, |lhs_max - rhs|)``.
+    - redundant inequality: the compiler emits nothing -> ``0``.
+    - inequality with slack range ``S >= 0``: the slack bits add exactly
+      ``S`` to the normalized lhs maximum.
+    - trivially infeasible *soft* inequality: the compiler clamps to zero
+      slack bits, so the bound uses no slack either.
+
+    Returns ``0.0`` for a hard constraint: hard penalties are chosen by the
+    penalty strategy, never bounded by a weight (spec §10.4).
+    """
+    if constraint.type != "soft" or constraint.weight is None:
+        return 0.0
+    weight = constraint.weight
+
+    if constraint.operator == "==":
+        coefficients = {
+            variable: value
+            for variable, value in accumulate_terms(constraint.terms).items()
+            if value != 0.0
+        }
+        deviation = _max_abs_affine(coefficients, -constraint.rhs)
+        return weight * deviation * deviation
+
+    analysis = analyze_inequality(constraint)
+    if analysis.redundant:
+        return 0.0
+    slack_range = analysis.slack_range
+    assert slack_range is not None  # non-redundant analysis always sets it
+    slack_total = float(sum(compute_slack_coefficients(max(slack_range, 0))))
+    coefficients = dict(analysis.coefficients)
+    if slack_total:
+        coefficients["__slack_total"] = slack_total
+    deviation = _max_abs_affine(coefficients, -analysis.rhs)
+    return weight * deviation * deviation
+
+
+def compute_penalty_scale(problem: OptimizationProblem) -> float:
+    """Return ``objective_scale + sum(soft energy bounds)`` (spec §18).
+
+    The hard penalty must dominate the *whole* non-penalty energy landscape,
+    which is the objective plus every soft term the compiler emits. With
+    ``lambda > penalty_scale`` any assignment violating a hard constraint by
+    at least one unit costs more than the best feasible assignment can gain.
+
+    ``objective_scale`` itself stays objective-only (it is what the agent
+    compares soft weights against); this function only *adds* the soft
+    contribution, it never feeds a weight into the penalty as a value. For a
+    problem without soft constraints the result equals ``objective_scale``
+    exactly, so Phase 1 behaviour is unchanged.
+    """
+    soft_bound = sum(
+        compute_soft_energy_bound(constraint) for constraint in problem.constraints
+    )
+    return compute_objective_scale(problem.objective) + soft_bound
+
+
 @dataclass(frozen=True)
 class InequalityAnalysis:
     """Pure-arithmetic view of one inequality constraint.

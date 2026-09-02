@@ -432,6 +432,14 @@ class OptimizationService:
         try:
             max_attempts = self._max_attempts(backend, problem.solver)
             penalty = self._penalty_strategy.initial_penalty(problem)
+            logger.info(
+                "Problem %s: objective_scale=%s, penalty_scale=%s, "
+                "initial hard_penalty=%s",
+                problem.name,
+                self._penalty_strategy.objective_scale(problem),
+                self._penalty_strategy.penalty_scale(problem),
+                penalty,
+            )
             raw: RawSolverResult | None = None
 
             for attempt in range(1, max_attempts + 1):

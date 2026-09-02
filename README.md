@@ -295,7 +295,27 @@ are in the thousands, a weight of 5 has almost no influence. The compile step
 exposes `objective_scale`
 (`max(1.0, Σ|linear coefficients| + Σ|quadratic coefficients|)`), an upper
 bound on the objective's range over binary variables; choose weights relative
-to that scale.
+to that scale. `objective_scale` never includes soft weights.
+
+### Hard constraint penalties
+
+The hard-constraint penalty λ is computed by the penalty strategy, never taken
+from the agent. It is sized against the whole non-penalty energy landscape:
+
+```text
+penalty_scale   = objective_scale + Σ_soft weight × D²
+initial_penalty = penalty_scale × penalty_multiplier   (default multiplier 2)
+retry           = previous × 2
+```
+
+where `D` is the largest absolute value the soft constraint's squared term
+can reach over all binary assignments (slack bits included). A soft weight far
+above the objective therefore cannot drown a hard constraint: with
+`multiplier > 1` the lowest-energy assignment is always feasible whenever one
+exists (assuming integer coefficients, which inequalities already require).
+Without soft constraints `penalty_scale` equals `objective_scale`. Soft
+weights are only used to *bound* the energy the penalty must dominate; they
+are never used as, or substituted for, the hard penalty itself.
 
 Ranking accounts for soft violations: solutions are ordered by `ranking_score`
 (`objective_value + soft_violation_score` when minimizing,
