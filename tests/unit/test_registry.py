@@ -1,0 +1,143 @@
+"""Unit tests for the solver backend registry (Phase 2 spec §11).
+
+The registry is the single lookup point from backend name to backend
+instance. Unknown names raise ``KeyError`` at the registry level and are
+mapped by the service to a structured ``UNKNOWN_BACKEND`` error — never to
+a silent fallback onto another backend.
+"""
+
+import pytest
+
+from annealbridge.models import RECOMMENDED_ACTIONS, OptimizationProblem
+from annealbridge.orchestration import OptimizationService
+from annealbridge.solvers import (
+    ExactSolverBackend,
+    SimulatedAnnealingBackend,
+    SolverRegistry,
+)
+
+
+def make_problem(backend: str) -> OptimizationProblem:
+    """A minimal feasible 0/1 problem: maximize 2a + b s.t. a + b <= 1."""
+    return OptimizationProblem.model_validate(
+        {
+            "name": "registry test problem",
+            "variables": [{"name": "a"}, {"name": "b"}],
+            "objective": {
+                "direction": "maximize",
+                "linear_terms": [
+                    {"variable": "a", "coefficient": 2},
+                    {"variable": "b", "coefficient": 1},
+                ],
+            },
+            "constraints": [
+                {
+                    "id": "at_most_one",
+                    "type": "hard",
+                    "terms": [
+                        {"variable": "a", "coefficient": 1},
+                        {"variable": "b", "coefficient": 1},
+                    ],
+                    "operator": "<=",
+                    "rhs": 1,
+                }
+            ],
+            "solver": {"backend": backend},
+        }
+    )
+
+
+class TestSolverRegistryLookup:
+    def test_get_returns_the_registered_backend(self):
+        exact = ExactSolverBackend()
+        registry = SolverRegistry({exact.name: exact})
+
+        assert registry.get("exact") is exact
+
+    def test_get_raises_key_error_for_unknown_name(self):
+        registry = SolverRegistry({"exact": ExactSolverBackend()})
+
+        with pytest.raises(KeyError):
+            registry.get("nope")
+
+    def test_names_lists_the_registered_names(self):
+        registry = SolverRegistry({"exact": ExactSolverBackend()})
+
+        assert registry.names() == ["exact"]
+
+
+class TestDefaultRegistry:
+    def test_default_registers_exactly_the_expected_backends(self):
+        registry = SolverRegistry.default()
+
+        assert set(registry.names()) == {
+            "exact",
+            "simulated_annealing",
+            "dwave_qpu",
+            "leap_hybrid_bqm",
+        }
+        assert len(registry.names()) == 4
+
+    def test_default_backends_report_their_own_names(self):
+        registry = SolverRegistry.default()
+
+        assert registry.get("exact").name == "exact"
+        assert registry.get("simulated_annealing").name == "simulated_annealing"
+        assert registry.get("dwave_qpu").name == "dwave_qpu"
+        assert registry.get("leap_hybrid_bqm").name == "leap_hybrid_bqm"
+
+
+def make_service_without_dwave_qpu() -> OptimizationService:
+    """Service whose registry deliberately lacks ``dwave_qpu``.
+
+    ``SolverPreferences.backend`` is a Literal of registered names, so the
+    UNKNOWN_BACKEND path is exercised with a schema-valid name that is
+    missing from the injected registry.
+    """
+    exact = ExactSolverBackend()
+    annealer = SimulatedAnnealingBackend()
+    return OptimizationService(
+        registry=SolverRegistry({exact.name: exact, annealer.name: annealer})
+    )
+
+
+class TestServiceUnknownBackend:
+    def test_status_and_backend_report_the_requested_name(self):
+        result = make_service_without_dwave_qpu().solve(make_problem("dwave_qpu"))
+
+        assert result.status == "backend_unavailable"
+        assert result.backend == "dwave_qpu"
+
+    def test_no_fallback_solutions_are_produced(self):
+        result = make_service_without_dwave_qpu().solve(make_problem("dwave_qpu"))
+
+        assert result.solutions == []
+
+    def test_single_structured_unknown_backend_error(self):
+        result = make_service_without_dwave_qpu().solve(make_problem("dwave_qpu"))
+
+        assert len(result.errors) == 1
+        error = result.errors[0]
+        assert error.code == "UNKNOWN_BACKEND"
+        assert error.retryable is False
+        assert error.recommended_action == RECOMMENDED_ACTIONS["UNKNOWN_BACKEND"]
+
+    def test_message_names_the_request_and_the_available_backends(self):
+        result = make_service_without_dwave_qpu().solve(make_problem("dwave_qpu"))
+
+        message = result.errors[0].message
+        assert "dwave_qpu" in message
+        assert "exact" in message
+        assert "simulated_annealing" in message
+
+
+class TestCustomRegistryInjection:
+    def test_injected_registry_solves_a_registered_backend(self):
+        exact = ExactSolverBackend()
+        service = OptimizationService(registry=SolverRegistry({exact.name: exact}))
+
+        result = service.solve(make_problem("exact"))
+
+        assert result.status == "success"
+        assert result.backend == "exact"
+        assert result.solutions

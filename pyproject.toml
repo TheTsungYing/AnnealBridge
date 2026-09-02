@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "annealbridge"
+version = "0.1.0"
+description = "Optimization Tool Middleware — deterministic BQM compilation, solving, validation and ranking for combinatorial optimization problems"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "pydantic-settings>=2",
+    "dimod>=0.12",
+    "dwave-samplers>=1.0",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=2,<3"]
+dwave = ["dwave-system"]
+all = ["mcp>=2,<3", "dwave-system"]
+# Spec §6 lists "pytest-anyio", but no real distribution exists (PyPI only has an
+# empty 0.0.0 placeholder); anyio ships its own pytest plugin, so depend on anyio.
+dev = ["pytest>=8.0", "anyio>=4", "mcp[cli]>=2,<3"]
+
+[project.scripts]
+annealbridge = "annealbridge.interfaces.cli.main:main"
+annealbridge-mcp = "annealbridge.interfaces.mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Deselect the opt-in live D-Wave tests by default so a plain `pytest` never
+# consumes Leap quota (spec §28). Run them explicitly with `pytest -m remote`.
+addopts = '-m "not remote"'
+markers = [
+    "remote: live D-Wave tests (opt-in; consume Leap quota; require DWAVE_API_TOKEN)",
+]

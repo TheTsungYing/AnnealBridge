@@ -1,0 +1,58 @@
+# CI — spec §29
+#
+# 普通 push / PR 跑：unit、scenarios、architecture、mcp、remote_mock。
+# remote_live 測試由 pytest addopts (-m "not remote") 預設排除，
+# 因此本 workflow 不會消耗任何 D-Wave Leap quota，也不需要 DWAVE_API_TOKEN。
+#
+# 本檔案刻意不包含任何 printenv / env dump / echo secrets / debug 環境變數步驟。
+
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with all extras
+        run: pip install -e ".[all,dev]"
+
+      # 不加 -m：沿用 pyproject 的 addopts = -m "not remote"，
+      # 涵蓋 unit / scenarios / architecture / mcp / remote_mock。
+      - name: Run tests
+        run: pytest
+
+  minimal-install:
+    name: Minimal install (no extras)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 刻意不安裝任何 extra：驗證缺少 mcp / dwave-system 時仍可運作。
+      - name: Install package without extras
+        run: pip install .
+
+      - name: Solver registry works without optional dependencies
+        run: python -c "from annealbridge.solvers import SolverRegistry; r = SolverRegistry.default(); print(r.names())"
+
+      - name: CLI works without optional dependencies
+        run: annealbridge export-schema

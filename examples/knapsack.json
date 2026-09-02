@@ -1,0 +1,38 @@
+{
+  "version": "1.0",
+  "name": "knapsack",
+  "description": "0/1 knapsack with capacity 10: maximize total value subject to total weight <= 10. Global optimum is {item_a, item_c} with value 17 and weight 10.",
+  "variables": [
+    {"name": "item_a", "type": "binary", "description": "Item A (weight 6, value 10)"},
+    {"name": "item_b", "type": "binary", "description": "Item B (weight 5, value 8)"},
+    {"name": "item_c", "type": "binary", "description": "Item C (weight 4, value 7)"},
+    {"name": "item_d", "type": "binary", "description": "Item D (weight 3, value 6)"}
+  ],
+  "objective": {
+    "direction": "maximize",
+    "linear_terms": [
+      {"variable": "item_a", "coefficient": 10},
+      {"variable": "item_b", "coefficient": 8},
+      {"variable": "item_c", "coefficient": 7},
+      {"variable": "item_d", "coefficient": 6}
+    ]
+  },
+  "constraints": [
+    {
+      "id": "capacity",
+      "description": "Total weight must not exceed the knapsack capacity of 10",
+      "type": "hard",
+      "terms": [
+        {"variable": "item_a", "coefficient": 6},
+        {"variable": "item_b", "coefficient": 5},
+        {"variable": "item_c", "coefficient": 4},
+        {"variable": "item_d", "coefficient": 3}
+      ],
+      "operator": "<=",
+      "rhs": 10
+    }
+  ],
+  "solver": {
+    "backend": "exact"
+  }
+}

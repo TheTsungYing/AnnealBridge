@@ -1,0 +1,40 @@
+# Remote live tests — spec §29
+#
+# 注意事項：
+#   * 唯一觸發方式是 workflow_dispatch（手動觸發）。刻意「沒有」push /
+#     pull_request / schedule trigger，因為這個 workflow 會實際連線
+#     D-Wave Leap 並消耗 quota。
+#   * DWAVE_API_TOKEN 從 repository secrets 注入，且只注入到底下那一個
+#     pytest step（不放在 job 或 workflow 層級），把 secret 的暴露面
+#     縮到最小。
+#   * fork 的 PR 取不到本 repo 的 secrets；而且 workflow_dispatch 本來
+#     就只能由本 repo 有權限的人手動觸發，fork 無法啟動這個 workflow。
+#   * 本檔案刻意不包含任何 printenv / env dump / echo secrets /
+#     debug 環境變數步驟。
+
+name: Remote Live Tests
+
+on: workflow_dispatch
+
+jobs:
+  remote-live:
+    name: D-Wave Leap live tests (manual, consumes quota)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package with all extras
+        run: pip install -e ".[all,dev]"
+
+      # -m remote 覆寫 pyproject addopts 的 -m "not remote"，
+      # 讓 remote_live 測試實際執行。token 只在這一步提供。
+      - name: Run remote live tests
+        run: pytest -m remote tests/remote_live -v
+        env:
+          DWAVE_API_TOKEN: ${{ secrets.DWAVE_API_TOKEN }}

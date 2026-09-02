@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+
+# Local tool settings
+.claude/settings.local.json
+
+# Credentials — D-Wave config and env files must never be committed
+.env
+.env.*
+dwave.conf
+.dwave*
