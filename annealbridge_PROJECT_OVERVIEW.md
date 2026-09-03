@@ -218,7 +218,7 @@ Validator  → 只檢查，不修改
 | Phase 3a 規格 | 完成（v1） |
 | Phase 1 實作 | 完成（2026-08，`optimizer` 套件，後於 Phase 2 Step 1 改名 `annealbridge`） |
 | Phase 2 實作 | 完成（2026-09-02，spec §35 全部 16 步；`pytest` 510 passed，remote_live 為 opt-in） |
-| Phase 3a 實作 | 完成（2026-09-02，spec §30 全部 10 步；`pytest` 1311 passed，remote_live 為 opt-in） |
+| Phase 3a 實作 | 完成（2026-09-03，spec §30 全部 10 步；`pytest` 1311 passed，remote_live 為 opt-in） |
 | 版本控制 / CI | 2026-09-02 建立 git repo；CI workflow 已就緒，推上 GitHub 後生效 |
 | Phase 3b（整數變數、Fujitsu DA） | 只留擴充點（3a spec §32），開工前先寫 3b spec |
 

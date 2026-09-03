@@ -1,7 +1,7 @@
 # AnnealBridge Phase 3a 驗收報告
 
 > 對照 `annealbridge_phase3a_spec_v1.md` §31 Acceptance Criteria 逐條核對。
-> 核對日期：2026-09-03。commit 範圍：`6486719..HEAD`（步驟 1–9 已 commit；步驟 10 為本次工作樹變更）。
+> 核對日期：2026-09-03。commit 範圍：`6486719..ad5d1c0`（步驟 1–10 全部已 commit）。
 > 執行環境：Windows 11、`.venv\Scripts\python.exe`（**未安裝** `dwave-system`，`pip show dwave-system` → not found）。
 
 ---
