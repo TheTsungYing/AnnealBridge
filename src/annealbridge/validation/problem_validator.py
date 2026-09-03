@@ -1,4 +1,4 @@
-"""Pre-compilation validation of an OptimizationProblem (spec §12, Phase 2 §20).
+"""Pre-compilation validation of an OptimizationProblem (spec §12, Phase 2 §20, 3a §9).
 
 ``validate_problem`` collects *all* errors in a single pass and returns them
 as a list of ``SolveError`` (each carrying the catalog's fixed
@@ -10,19 +10,27 @@ and only produce a DUPLICATE_TERM_MERGED warning plus one log line (spec §8).
 advisory layer: non-blocking warnings, ``estimated_compiled_variables`` and
 ``objective_scale``, so an agent can fix a problem or switch backend before
 spending quota. Warnings never affect ``valid``.
+
+Backend-dependent advice is driven purely by the injected
+``SolverCapabilities`` declaration (3a §9): this module never names a
+backend, never reads policy and never imports ``solvers`` (spec §4).
 """
 
 import logging
 import math
+import types
+import typing
 from collections import Counter
 
 from pydantic import BaseModel
 
 from annealbridge.models import (
     Constraint,
+    ModelType,
     Objective,
     OptimizationProblem,
     SolveError,
+    SolverCapabilities,
     SolverPreferences,
     catalog_error,
 )
@@ -43,12 +51,6 @@ LARGE_SLACK_BITS_THRESHOLD = 10
 EXACT_NEAR_LIMIT_RATIO = 0.8
 QPU_DENSE_VARIABLE_THRESHOLD = 150
 QPU_DENSE_CONSTRAINT_VARIABLE_THRESHOLD = 30
-
-# Backends whose parameters the validator warns about (§15.2, §16). The spec's
-# §20 table conditions on backend *names*; SolverCapabilities lives in the
-# solvers layer, which validation must not import (§4).
-SEED_IGNORING_BACKENDS = frozenset({"dwave_qpu", "leap_hybrid_bqm"})
-HYBRID_IGNORED_PARAMETER_FIELDS = ("num_reads", "num_sweeps")
 
 # Defaults are read off the model so they can never drift from the schema.
 _DEFAULT_SOLVER_PREFERENCES = SolverPreferences()
@@ -74,16 +76,68 @@ VALIDATOR_ERROR_CODES: frozenset[str] = frozenset(
     }
 )
 
-# Backend-specific option fields that must be finite and strictly positive
-# when given: (SolverPreferences attribute, option field).
-_POSITIVE_BACKEND_OPTION_FIELDS = (
-    ("dwave_qpu", "annealing_time_us"),
-    ("dwave_qpu", "chain_strength"),
-    ("leap_hybrid_bqm", "time_limit_seconds"),
+
+def _optional_members(annotation: object) -> list[object] | None:
+    """The non-None members of an optional union annotation, else None.
+
+    Accepts both spellings — ``types.UnionType`` (``X | None``) and
+    ``typing.Union`` / ``Optional[X]``; anything that is not a union
+    (a bare type, a Literal, ...) yields None.
+    """
+    origin = typing.get_origin(annotation)
+    if origin is not types.UnionType and origin is not typing.Union:
+        return None
+    return [arg for arg in typing.get_args(annotation) if arg is not type(None)]
+
+
+def _optional_model(annotation: object) -> type[BaseModel] | None:
+    """The ``Model`` in a ``Model | None`` annotation, else None (3a §9.4).
+
+    Only a union of exactly one BaseModel subclass with None counts as an
+    option block; ``int | None`` (``seed``) and bare types do not.
+    """
+    members = _optional_members(annotation)
+    if members is None or len(members) != 1:
+        return None
+    (member,) = members
+    if isinstance(member, type) and issubclass(member, BaseModel):
+        return member
+    return None
+
+
+def _optional_number(annotation: object) -> bool:
+    """True for ``int | None`` / ``float | None`` (either union spelling)."""
+    members = _optional_members(annotation)
+    return members is not None and len(members) == 1 and members[0] in (int, float)
+
+
+def _option_blocks() -> dict[str, type[BaseModel]]:
+    """``SolverPreferences`` fields that are backend option blocks (3a §9.4).
+
+    Reflected from the model so a new backend's block (with its own
+    numeric options) is covered without touching this module.
+    """
+    blocks: dict[str, type[BaseModel]] = {}
+    for name, field in SolverPreferences.model_fields.items():
+        model = _optional_model(field.annotation)
+        if model is not None:
+            blocks[name] = model
+    return blocks
+
+
+# (option block name, option field) pairs whose value, when given, must be
+# finite and strictly positive (3a §9.4). bool fields are deliberately
+# excluded.
+_POSITIVE_OPTION_FIELDS: tuple[tuple[str, str], ...] = tuple(
+    (block, field)
+    for block, model in _option_blocks().items()
+    for field, info in model.model_fields.items()
+    if _optional_number(info.annotation)
 )
 
 # Fixed categorical guidance per warning code (mirrors the error catalog's
-# style; §13.2's RECOMMENDED_ACTIONS stays an error-code vocabulary).
+# style; §13.2's RECOMMENDED_ACTIONS stays an error-code vocabulary). The
+# text describes backends by capability, never by name (3a §13.2).
 _WARNING_RECOMMENDED_ACTIONS: dict[str, str] = {
     "SOFT_WEIGHT_SMALL": (
         "The soft constraint's weight is tiny compared to the objective's "
@@ -91,25 +145,28 @@ _WARNING_RECOMMENDED_ACTIONS: dict[str, str] = {
         "the preference matters."
     ),
     "LARGE_SLACK_RANGE": (
-        "This inequality needs many slack bits, which enlarges the compiled "
-        "model; tighten the bound or split the constraint if possible."
+        "This inequality needs many slack bits on a BQM backend, which "
+        "enlarges the compiled model; tighten the bound or split the "
+        "constraint if possible."
     ),
     "EXACT_NEAR_LIMIT": (
-        "The estimated compiled size is close to the exact solver's variable "
-        "limit; consider simulated_annealing before the problem grows."
+        "The estimated compiled size is close to the exhaustive backend's "
+        "variable limit; consider a local heuristic backend before the "
+        "problem grows."
     ),
     "EXACT_OVER_LIMIT": (
-        "The estimated compiled size exceeds the exact solver's variable "
-        "limit; solving will fail with resource_limit_exceeded — reduce the "
-        "problem or use simulated_annealing."
+        "The estimated compiled size exceeds the exhaustive backend's "
+        "variable limit; solving will fail with resource_limit_exceeded — "
+        "reduce the problem or use a local heuristic backend."
     ),
     "DENSE_FOR_QPU": (
-        "The problem is likely too dense or too large to embed well on the "
-        "QPU; consider leap_hybrid_bqm or simulated_annealing."
+        "The problem is likely too dense or too large to minor-embed on a "
+        "backend that requires embedding; consider a hybrid backend or a "
+        "local heuristic backend."
     ),
     "SEED_IGNORED": (
         "This backend does not support seeding; remove solver.seed or use a "
-        "local backend if reproducibility is required."
+        "backend that supports seeding if reproducibility is required."
     ),
     "PARAMETER_IGNORED": (
         "This parameter has no effect on the selected backend and will be "
@@ -127,12 +184,13 @@ _WARNING_RECOMMENDED_ACTIONS: dict[str, str] = {
 
 
 class ProblemValidationResult(BaseModel):
-    """Full validation outcome (Phase 2 spec §20).
+    """Full validation outcome (Phase 2 spec §20, 3a §9).
 
     ``valid`` is decided by ``errors`` alone; warnings are advisory and never
     block. Estimates are only computed for a problem with no errors — that
     gate is what guarantees the slack arithmetic is safe (finite, integral
     inequalities, unique names) and the estimate matches compilation exactly.
+    ``model_type`` records which compiler path the estimate assumed.
     """
 
     valid: bool
@@ -140,6 +198,7 @@ class ProblemValidationResult(BaseModel):
     warnings: list[SolveError] = []
     estimated_compiled_variables: int | None = None  # 原始變數 + slack bits，純算術
     objective_scale: float | None = None
+    model_type: ModelType | None = None
 
 
 def validate_problem(problem: OptimizationProblem) -> list[SolveError]:
@@ -177,31 +236,53 @@ def _collect(
 def validate_problem_full(
     problem: OptimizationProblem,
     *,
-    exact_max_variables: int | None = None,
+    capabilities: SolverCapabilities | None = None,
+    max_compiled_variables: int | None = None,
+    model_type: ModelType | None = None,
 ) -> ProblemValidationResult:
-    """Validate a problem and add the §20 advisory layer.
+    """Validate a problem and add the §20 advisory layer (3a §9).
 
     Reuses :func:`validate_problem` unchanged for errors. Warnings and
     estimates are only produced when there are no errors: an erroneous
     problem must be fixed first anyway, and the no-error gate is exactly
     what makes the pure slack arithmetic well-defined.
 
-    ``exact_max_variables`` is the caller-supplied policy limit for the
-    exact backend (validation must not read policy itself, §4); when it is
-    ``None`` the EXACT_NEAR_LIMIT / EXACT_OVER_LIMIT checks are skipped.
+    ``capabilities`` is the declaration of the backend the problem names,
+    supplied by the caller (the validator knows no registry). When it is
+    None only backend-independent checks run: no backend-fit and no
+    ignored-parameter warnings.
+
+    ``max_compiled_variables`` is the caller-supplied policy ceiling for an
+    exhaustive backend (validation must not read policy itself, §4); it is
+    only consulted when ``capabilities.exhaustive`` and skipped when None.
+
+    ``model_type`` is the compiler path the caller will actually take; it
+    falls back to ``capabilities.preferred_model_type`` (``"bqm"`` without
+    capabilities). A CQM path has no slack, so its estimate is the plain
+    variable count (§9.2).
     """
     errors, duplicate_warnings = _collect(problem)
     if errors:
         return ProblemValidationResult(valid=False, errors=errors)
 
+    if model_type is None:
+        model_type = capabilities.preferred_model_type if capabilities else "bqm"
+
     objective_scale = compute_objective_scale(problem.objective)
-    estimated = estimate_compiled_variables(problem)
+    estimated = (
+        estimate_compiled_variables(problem)
+        if model_type == "bqm"
+        else len(problem.variables)
+    )
 
     warnings: list[SolveError] = []
     _warn_soft_weights(problem, objective_scale, warnings)
     _warn_inequalities(problem, warnings)
-    _warn_backend_fit(problem, estimated, exact_max_variables, warnings)
-    _warn_ignored_parameters(problem, warnings)
+    if capabilities is not None:
+        _warn_backend_fit(
+            problem, estimated, capabilities, max_compiled_variables, warnings
+        )
+        _warn_ignored_parameters(problem, capabilities, model_type, warnings)
     warnings.extend(duplicate_warnings)
 
     return ProblemValidationResult(
@@ -210,6 +291,7 @@ def validate_problem_full(
         warnings=warnings,
         estimated_compiled_variables=estimated,
         objective_scale=objective_scale,
+        model_type=model_type,
     )
 
 
@@ -277,8 +359,8 @@ def _warn_inequalities(
                     "LARGE_SLACK_RANGE",
                     f"constraints[{index}]",
                     (
-                        f"Inequality constraint {constraint.id} needs "
-                        f"{slack_bits} slack bits (more than "
+                        f"Inequality constraint {constraint.id} would need "
+                        f"{slack_bits} slack bits on a BQM backend (more than "
                         f"{LARGE_SLACK_BITS_THRESHOLD}); the compiled model "
                         "grows accordingly"
                     ),
@@ -289,38 +371,39 @@ def _warn_inequalities(
 def _warn_backend_fit(
     problem: OptimizationProblem,
     estimated: int,
-    exact_max_variables: int | None,
+    caps: SolverCapabilities,
+    max_compiled_variables: int | None,
     warnings: list[SolveError],
 ) -> None:
-    backend = problem.solver.backend
-
-    if backend == "exact" and exact_max_variables is not None:
-        if estimated > exact_max_variables:
+    """3a §9.3: size advice from the backend's declared capabilities."""
+    if caps.exhaustive and max_compiled_variables is not None:
+        if estimated > max_compiled_variables:
             warnings.append(
                 _warning(
                     "EXACT_OVER_LIMIT",
                     "solver.backend",
                     (
                         f"Estimated compiled variables ({estimated}) exceed "
-                        f"the exact solver limit ({exact_max_variables}); "
-                        "solving will fail with resource_limit_exceeded"
+                        f"the exhaustive backend limit "
+                        f"({max_compiled_variables}); solving will fail with "
+                        "resource_limit_exceeded"
                     ),
                 )
             )
-        elif estimated > exact_max_variables * EXACT_NEAR_LIMIT_RATIO:
+        elif estimated > max_compiled_variables * EXACT_NEAR_LIMIT_RATIO:
             warnings.append(
                 _warning(
                     "EXACT_NEAR_LIMIT",
                     "solver.backend",
                     (
                         f"Estimated compiled variables ({estimated}) are above "
-                        f"{EXACT_NEAR_LIMIT_RATIO:.0%} of the exact solver "
-                        f"limit ({exact_max_variables})"
+                        f"{EXACT_NEAR_LIMIT_RATIO:.0%} of the exhaustive "
+                        f"backend limit ({max_compiled_variables})"
                     ),
                 )
             )
 
-    if backend == "dwave_qpu":
+    if caps.requires_embedding:
         max_constraint_variables = max(
             (
                 len({term.variable for term in constraint.terms})
@@ -346,46 +429,84 @@ def _warn_backend_fit(
                     "DENSE_FOR_QPU",
                     "solver.backend",
                     (
-                        "Problem is likely too dense for QPU embedding: "
-                        + "; ".join(reasons)
+                        "Problem is likely too dense for a backend that "
+                        "requires minor-embedding: " + "; ".join(reasons)
                     ),
                 )
             )
 
 
+def _is_default(solver: SolverPreferences, field: str) -> bool:
+    return getattr(solver, field) == getattr(_DEFAULT_SOLVER_PREFERENCES, field)
+
+
 def _warn_ignored_parameters(
-    problem: OptimizationProblem, warnings: list[SolveError]
+    problem: OptimizationProblem,
+    caps: SolverCapabilities,
+    model_type: ModelType,
+    warnings: list[SolveError],
 ) -> None:
+    """3a §9.3: preferences the declared backend / model path will ignore."""
     solver = problem.solver
 
     # seed gets its dedicated code on every backend that ignores it (§15);
     # PARAMETER_IGNORED below deliberately skips it to avoid double-warning.
-    if solver.seed is not None and solver.backend in SEED_IGNORING_BACKENDS:
+    if solver.seed is not None and not caps.supports_seed:
         warnings.append(
             _warning(
                 "SEED_IGNORED",
                 "solver.seed",
                 (
-                    f"Backend {solver.backend} does not support seeding; "
+                    f"Backend {caps.name} does not support seeding; "
                     "solver.seed will be ignored"
                 ),
             )
         )
 
-    if solver.backend == "leap_hybrid_bqm":
-        for field in HYBRID_IGNORED_PARAMETER_FIELDS:
-            value = getattr(solver, field)
-            if value != getattr(_DEFAULT_SOLVER_PREFERENCES, field):
-                warnings.append(
-                    _warning(
-                        "PARAMETER_IGNORED",
-                        f"solver.{field}",
-                        (
-                            f"solver.{field}={value} has no effect on the "
-                            "leap_hybrid_bqm backend and will be ignored"
-                        ),
-                    )
+    ignored: list[tuple[str, str]] = []  # (field, reason)
+    if not _is_default(solver, "num_reads") and not caps.supports_num_reads:
+        ignored.append(("num_reads", "does not take a number of reads"))
+    if not _is_default(solver, "num_sweeps") and not caps.supports_num_sweeps:
+        ignored.append(("num_sweeps", "does not take a number of sweeps"))
+    if not _is_default(solver, "penalty_multiplier") and model_type == "cqm":
+        ignored.append(
+            ("penalty_multiplier", "applies no hard penalty on the CQM path")
+        )
+    if not _is_default(solver, "max_retries") and (
+        model_type == "cqm" or caps.exhaustive
+    ):
+        reason = (
+            "applies no hard penalty on the CQM path, so there is nothing to retry"
+            if model_type == "cqm"
+            else "is exhaustive, so a retry can never surface new samples"
+        )
+        ignored.append(("max_retries", reason))
+    for field, reason in ignored:
+        warnings.append(
+            _warning(
+                "PARAMETER_IGNORED",
+                f"solver.{field}",
+                (
+                    f"solver.{field}={getattr(solver, field)} has no effect: "
+                    f"backend {caps.name} {reason}; it will be ignored"
+                ),
+            )
+        )
+
+    # An option block filled in for a backend other than the selected one
+    # (block field name != capabilities.name, 3a §9.3 naming contract).
+    for block in _option_blocks():
+        if getattr(solver, block) is not None and block != caps.name:
+            warnings.append(
+                _warning(
+                    "PARAMETER_IGNORED",
+                    f"solver.{block}",
+                    (
+                        f"solver.{block} holds options for a different backend "
+                        f"than the selected {caps.name}; they will be ignored"
+                    ),
                 )
+            )
 
 
 def _warn_duplicate_terms(objective: Objective, warnings: list[SolveError]) -> None:
@@ -665,7 +786,7 @@ def _check_solver_preferences(
     # (allow_inf_nan=False); the semantic "> 0" rule lives here. Finiteness
     # is re-checked so a model built without validation cannot slip through
     # (nan > limit is False, so a policy comparison would silently pass).
-    for options_field, field in _POSITIVE_BACKEND_OPTION_FIELDS:
+    for options_field, field in _POSITIVE_OPTION_FIELDS:
         options = getattr(solver, options_field)
         if options is None:
             continue

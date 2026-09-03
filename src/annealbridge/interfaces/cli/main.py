@@ -16,6 +16,7 @@ from annealbridge.config import SettingsError
 from annealbridge.interfaces.capabilities import BackendCapability, build_capabilities
 from annealbridge.interfaces.composition import AppState, build_state
 from annealbridge.models import OptimizationProblem, SolveResult, SolverPreferences
+from annealbridge.validation import ProblemValidationResult
 
 app = typer.Typer(
     help="Optimization Tool Middleware CLI",
@@ -184,6 +185,64 @@ def solve(
         typer.echo(_render_human(problem, result))
 
     if result.status != "success":
+        raise typer.Exit(code=1)
+
+
+def _render_validation(
+    problem: OptimizationProblem, result: ProblemValidationResult
+) -> str:
+    """Format a ProblemValidationResult as the human-readable report (3a §10)."""
+    model_type = result.model_type or "unknown"
+    lines = [
+        f"Problem:   {problem.name}",
+        f"Backend:   {problem.solver.backend}  (model type: {model_type})",
+        f"Valid:     {'yes' if result.valid else 'no'}",
+    ]
+    if result.valid:
+        lines.append(
+            f"Estimated compiled variables: {result.estimated_compiled_variables}"
+        )
+        lines.append(f"Objective scale: {_format_number(result.objective_scale)}")
+
+    for title, items in (("Errors", result.errors), ("Warnings", result.warnings)):
+        if not items:
+            continue
+        lines.append("")
+        lines.append(f"{title} ({len(items)}):")
+        for item in items:
+            location = f" {item.path}" if item.path else ""
+            lines.append(f"  [{item.code}]{location}: {item.message}")
+            if item.recommended_action:
+                lines.append(f"    recommended action: {item.recommended_action}")
+    return "\n".join(lines)
+
+
+@app.command()
+def validate(
+    problem_file: Path = typer.Argument(
+        ..., help="Path to an OptimizationProblem JSON file"
+    ),
+    backend: Optional[str] = typer.Option(
+        None, "--backend", help="Override solver.backend from the JSON"
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Print the full ProblemValidationResult as JSON"
+    ),
+) -> None:
+    """Validate an optimization problem without solving it (3a §10)."""
+    problem = _load_problem(problem_file)
+    if backend is not None:
+        problem = _override_backend(problem, backend)
+
+    # Same composition root and the same one-line delegation as MCP.
+    result = _build_state().service.validate(problem)
+
+    if json_output:
+        typer.echo(result.model_dump_json(indent=2))
+    else:
+        typer.echo(_render_validation(problem, result))
+
+    if not result.valid:
         raise typer.Exit(code=1)
 
 

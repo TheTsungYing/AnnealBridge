@@ -8,7 +8,7 @@ the return type annotation. No optimization logic here.
 import anyio
 
 from annealbridge.models import OptimizationProblem, SolveResult
-from annealbridge.validation import ProblemValidationResult, validate_problem_full
+from annealbridge.validation import ProblemValidationResult
 
 from annealbridge.interfaces.mcp.models import (
     OptimizationCapabilities,
@@ -44,10 +44,7 @@ async def validate_optimization_problem(
     backend, so problems can be fixed before spending quota. Nothing is
     compiled or solved and no network requests are made.
     """
-    state = get_state()
-    return validate_problem_full(
-        problem, exact_max_variables=state.policy.exact_max_variables
-    )
+    return get_state().service.validate(problem)
 
 
 @mcp.tool()

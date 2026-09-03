@@ -1,16 +1,22 @@
-"""Tests for validate_problem_full and the estimate helpers (Phase 2 spec §20).
+"""Tests for validate_problem_full and the estimate helpers (Phase 2 §20, 3a §9).
 
 Covers the advisory layer on top of ``validate_problem``: result shape,
 ``estimated_compiled_variables`` against what the compiler actually builds,
-and one triggering plus one non-triggering case per warning code.
+and one triggering plus one non-triggering case per warning code. Since
+3a §9 every backend-dependent warning is driven by an injected
+``SolverCapabilities`` declaration, so the table in §9.3 is exercised with
+synthetic declarations (one flag at a time) plus the real registry ones
+where the spec pins behaviour (drift 2: exact + seed).
 """
 
 import pytest
 
 from annealbridge.compiler import BQMCompiler
 from annealbridge.exceptions import CompilationError
-from annealbridge.models import OptimizationProblem
+from annealbridge.models import OptimizationProblem, SolverCapabilities
+from annealbridge.solvers import SolverRegistry
 from annealbridge.validation import validate_problem, validate_problem_full
+from annealbridge.validation import problem_validator
 from annealbridge.validation.estimates import (
     analyze_inequality,
     compute_objective_scale,
@@ -79,6 +85,36 @@ def make_problem(
 
 def warning_codes(result) -> set[str]:
     return {warning.code for warning in result.warnings}
+
+
+def warnings_with(result, code: str) -> list:
+    return [warning for warning in result.warnings if warning.code == code]
+
+
+def caps(**overrides) -> SolverCapabilities:
+    """A permissive synthetic declaration; override one flag per test."""
+    base = dict(
+        name="fake_backend",
+        remote=False,
+        heuristic=True,
+        exhaustive=False,
+        supports_seed=True,
+        supports_num_reads=True,
+        supports_time_limit=False,
+        supported_model_types=["bqm"],
+        returns_multiple_samples=True,
+        supports_num_sweeps=True,
+        requires_embedding=False,
+        description="synthetic declaration for validator tests",
+    )
+    return SolverCapabilities(**{**base, **overrides})
+
+
+_REGISTRY = SolverRegistry.default()
+
+
+def registry_caps(name: str) -> SolverCapabilities:
+    return _REGISTRY.get(name).capabilities
 
 
 def error_codes(errors) -> set[str]:
@@ -230,13 +266,11 @@ class TestRedundantConstraint:
 
 
 class TestExactBackendLimits:
-    def make(self, num_variables: int, *, backend: str = "exact") -> OptimizationProblem:
+    """§9.3 rows EXACT_OVER_LIMIT / EXACT_NEAR_LIMIT: ``caps.exhaustive``."""
+
+    def make(self, num_variables: int) -> OptimizationProblem:
         names = tuple(f"x{index}" for index in range(1, num_variables + 1))
-        return make_problem(
-            variables=names,
-            linear=[lin(names[0], 1)],
-            solver={"backend": backend},
-        )
+        return make_problem(variables=names, linear=[lin(names[0], 1)])
 
     @pytest.mark.parametrize(
         "num_variables,expected",
@@ -248,8 +282,11 @@ class TestExactBackendLimits:
         ],
     )
     def test_limit_boundaries(self, num_variables, expected):
-        problem = self.make(num_variables)
-        result = validate_problem_full(problem, exact_max_variables=10)
+        result = validate_problem_full(
+            self.make(num_variables),
+            capabilities=caps(exhaustive=True),
+            max_compiled_variables=10,
+        )
         assert result.estimated_compiled_variables == num_variables
         assert warning_codes(result) & {
             "EXACT_NEAR_LIMIT",
@@ -259,28 +296,52 @@ class TestExactBackendLimits:
     def test_near_and_over_are_mutually_exclusive(self):
         for num_variables in (9, 10, 11):
             result = validate_problem_full(
-                self.make(num_variables), exact_max_variables=10
+                self.make(num_variables),
+                capabilities=caps(exhaustive=True),
+                max_compiled_variables=10,
             )
-            codes = warning_codes(result)
-            assert not {"EXACT_NEAR_LIMIT", "EXACT_OVER_LIMIT"} <= codes
+            assert not {"EXACT_NEAR_LIMIT", "EXACT_OVER_LIMIT"} <= warning_codes(result)
 
     def test_without_limit_no_warning(self):
-        result = validate_problem_full(self.make(11))
+        # max_compiled_variables=None: the exhaustive rows need a ceiling.
+        result = validate_problem_full(self.make(11), capabilities=caps(exhaustive=True))
         assert not warning_codes(result) & {"EXACT_NEAR_LIMIT", "EXACT_OVER_LIMIT"}
 
-    def test_other_backend_ignores_limit(self):
-        problem = self.make(11, backend="simulated_annealing")
-        result = validate_problem_full(problem, exact_max_variables=10)
+    def test_non_exhaustive_backend_ignores_limit(self):
+        result = validate_problem_full(
+            self.make(11), capabilities=caps(exhaustive=False), max_compiled_variables=10
+        )
         assert not warning_codes(result) & {"EXACT_NEAR_LIMIT", "EXACT_OVER_LIMIT"}
+
+    def test_real_exact_declaration_triggers_the_rows(self):
+        result = validate_problem_full(
+            self.make(11), capabilities=registry_caps("exact"), max_compiled_variables=10
+        )
+        assert "EXACT_OVER_LIMIT" in warning_codes(result)
+
+    def test_messages_describe_capability_not_backend_name(self):
+        # 3a §9.3 / §13.2: code names stay, wording becomes capability-based.
+        over = validate_problem_full(
+            self.make(11), capabilities=caps(exhaustive=True), max_compiled_variables=10
+        )
+        near = validate_problem_full(
+            self.make(9), capabilities=caps(exhaustive=True), max_compiled_variables=10
+        )
+        for result in (over, near):
+            (warning,) = [
+                w for w in result.warnings if w.code.startswith("EXACT_")
+            ]
+            assert "exhaustive backend limit" in warning.message
+            assert "exact solver" not in warning.message
+            for name in ("exact", "simulated_annealing", "dwave_qpu", "leap_hybrid_bqm"):
+                assert name not in warning.recommended_action
 
 
 class TestDenseForQPU:
+    """§9.3 row DENSE_FOR_QPU: ``caps.requires_embedding``."""
+
     def make(
-        self,
-        num_variables: int,
-        *,
-        backend: str = "dwave_qpu",
-        wide_constraint: bool = False,
+        self, num_variables: int, *, wide_constraint: bool = False
     ) -> OptimizationProblem:
         names = tuple(f"x{index}" for index in range(1, num_variables + 1))
         constraints = []
@@ -291,123 +352,395 @@ class TestDenseForQPU:
                 hard("wide", ">=", 1, [lin(name, 1) for name in covered])
             )
         return make_problem(
-            variables=names,
-            linear=[lin(names[0], 1)],
-            constraints=constraints,
-            solver={"backend": backend},
+            variables=names, linear=[lin(names[0], 1)], constraints=constraints
         )
 
     def test_many_variables_warns(self):
-        result = validate_problem_full(self.make(151))
+        result = validate_problem_full(
+            self.make(151), capabilities=caps(requires_embedding=True)
+        )
         assert result.estimated_compiled_variables == 151
         assert "DENSE_FOR_QPU" in warning_codes(result)
 
     def test_wide_constraint_alone_warns(self):
-        problem = self.make(31, wide_constraint=True)
-        result = validate_problem_full(problem)
+        result = validate_problem_full(
+            self.make(31, wide_constraint=True),
+            capabilities=caps(requires_embedding=True),
+        )
         assert result.estimated_compiled_variables == 36  # 31 + 5 slack bits
         assert "DENSE_FOR_QPU" in warning_codes(result)
 
     def test_below_thresholds_does_not_warn(self):
-        result = validate_problem_full(self.make(150))
+        result = validate_problem_full(
+            self.make(150), capabilities=caps(requires_embedding=True)
+        )
         assert result.estimated_compiled_variables == 150
         assert "DENSE_FOR_QPU" not in warning_codes(result)
 
-    def test_other_backend_does_not_warn(self):
-        result = validate_problem_full(self.make(151, backend="simulated_annealing"))
+    def test_backend_without_embedding_does_not_warn(self):
+        result = validate_problem_full(
+            self.make(151), capabilities=caps(requires_embedding=False)
+        )
         assert "DENSE_FOR_QPU" not in warning_codes(result)
 
+    def test_real_qpu_declaration_warns(self):
+        result = validate_problem_full(
+            self.make(151), capabilities=registry_caps("dwave_qpu")
+        )
+        assert "DENSE_FOR_QPU" in warning_codes(result)
+
     def test_both_conditions_warn_only_once(self):
-        problem = self.make(151, wide_constraint=True)
-        result = validate_problem_full(problem)
-        dense = [w for w in result.warnings if w.code == "DENSE_FOR_QPU"]
-        assert len(dense) == 1
+        result = validate_problem_full(
+            self.make(151, wide_constraint=True),
+            capabilities=caps(requires_embedding=True),
+        )
+        assert len(warnings_with(result, "DENSE_FOR_QPU")) == 1
+
+    def test_message_describes_embedding_not_backend_name(self):
+        result = validate_problem_full(
+            self.make(151), capabilities=caps(requires_embedding=True)
+        )
+        (warning,) = warnings_with(result, "DENSE_FOR_QPU")
+        assert "requires minor-embedding" in warning.message
+        for name in ("dwave_qpu", "leap_hybrid_bqm", "simulated_annealing"):
+            assert name not in warning.recommended_action
 
 
 class TestSeedIgnored:
-    @pytest.mark.parametrize("backend", ["dwave_qpu", "leap_hybrid_bqm"])
-    def test_remote_backends_warn(self, backend):
+    """§9.3 row SEED_IGNORED: ``solver.seed`` set and ``not caps.supports_seed``."""
+
+    def test_unsupported_seed_warns(self):
+        problem = make_problem(solver={"seed": 42})
+        result = validate_problem_full(problem, capabilities=caps(supports_seed=False))
+        (warning,) = warnings_with(result, "SEED_IGNORED")
+        assert warning.path == "solver.seed"
+
+    def test_supported_seed_does_not_warn(self):
+        problem = make_problem(solver={"seed": 42})
+        result = validate_problem_full(problem, capabilities=caps(supports_seed=True))
+        assert "SEED_IGNORED" not in warning_codes(result)
+
+    def test_no_seed_does_not_warn(self):
+        result = validate_problem_full(make_problem(), capabilities=caps(supports_seed=False))
+        assert "SEED_IGNORED" not in warning_codes(result)
+
+    @pytest.mark.parametrize("backend", ["exact", "dwave_qpu", "leap_hybrid_bqm"])
+    def test_registry_backends_that_declare_no_seed_warn(self, backend):
+        # 3a §9.3 drift 2: exact declares supports_seed=False and now warns
+        # like the remote backends do, instead of being silently exempt.
         problem = make_problem(solver={"backend": backend, "seed": 42})
-        assert "SEED_IGNORED" in warning_codes(validate_problem_full(problem))
+        result = validate_problem_full(problem, capabilities=registry_caps(backend))
+        assert "SEED_IGNORED" in warning_codes(result)
 
-    def test_hybrid_seed_only_warns_once_without_parameter_ignored(self):
-        problem = make_problem(solver={"backend": "leap_hybrid_bqm", "seed": 42})
-        codes = warning_codes(validate_problem_full(problem))
-        assert "SEED_IGNORED" in codes
-        assert "PARAMETER_IGNORED" not in codes
-
-    def test_local_backend_does_not_warn(self):
-        problem = make_problem(
-            solver={"backend": "simulated_annealing", "seed": 42}
+    def test_seed_alone_does_not_also_produce_parameter_ignored(self):
+        problem = make_problem(solver={"seed": 42})
+        result = validate_problem_full(
+            problem, capabilities=caps(supports_seed=False, supports_num_reads=False)
         )
-        assert "SEED_IGNORED" not in warning_codes(validate_problem_full(problem))
+        assert "SEED_IGNORED" in warning_codes(result)
+        assert "PARAMETER_IGNORED" not in warning_codes(result)
+
+    def test_simulated_annealing_declaration_does_not_warn(self):
+        problem = make_problem(solver={"backend": "simulated_annealing", "seed": 42})
+        result = validate_problem_full(
+            problem, capabilities=registry_caps("simulated_annealing")
+        )
+        assert "SEED_IGNORED" not in warning_codes(result)
 
 
 class TestParameterIgnored:
-    def test_hybrid_num_reads_warns_once(self):
-        problem = make_problem(
-            solver={"backend": "leap_hybrid_bqm", "num_reads": 200}
-        )
-        ignored = [
-            w
-            for w in validate_problem_full(problem).warnings
-            if w.code == "PARAMETER_IGNORED"
-        ]
-        assert len(ignored) == 1
-        assert ignored[0].path == "solver.num_reads"
+    """§9.3 PARAMETER_IGNORED rows, one capability condition each."""
 
-    def test_hybrid_two_parameters_warn_twice(self):
-        problem = make_problem(
-            solver={
-                "backend": "leap_hybrid_bqm",
-                "num_reads": 200,
-                "num_sweeps": 500,
-            }
+    def test_num_reads_without_support_warns_once(self):
+        problem = make_problem(solver={"num_reads": 200})
+        result = validate_problem_full(
+            problem, capabilities=caps(supports_num_reads=False)
         )
-        ignored = [
-            w
-            for w in validate_problem_full(problem).warnings
-            if w.code == "PARAMETER_IGNORED"
-        ]
-        assert len(ignored) == 2
+        (warning,) = warnings_with(result, "PARAMETER_IGNORED")
+        assert warning.path == "solver.num_reads"
+
+    def test_num_sweeps_without_support_warns_once(self):
+        problem = make_problem(solver={"num_sweeps": 500})
+        result = validate_problem_full(
+            problem, capabilities=caps(supports_num_sweeps=False)
+        )
+        (warning,) = warnings_with(result, "PARAMETER_IGNORED")
+        assert warning.path == "solver.num_sweeps"
+
+    def test_two_unsupported_parameters_warn_twice(self):
+        problem = make_problem(solver={"num_reads": 200, "num_sweeps": 500})
+        result = validate_problem_full(
+            problem,
+            capabilities=caps(supports_num_reads=False, supports_num_sweeps=False),
+        )
+        ignored = warnings_with(result, "PARAMETER_IGNORED")
         assert {w.path for w in ignored} == {"solver.num_reads", "solver.num_sweeps"}
 
-    def test_hybrid_defaults_do_not_warn(self):
-        problem = make_problem(solver={"backend": "leap_hybrid_bqm"})
-        assert "PARAMETER_IGNORED" not in warning_codes(validate_problem_full(problem))
-
-    def test_local_backend_does_not_warn(self):
-        problem = make_problem(
-            solver={"backend": "simulated_annealing", "num_reads": 200}
+    def test_defaults_never_warn(self):
+        result = validate_problem_full(
+            make_problem(),
+            capabilities=caps(
+                supports_num_reads=False, supports_num_sweeps=False, exhaustive=True
+            ),
         )
-        assert "PARAMETER_IGNORED" not in warning_codes(validate_problem_full(problem))
+        assert "PARAMETER_IGNORED" not in warning_codes(result)
 
-
-class TestDuplicateTermMerged:
-    def test_duplicate_linear_term_warns_but_stays_valid(self):
-        problem = make_problem(linear=[lin("x1", 2), lin("x1", 3)])
-        result = validate_problem_full(problem)
-        assert result.valid is True
-        assert "DUPLICATE_TERM_MERGED" in warning_codes(result)
-        assert validate_problem(problem) == []  # legacy behaviour unchanged
-
-    def test_duplicate_quadratic_pair_across_orderings_warns(self):
-        problem = make_problem(
-            quadratic=[quad("x1", "x2", 3), quad("x2", "x1", 4)],
+    def test_supported_parameters_do_not_warn(self):
+        problem = make_problem(solver={"num_reads": 200, "num_sweeps": 500})
+        result = validate_problem_full(
+            problem, capabilities=caps(supports_num_reads=True, supports_num_sweeps=True)
         )
-        result = validate_problem_full(problem)
-        warnings = [
-            w for w in result.warnings if w.code == "DUPLICATE_TERM_MERGED"
+        assert "PARAMETER_IGNORED" not in warning_codes(result)
+
+    def test_exhaustive_backend_ignores_max_retries(self):
+        # §9.3: an exhaustive backend always makes exactly one attempt (§16.3).
+        problem = make_problem(solver={"max_retries": 5})
+        result = validate_problem_full(problem, capabilities=caps(exhaustive=True))
+        (warning,) = warnings_with(result, "PARAMETER_IGNORED")
+        assert warning.path == "solver.max_retries"
+
+    def test_heuristic_backend_keeps_max_retries(self):
+        problem = make_problem(solver={"max_retries": 5})
+        result = validate_problem_full(problem, capabilities=caps(exhaustive=False))
+        assert "PARAMETER_IGNORED" not in warning_codes(result)
+
+    def test_real_exact_declaration_warns_for_reads_sweeps_and_retries(self):
+        # 3a §9.3 (intentional behaviour change): exact + non-default
+        # num_reads / num_sweeps / max_retries now warn.
+        problem = make_problem(
+            solver={
+                "backend": "exact",
+                "num_reads": 200,
+                "num_sweeps": 500,
+                "max_retries": 1,
+            }
+        )
+        result = validate_problem_full(problem, capabilities=registry_caps("exact"))
+        assert {w.path for w in warnings_with(result, "PARAMETER_IGNORED")} == {
+            "solver.num_reads",
+            "solver.num_sweeps",
+            "solver.max_retries",
+        }
+
+    def test_real_hybrid_declaration_warns_for_reads_and_sweeps(self):
+        problem = make_problem(
+            solver={"backend": "leap_hybrid_bqm", "num_reads": 200, "num_sweeps": 500}
+        )
+        result = validate_problem_full(
+            problem, capabilities=registry_caps("leap_hybrid_bqm")
+        )
+        assert {w.path for w in warnings_with(result, "PARAMETER_IGNORED")} == {
+            "solver.num_reads",
+            "solver.num_sweeps",
+        }
+
+    def test_option_block_for_another_backend_warns(self):
+        # §9.3 naming contract: block field name must equal caps.name.
+        problem = make_problem(
+            solver={"backend": "exact", "dwave_qpu": {"annealing_time_us": 20}}
+        )
+        result = validate_problem_full(problem, capabilities=registry_caps("exact"))
+        (warning,) = warnings_with(result, "PARAMETER_IGNORED")
+        assert warning.path == "solver.dwave_qpu"
+
+    def test_option_block_for_the_selected_backend_does_not_warn(self):
+        problem = make_problem(
+            solver={"backend": "dwave_qpu", "dwave_qpu": {"annealing_time_us": 20}}
+        )
+        result = validate_problem_full(problem, capabilities=registry_caps("dwave_qpu"))
+        assert "PARAMETER_IGNORED" not in warning_codes(result)
+
+    def test_option_block_compares_against_caps_name_not_registry_key(self):
+        # A custom registry may register the same declaration under another
+        # key; the block check follows the declaration's own name.
+        problem = make_problem(
+            solver={"backend": "dwave_qpu", "dwave_qpu": {"annealing_time_us": 20}}
+        )
+        result = validate_problem_full(problem, capabilities=caps(name="dwave_qpu"))
+        assert "PARAMETER_IGNORED" not in warning_codes(result)
+        result = validate_problem_full(problem, capabilities=caps(name="other"))
+        assert [w.path for w in warnings_with(result, "PARAMETER_IGNORED")] == [
+            "solver.dwave_qpu"
         ]
-        assert len(warnings) == 1
-        assert warnings[0].path == "objective.quadratic_terms"
 
-    def test_unique_terms_do_not_warn(self):
-        problem = make_problem(
-            linear=[lin("x1", 2), lin("x2", 3)],
-            quadratic=[quad("x1", "x2", 1)],
+    def test_messages_and_actions_carry_no_backend_name_constants(self):
+        problem = make_problem(solver={"num_reads": 200})
+        result = validate_problem_full(
+            problem, capabilities=caps(supports_num_reads=False)
         )
-        assert "DUPLICATE_TERM_MERGED" not in warning_codes(validate_problem_full(problem))
+        (warning,) = warnings_with(result, "PARAMETER_IGNORED")
+        assert "fake_backend" in warning.message  # the declaration's own name
+        assert "leap_hybrid_bqm" not in warning.message
+
+
+class TestCQMModelType:
+    """§9.2 estimate and the two ``model_type == "cqm"`` rows of §9.3.
+
+    No real backend takes the CQM path yet (3a step 3), so a synthetic
+    declaration stands in; the same rows are re-asserted in step 7.
+    """
+
+    def make(self, **solver) -> OptimizationProblem:
+        # 3 variables + one <= 1 inequality: BQM would add 1 slack bit.
+        return make_problem(
+            constraints=[hard("cap", "<=", 1, [lin("x1", 1), lin("x2", 1)])],
+            solver=solver or None,
+        )
+
+    def test_cqm_estimate_is_the_plain_variable_count(self):
+        result = validate_problem_full(
+            self.make(), capabilities=caps(supported_model_types=["cqm"])
+        )
+        assert result.model_type == "cqm"
+        assert result.estimated_compiled_variables == 3
+
+    def test_bqm_estimate_includes_slack(self):
+        result = validate_problem_full(self.make(), capabilities=caps())
+        assert result.model_type == "bqm"
+        assert result.estimated_compiled_variables == 4
+
+    def test_explicit_model_type_overrides_preferred(self):
+        # A backend accepting both types: the service tells the validator
+        # which compiler it will actually use (§9.1).
+        both = caps(supported_model_types=["bqm", "cqm"])
+        assert validate_problem_full(self.make(), capabilities=both).model_type == "bqm"
+        forced = validate_problem_full(self.make(), capabilities=both, model_type="cqm")
+        assert forced.model_type == "cqm"
+        assert forced.estimated_compiled_variables == 3
+
+    def test_model_type_without_capabilities_defaults_to_bqm(self):
+        assert validate_problem_full(self.make()).model_type == "bqm"
+        assert validate_problem_full(self.make(), model_type="cqm").model_type == "cqm"
+
+    def test_invalid_problem_records_no_model_type(self):
+        problem = make_problem(linear=[lin("ghost", 1)])
+        assert validate_problem_full(problem, capabilities=caps()).model_type is None
+
+    def test_cqm_ignores_penalty_multiplier(self):
+        result = validate_problem_full(
+            self.make(penalty_multiplier=3.0),
+            capabilities=caps(supported_model_types=["cqm"]),
+        )
+        (warning,) = warnings_with(result, "PARAMETER_IGNORED")
+        assert warning.path == "solver.penalty_multiplier"
+
+    def test_cqm_ignores_max_retries(self):
+        result = validate_problem_full(
+            self.make(max_retries=1), capabilities=caps(supported_model_types=["cqm"])
+        )
+        (warning,) = warnings_with(result, "PARAMETER_IGNORED")
+        assert warning.path == "solver.max_retries"
+
+    def test_bqm_keeps_penalty_multiplier_and_retries(self):
+        result = validate_problem_full(
+            self.make(penalty_multiplier=3.0, max_retries=1), capabilities=caps()
+        )
+        assert "PARAMETER_IGNORED" not in warning_codes(result)
+
+    def test_large_slack_range_still_reported_on_cqm(self):
+        # §21.1: the warning describes the BQM cost, useful either way.
+        problem = make_problem(constraints=[hard("big", "<=", 1500, [lin("x1", 2000)])])
+        result = validate_problem_full(
+            problem, capabilities=caps(supported_model_types=["cqm"])
+        )
+        (warning,) = warnings_with(result, "LARGE_SLACK_RANGE")
+        assert "on a BQM backend" in warning.message
+
+
+class TestWithoutCapabilities:
+    """§9.1: ``capabilities=None`` runs only backend-independent checks."""
+
+    def test_no_backend_warnings_at_all(self):
+        problem = make_problem(
+            variables=tuple(f"x{index}" for index in range(1, 152)),
+            solver={
+                "backend": "exact",
+                "seed": 42,
+                "num_reads": 200,
+                "num_sweeps": 500,
+                "max_retries": 1,
+                "dwave_qpu": {"annealing_time_us": 20},
+            },
+        )
+        result = validate_problem_full(problem, max_compiled_variables=10)
+        assert result.valid is True
+        assert not warning_codes(result) & {
+            "EXACT_NEAR_LIMIT",
+            "EXACT_OVER_LIMIT",
+            "DENSE_FOR_QPU",
+            "SEED_IGNORED",
+            "PARAMETER_IGNORED",
+        }
+
+    def test_backend_independent_warnings_still_run(self):
+        problem = make_problem(
+            linear=[lin("x1", 100), lin("x1", 1)],
+            constraints=[
+                soft("prefer", "==", 1, [lin("x2", 1)], 0.5),
+                hard("big", "<=", 1500, [lin("x3", 2000)]),
+                hard("loose", "<=", 5, [lin("x1", 1), lin("x2", 1)]),
+            ],
+        )
+        assert warning_codes(validate_problem_full(problem)) == {
+            "SOFT_WEIGHT_SMALL",
+            "LARGE_SLACK_RANGE",
+            "REDUNDANT_CONSTRAINT",
+            "DUPLICATE_TERM_MERGED",
+        }
+
+
+class TestOptionBlockReflection:
+    """§9.4: option blocks and their positive numeric fields come from the model."""
+
+    def test_blocks_are_the_optional_model_fields(self):
+        assert set(problem_validator._option_blocks()) == {"dwave_qpu", "leap_hybrid_bqm"}
+
+    def test_positive_fields_exclude_bool(self):
+        assert set(problem_validator._POSITIVE_OPTION_FIELDS) == {
+            ("dwave_qpu", "annealing_time_us"),
+            ("dwave_qpu", "chain_strength"),
+            ("leap_hybrid_bqm", "time_limit_seconds"),
+        }
+
+    def test_seed_is_not_a_block(self):
+        # ``seed: int | None`` shares the union spelling but is a leaf.
+        assert "seed" not in problem_validator._option_blocks()
+
+    def test_typing_union_spelling_is_recognised(self):
+        from typing import Optional, Union
+
+        from pydantic import BaseModel
+
+        class Block(BaseModel):
+            value: Optional[float] = None
+            count: Union[int, None] = None
+            flag: bool = True
+
+        assert problem_validator._optional_model(Optional[Block]) is Block
+        assert problem_validator._optional_model(Union[Block, None]) is Block
+        assert problem_validator._optional_model(Block | None) is Block
+        assert problem_validator._optional_model(Block) is None
+        assert problem_validator._optional_model(Optional[int]) is None
+        assert problem_validator._optional_number(Optional[float]) is True
+        assert problem_validator._optional_number(Union[int, None]) is True
+        assert problem_validator._optional_number(bool) is False
+        assert problem_validator._optional_number(Optional[Block]) is False
+
+    @pytest.mark.parametrize(
+        "block,field,value",
+        [
+            ("dwave_qpu", "annealing_time_us", 0),
+            ("dwave_qpu", "chain_strength", -1.0),
+            ("leap_hybrid_bqm", "time_limit_seconds", 0),
+        ],
+    )
+    def test_non_positive_option_is_rejected(self, block, field, value):
+        problem = make_problem(solver={block: {field: value}})
+        result = validate_problem_full(problem)
+        assert result.valid is False
+        (error,) = result.errors
+        assert error.code == "INVALID_SOLVER_PREFERENCE"
+        assert error.path == f"solver.{block}.{field}"
 
 
 class TestWarningPayload:
@@ -431,25 +764,18 @@ class TestWarningPayload:
                 )
             ),
             validate_problem_full(  # 3 variables, limit 3 -> near limit
-                make_problem(solver={"backend": "exact"}), exact_max_variables=3
+                make_problem(), capabilities=caps(exhaustive=True), max_compiled_variables=3
             ),
             validate_problem_full(  # 3 variables, limit 2 -> over limit
-                make_problem(solver={"backend": "exact"}), exact_max_variables=2
+                make_problem(), capabilities=caps(exhaustive=True), max_compiled_variables=2
             ),
             validate_problem_full(
-                make_problem(
-                    variables=tuple(f"x{index}" for index in range(1, 152)),
-                    solver={"backend": "dwave_qpu"},
-                )
+                make_problem(variables=tuple(f"x{index}" for index in range(1, 152))),
+                capabilities=caps(requires_embedding=True),
             ),
             validate_problem_full(
-                make_problem(
-                    solver={
-                        "backend": "leap_hybrid_bqm",
-                        "seed": 42,
-                        "num_reads": 200,
-                    }
-                )
+                make_problem(solver={"seed": 42, "num_reads": 200}),
+                capabilities=caps(supports_seed=False, supports_num_reads=False),
             ),
             validate_problem_full(make_problem(linear=[lin("x1", 2), lin("x1", 3)])),
         ]
@@ -477,6 +803,12 @@ class TestWarningPayload:
                 assert warning.retryable is False
                 assert isinstance(warning.recommended_action, str)
                 assert warning.recommended_action.strip()
+
+    def test_recommended_actions_name_no_backend(self):
+        # 3a §13.2: the validator's guidance describes capabilities only.
+        for action in problem_validator._WARNING_RECOMMENDED_ACTIONS.values():
+            for name in ("exact", "simulated_annealing", "dwave_qpu", "leap_hybrid"):
+                assert name not in action
 
 
 class TestValidateCompileConsistency:

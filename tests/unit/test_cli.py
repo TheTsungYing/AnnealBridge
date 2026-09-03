@@ -100,6 +100,120 @@ class TestSolveErrors:
             assert name in text
 
 
+class TestValidate:
+    """``annealbridge validate`` (3a §10): a one-line delegation to
+    ``service.validate()`` with exit codes valid 0 / invalid 1 / load 2."""
+
+    def test_valid_example_exits_0_with_report(self):
+        result = runner.invoke(app, ["validate", str(EXAMPLES_DIR / "knapsack.json")])
+        assert result.exit_code == 0
+        lines = result.output.splitlines()
+        assert lines[0] == "Problem:   knapsack"
+        assert lines[1].startswith("Backend:   ")
+        assert "(model type: bqm)" in lines[1]
+        assert lines[2] == "Valid:     yes"
+        assert lines[3].startswith("Estimated compiled variables: ")
+        assert lines[4].startswith("Objective scale: ")
+
+    def test_backend_override_and_warning_block(self):
+        # exact + seed -> SEED_IGNORED (3a §9.3 drift 2), still valid.
+        result = runner.invoke(
+            app,
+            [
+                "validate",
+                str(EXAMPLES_DIR / "knapsack.json"),
+                "--backend",
+                "exact",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Backend:   exact  (model type: bqm)" in result.output
+
+    def test_warning_is_rendered_with_recommended_action(self, tmp_path):
+        problem = json.loads((EXAMPLES_DIR / "knapsack.json").read_text())
+        problem["solver"] = {"backend": "exact", "seed": 42}
+        path = tmp_path / "seeded.json"
+        path.write_text(json.dumps(problem))
+
+        result = runner.invoke(app, ["validate", str(path)])
+
+        assert result.exit_code == 0
+        assert "Warnings (1):" in result.output
+        assert "[SEED_IGNORED] solver.seed:" in result.output
+        assert "recommended action:" in result.output
+
+    def test_invalid_problem_exits_1_with_errors(self, tmp_path):
+        problem = json.loads((EXAMPLES_DIR / "knapsack.json").read_text())
+        problem["constraints"][0]["terms"][0]["variable"] = "ghost"
+        path = tmp_path / "broken.json"
+        path.write_text(json.dumps(problem))
+
+        result = runner.invoke(app, ["validate", str(path)])
+
+        assert result.exit_code == 1
+        assert "Valid:     no" in result.output
+        assert "Errors (1):" in result.output
+        assert "[UNKNOWN_VARIABLE]" in result.output
+        assert "Estimated compiled variables" not in result.output
+
+    def test_missing_file_exits_2(self, tmp_path):
+        result = runner.invoke(app, ["validate", str(tmp_path / "nope.json")])
+        assert result.exit_code == 2
+        assert "cannot read" in _output(result)
+
+    def test_schema_error_exits_2(self, tmp_path):
+        path = tmp_path / "bad.json"
+        path.write_text(json.dumps({"name": "no variables here"}))
+        result = runner.invoke(app, ["validate", str(path)])
+        assert result.exit_code == 2
+        assert "not a valid optimization problem" in _output(result)
+
+    def test_unknown_backend_override_exits_2(self):
+        result = runner.invoke(
+            app,
+            ["validate", str(EXAMPLES_DIR / "knapsack.json"), "--backend", "nosuch"],
+        )
+        assert result.exit_code == 2
+
+    def test_json_output_is_a_problem_validation_result(self):
+        from annealbridge.validation import ProblemValidationResult
+
+        result = runner.invoke(
+            app,
+            [
+                "validate",
+                str(EXAMPLES_DIR / "knapsack.json"),
+                "--backend",
+                "exact",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0
+        parsed = ProblemValidationResult.model_validate_json(result.output)
+        assert parsed.valid is True
+        assert parsed.model_type == "bqm"
+        assert isinstance(parsed.estimated_compiled_variables, int)
+
+    def test_json_output_for_invalid_problem_exits_1(self, tmp_path):
+        problem = json.loads((EXAMPLES_DIR / "knapsack.json").read_text())
+        problem["variables"] = []
+        path = tmp_path / "empty.json"
+        path.write_text(json.dumps(problem))
+
+        result = runner.invoke(app, ["validate", str(path), "--json"])
+
+        assert result.exit_code == 1
+        parsed = json.loads(result.output)
+        assert parsed["valid"] is False
+        assert "NO_VARIABLES" in [e["code"] for e in parsed["errors"]]
+
+    def test_invalid_settings_exit_2(self, monkeypatch):
+        monkeypatch.setenv("ANNEALBRIDGE_MAX_CONCURRENT_SOLVES", "-1")
+        result = runner.invoke(app, ["validate", str(EXAMPLES_DIR / "knapsack.json")])
+        assert result.exit_code == 2
+        assert "Error: Invalid server settings" in _output(result)
+
+
 class TestExportSchema:
     def test_outputs_problem_json_schema(self):
         result = runner.invoke(app, ["export-schema"])

@@ -24,6 +24,7 @@ from annealbridge.models import (
     SolveAttempt,
     SolveError,
     SolveResult,
+    SolverCapabilities,
     SolverExecutionMetadata,
     SolverPreferences,
     catalog_error,
@@ -37,8 +38,10 @@ from annealbridge.solvers import (
     SolverRegistry,
 )
 from annealbridge.validation import (
+    ProblemValidationResult,
     validate_batch,
     validate_problem,
+    validate_problem_full,
     validate_solution,
 )
 
@@ -305,6 +308,46 @@ class OptimizationService:
                         f"but the policy has no value for it"
                     )
 
+    def validate(self, problem: OptimizationProblem) -> ProblemValidationResult:
+        """Dry-run check of ``problem`` against the named backend (3a §10).
+
+        Looks the backend up only to read its *declaration*; nothing is
+        compiled or solved, no network is touched and no concurrency slot
+        is taken. The policy → validator wiring lives here (not in the
+        interfaces) so any Python caller gets the same advice as MCP/CLI.
+
+        An unknown backend (possible with a custom registry) still gets
+        the backend-independent checks plus an UNKNOWN_BACKEND *warning*;
+        the validator does not judge backend existence, ``solve`` does.
+        """
+        backend_name = problem.solver.backend
+        try:
+            caps: SolverCapabilities | None = self._registry.get(
+                backend_name
+            ).capabilities
+        except KeyError:
+            caps = None
+        # Step 5 of the 3a plan replaces this with _select_model_type once
+        # the service owns a compiler list; until then the declared
+        # preference is the only path.
+        model_type = caps.preferred_model_type if caps is not None else None
+        result = validate_problem_full(
+            problem,
+            capabilities=caps,
+            max_compiled_variables=int(self._policy.limit("variables")),
+            model_type=model_type,
+        )
+        if caps is None:
+            result.warnings.append(
+                catalog_error(
+                    "UNKNOWN_BACKEND",
+                    f"Unknown solver backend '{backend_name}'; "
+                    f"available backends: {', '.join(self._registry.names())}",
+                    path="solver.backend",
+                )
+            )
+        return result
+
     def solve(self, problem: OptimizationProblem) -> SolveResult:
         """Solve ``problem`` and return a structured :class:`SolveResult`.
 
@@ -501,7 +544,7 @@ class OptimizationService:
                                 f"Compiled problem has "
                                 f"{compiled.num_variables} variables "
                                 f"(including internal), exceeding the "
-                                f"exact solver limit of "
+                                f"exhaustive backend limit of "
                                 f"{variable_limit}",
                             )
                         ],

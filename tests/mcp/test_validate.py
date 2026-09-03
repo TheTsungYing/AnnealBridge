@@ -115,6 +115,36 @@ async def test_valid_problem_reports_estimates():
     assert content["objective_scale"] == pytest.approx(200.0)
 
 
+async def test_exact_with_seed_reports_seed_ignored(load_example):
+    # 3a §9.3 (drift 2): the exact backend declares supports_seed=False, so
+    # the tool — now a one-line delegation to service.validate() — reports
+    # SEED_IGNORED like it does for the remote backends.
+    content = await validate(load_example("knapsack.json", backend="exact", seed=42))
+
+    assert content["valid"] is True
+    assert content["model_type"] == "bqm"
+    warning = next(w for w in content["warnings"] if w["code"] == "SEED_IGNORED")
+    assert warning["path"] == "solver.seed"
+    assert warning["retryable"] is False
+    assert warning["recommended_action"].strip()
+
+
+async def test_policy_variable_limit_is_applied_through_the_service():
+    # The wiring policy -> validator lives in the service (3a §10); a small
+    # limit injected into the shared state must surface as EXACT_OVER_LIMIT.
+    from annealbridge.interfaces.mcp import server
+    from annealbridge.orchestration import ExecutionPolicy
+
+    server.reset_state(
+        server.build_state_from_policy(ExecutionPolicy(exact_max_variables=1))
+    )
+    problem = {**SMALL_SOFT_WEIGHT_PROBLEM, "solver": {"backend": "exact"}}
+    content = await validate(problem)
+
+    assert content["valid"] is True
+    assert "EXACT_OVER_LIMIT" in [w["code"] for w in content["warnings"]]
+
+
 async def test_errors_carry_recommended_action():
     # tools.py documents that validation errors come back "each with a
     # recommended_action"; the adapter must not drop the catalog text.
