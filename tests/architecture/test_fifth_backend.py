@@ -9,14 +9,13 @@ capabilities view must handle it purely from its declaration:
 * its declared parameter limit is enforced by the generic check, never
   clamped, under its own (uncatalogued) error code;
 * the validator's advisory warnings follow the capability flags;
-* a policy that lacks the declared key is refused at construction.
+* a policy that lacks the declared key is refused at construction;
+* ``service.recommend()`` lists it as usable, ranked purely from its
+  declaration (3a step 9).
 
 The proof that none of this needed a code change is
 ``test_core_sources_never_mention_the_fake``: the files the fake flows
 through do not contain its name.
-
-``service.recommend()`` does not exist yet (3a step 9); the routing
-assertion of §13.1 is added there — see the marker at the end of the file.
 """
 
 import json
@@ -48,6 +47,7 @@ CORE_FILES_THE_FAKE_FLOWS_THROUGH = [
     "orchestration/optimizer.py",
     "orchestration/limits.py",
     "orchestration/policy.py",
+    "orchestration/routing.py",
     "interfaces/capabilities.py",
     "validation/problem_validator.py",
 ]
@@ -214,6 +214,38 @@ class TestPolicyMustSupplyTheDeclaredKey:
         assert state.service.solve(make_knapsack(num_reads=10)).status == "success"
 
 
+class TestRecommendFollowsTheDeclaration:
+    def test_fake_is_listed_and_usable(self, service, fake):
+        result = service.recommend(make_knapsack())
+
+        assert result.valid is True
+        (entry,) = [e for e in result.recommendations if e.backend == FAKE_DECLARED_NAME]
+        assert entry.usable is True
+        assert entry.blocking == []
+        assert entry.model_type == "bqm"
+        # Remote, BQM, multiple samples: tier 4 with no single-sample note.
+        assert entry.reasons == ["R_REMOTE"]
+        assert fake.solve_calls == 0
+
+    def test_over_limit_preference_makes_it_unusable(self, service, fake):
+        result = service.recommend(make_knapsack(num_reads=5000))
+
+        (entry,) = [e for e in result.recommendations if e.backend == FAKE_DECLARED_NAME]
+        assert entry.usable is False
+        assert [b.code for b in entry.blocking] == [FAKE_LIMIT_ERROR_CODE]
+        assert entry.reasons == ["R_UNUSABLE", "R_REMOTE"]
+        assert fake.solve_calls == 0
+
+    def test_every_default_backend_is_still_ranked(self, service, registry):
+        result = service.recommend(make_knapsack())
+        assert sorted(e.backend for e in result.recommendations) == sorted(
+            registry.names()
+        )
+        assert [e.rank for e in result.recommendations] == list(
+            range(1, len(registry.names()) + 1)
+        )
+
+
 def test_core_sources_never_mention_the_fake() -> None:
     """§13.1: registering the fake required no edit to the core files."""
     for relative in CORE_FILES_THE_FAKE_FLOWS_THROUGH:
@@ -221,7 +253,3 @@ def test_core_sources_never_mention_the_fake() -> None:
         assert FAKE_DECLARED_NAME not in source, relative
         assert FAKE_LIMIT_ERROR_CODE not in source, relative
 
-
-# TODO(3a step 9): once ``OptimizationService.recommend()`` exists, add the
-# §13.1 assertion that its result lists ``fake_declared`` with
-# ``usable=True`` — again with no change to ``orchestration/routing.py``.

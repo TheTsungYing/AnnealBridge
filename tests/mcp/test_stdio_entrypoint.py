@@ -3,7 +3,7 @@
 This is the only test allowed to spawn a subprocess (spec §26). It launches
 the server via ``python -m annealbridge.interfaces.mcp.server`` — equivalent
 to the ``annealbridge-mcp`` console script but immune to PATH differences on
-Windows and in CI — and asserts the three tools are served over stdio.
+Windows and in CI — and asserts the four tools are served over stdio.
 """
 
 import os
@@ -17,12 +17,13 @@ pytestmark = pytest.mark.anyio
 
 EXPECTED_TOOLS = [
     "get_optimization_capabilities",
+    "recommend_backend",
     "solve_optimization",
     "validate_optimization_problem",
 ]
 
 
-async def test_stdio_entrypoint_serves_the_three_tools():
+async def test_stdio_entrypoint_serves_the_four_tools():
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "annealbridge.interfaces.mcp.server"],

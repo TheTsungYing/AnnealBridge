@@ -5,6 +5,11 @@ from annealbridge.validation.problem_validator import (
     validate_problem,
     validate_problem_full,
 )
+from annealbridge.validation.recommendation import (
+    ADVISORY_TEXT,
+    BackendRecommendation,
+    BackendRecommendationResult,
+)
 from annealbridge.validation.solution_validator import (
     EPSILON,
     BatchValidation,
@@ -13,6 +18,9 @@ from annealbridge.validation.solution_validator import (
 from annealbridge.validation.solution_validator import validate as validate_solution
 
 __all__ = [
+    "ADVISORY_TEXT",
+    "BackendRecommendation",
+    "BackendRecommendationResult",
     "BatchValidation",
     "EPSILON",
     "ProblemValidationResult",

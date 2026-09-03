@@ -31,8 +31,13 @@ from annealbridge.models import (
     SolverPreferences,
     catalog_error,
 )
-from annealbridge.orchestration.limits import gate_errors, preference_limit_errors
+from annealbridge.orchestration.limits import (
+    gate_errors,
+    preference_limit_errors,
+    select_model_type,
+)
 from annealbridge.orchestration.policy import ExecutionPolicy
+from annealbridge.orchestration.routing import recommend
 from annealbridge.penalty import PenaltyStrategy, ScaledPenaltyStrategy
 from annealbridge.solvers import (
     RawSolverResult,
@@ -40,6 +45,7 @@ from annealbridge.solvers import (
     SolverRegistry,
 )
 from annealbridge.validation import (
+    BackendRecommendationResult,
     ProblemValidationResult,
     validate_batch,
     validate_problem,
@@ -325,15 +331,11 @@ class OptimizationService:
     def _select_model_type(self, caps: SolverCapabilities) -> ModelType | None:
         """3a §16.1: the first declared model type the service can compile.
 
-        This is the single place the service dispatches on model type, and
-        it dispatches on the backend's *declaration*, never on its name.
-        ``validate`` and ``solve`` (and later routing) all call it, so they
-        agree on which path a backend takes. None means no compiler fits.
+        Delegates to :func:`select_model_type` so ``validate``, ``solve``
+        and ``recommend`` share one rule; it dispatches on the backend's
+        *declaration*, never on its name. None means no compiler fits.
         """
-        for model_type in caps.supported_model_types:
-            if model_type in self._compilers:
-                return model_type
-        return None
+        return select_model_type(caps, self._compilers)
 
     def _select_compiler(self, caps: SolverCapabilities) -> ModelCompiler | None:
         model_type = self._select_model_type(caps)
@@ -393,6 +395,14 @@ class OptimizationService:
                 )
             )
         return result
+
+    def recommend(self, problem: OptimizationProblem) -> BackendRecommendationResult:
+        """Rank the registry's backends for ``problem`` (3a §23.5).
+
+        Advisory only: ``solve`` never reads this. Nothing is compiled or
+        solved, no network is touched and no concurrency slot is taken.
+        """
+        return recommend(problem, self._registry, self._policy, self._compilers)
 
     def solve(self, problem: OptimizationProblem) -> SolveResult:
         """Solve ``problem`` and return a structured :class:`SolveResult`.

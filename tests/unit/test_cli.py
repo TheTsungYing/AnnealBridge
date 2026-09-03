@@ -233,6 +233,84 @@ class TestValidate:
         assert "Error: Invalid server settings" in _output(result)
 
 
+class TestRecommend:
+    """``annealbridge recommend`` (3a §25): a one-line delegation to
+    ``service.recommend()``; exit 0 unless the problem itself is invalid."""
+
+    def test_knapsack_table_matches_the_spec_example(self):
+        result = runner.invoke(app, ["recommend", str(EXAMPLES_DIR / "knapsack.json")])
+
+        assert result.exit_code == 0
+        lines = result.output.splitlines()
+        assert lines[0] == "Problem:   knapsack"
+        assert lines[1] == (
+            "Advisory:  recommendations only; `solve` uses solver.backend as given"
+        )
+        assert lines[2] == ""
+        assert lines[3].split() == ["Rank", "Backend", "Usable", "Model", "Reasons"]
+        rows = [line.split() for line in lines[4:9]]
+        assert [row[1] for row in rows] == [
+            "exact",
+            "simulated_annealing",
+            "leap_hybrid_cqm",
+            "dwave_qpu",
+            "leap_hybrid_bqm",
+        ]
+        assert [row[0] for row in rows] == ["1", "2", "3", "4", "5"]
+        assert [row[2] for row in rows] == ["yes", "yes", "no", "no", "no"]
+        assert [row[3] for row in rows] == ["bqm", "bqm", "cqm", "bqm", "bqm"]
+        assert lines[4].endswith("R_EXACT_FITS")
+        assert lines[5].endswith("R_LOCAL_HEURISTIC")
+        assert "R_UNUSABLE, R_NATIVE_CONSTRAINTS   [REMOTE_DISABLED]" in lines[6]
+        assert "R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]" in lines[7]
+        assert "R_UNUSABLE, R_REMOTE, R_SINGLE_SAMPLE   [REMOTE_DISABLED]" in lines[8]
+        assert len(lines) == 9
+
+    def test_json_output_is_a_recommendation_result(self):
+        from annealbridge.validation import BackendRecommendationResult
+
+        result = runner.invoke(
+            app, ["recommend", str(EXAMPLES_DIR / "knapsack.json"), "--json"]
+        )
+
+        assert result.exit_code == 0
+        parsed = BackendRecommendationResult.model_validate_json(result.output)
+        assert parsed.valid is True
+        assert parsed.recommendations[0].backend == "exact"
+        assert [e.rank for e in parsed.recommendations] == [1, 2, 3, 4, 5]
+
+    def test_invalid_problem_exits_1_with_errors(self, tmp_path):
+        problem = json.loads((EXAMPLES_DIR / "knapsack.json").read_text())
+        problem["constraints"][0]["terms"][0]["variable"] = "ghost"
+        path = tmp_path / "broken.json"
+        path.write_text(json.dumps(problem))
+
+        result = runner.invoke(app, ["recommend", str(path)])
+
+        assert result.exit_code == 1
+        assert "Valid:     no" in result.output
+        assert "[UNKNOWN_VARIABLE]" in result.output
+        assert "Rank" not in result.output
+
+    def test_invalid_problem_json_exits_1(self, tmp_path):
+        problem = json.loads((EXAMPLES_DIR / "knapsack.json").read_text())
+        problem["variables"] = []
+        path = tmp_path / "empty.json"
+        path.write_text(json.dumps(problem))
+
+        result = runner.invoke(app, ["recommend", str(path), "--json"])
+
+        assert result.exit_code == 1
+        parsed = json.loads(result.output)
+        assert parsed["valid"] is False
+        assert parsed["recommendations"] == []
+
+    def test_missing_file_exits_2(self, tmp_path):
+        result = runner.invoke(app, ["recommend", str(tmp_path / "nope.json")])
+        assert result.exit_code == 2
+        assert "cannot read" in _output(result)
+
+
 class TestExportSchema:
     def test_outputs_problem_json_schema(self):
         result = runner.invoke(app, ["export-schema"])

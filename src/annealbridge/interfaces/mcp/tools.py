@@ -1,4 +1,4 @@
-"""The three MCP tools (spec §22–§24).
+"""The four MCP tools (Phase 2 spec §22–§24, 3a §24).
 
 Each tool is a thin adapter: fetch the wired-up state, call into the core, and
 return the core's Pydantic model so the SDK derives the structured output from
@@ -8,7 +8,10 @@ the return type annotation. No optimization logic here.
 import anyio
 
 from annealbridge.models import OptimizationProblem, SolveResult
-from annealbridge.validation import ProblemValidationResult
+from annealbridge.validation import (
+    BackendRecommendationResult,
+    ProblemValidationResult,
+)
 
 from annealbridge.interfaces.mcp.models import (
     OptimizationCapabilities,
@@ -48,6 +51,21 @@ async def validate_optimization_problem(
 
 
 @mcp.tool()
+async def recommend_backend(problem: OptimizationProblem) -> BackendRecommendationResult:
+    """Rank the solver backends of this server for a given problem, without solving it.
+
+    Advisory only: solve_optimization always uses problem.solver.backend exactly as
+    given and never substitutes a backend. Each entry reports whether the backend is
+    usable right now (installed, credentialed, permitted by policy, within limits),
+    the model type it would compile to, deterministic reason codes, blocking errors,
+    and the same warnings validate_optimization_problem would give for that backend.
+    Based only on the problem structure, backend capabilities and server policy —
+    no cost estimation, no network requests, no quota consumed.
+    """
+    return get_state().service.recommend(problem)
+
+
+@mcp.tool()
 async def solve_optimization(problem: OptimizationProblem) -> SolveResult:
     """Solve a structured binary combinatorial optimization problem.
 
@@ -62,6 +80,7 @@ async def solve_optimization(problem: OptimizationProblem) -> SolveResult:
     infeasible on a remote backend; hard constraint penalties are managed by the
     server. Use get_optimization_capabilities to see which backends are enabled;
     call validate_optimization_problem first when planning to use a remote backend.
+    Use recommend_backend to compare backends; the choice remains yours.
 
     Returns ranked feasible solutions with per-constraint evaluations, or a
     structured error with a recommended_action.

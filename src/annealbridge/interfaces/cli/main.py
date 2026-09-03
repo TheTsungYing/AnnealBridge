@@ -16,7 +16,10 @@ from annealbridge.config import SettingsError
 from annealbridge.interfaces.capabilities import BackendCapability, build_capabilities
 from annealbridge.interfaces.composition import AppState, build_state
 from annealbridge.models import OptimizationProblem, SolveResult, SolverPreferences
-from annealbridge.validation import ProblemValidationResult
+from annealbridge.validation import (
+    BackendRecommendationResult,
+    ProblemValidationResult,
+)
 
 app = typer.Typer(
     help="Optimization Tool Middleware CLI",
@@ -242,6 +245,82 @@ def validate(
         typer.echo(result.model_dump_json(indent=2))
     else:
         typer.echo(_render_validation(problem, result))
+
+    if not result.valid:
+        raise typer.Exit(code=1)
+
+
+def _render_errors(items, lines: list[str], title: str) -> None:
+    """Append an ``[CODE] path: message`` block with recommended actions."""
+    lines.append("")
+    lines.append(f"{title} ({len(items)}):")
+    for item in items:
+        location = f" {item.path}" if item.path else ""
+        lines.append(f"  [{item.code}]{location}: {item.message}")
+        if item.recommended_action:
+            lines.append(f"    recommended action: {item.recommended_action}")
+
+
+def _render_recommendation(
+    problem: OptimizationProblem, result: BackendRecommendationResult
+) -> str:
+    """Format a BackendRecommendationResult as the table from 3a §25.
+
+    Pure presentation: the order and every reason come from the service.
+    """
+    lines = [f"Problem:   {problem.name}"]
+    if not result.valid:
+        lines.append("Valid:     no")
+        _render_errors(result.errors, lines, "Errors")
+        return "\n".join(lines)
+
+    lines.append(
+        "Advisory:  recommendations only; `solve` uses solver.backend as given"
+    )
+    lines.append("")
+    entries = result.recommendations
+    name_width = max(len("Backend"), *(len(e.backend) for e in entries)) + 2
+    lines.append(
+        f"{'Rank':<6}{'Backend':<{name_width}}{'Usable':<8}{'Model':<7}Reasons"
+    )
+    for entry in entries:
+        row = (
+            f"{entry.rank:<6}"
+            f"{entry.backend:<{name_width}}"
+            f"{'yes' if entry.usable else 'no':<8}"
+            f"{entry.model_type or '-':<7}"
+            f"{', '.join(entry.reasons)}"
+        )
+        if entry.blocking:
+            codes = ", ".join(error.code for error in entry.blocking)
+            row = f"{row}   [{codes}]"
+        lines.append(row.rstrip())
+    return "\n".join(lines)
+
+
+@app.command()
+def recommend(
+    problem_file: Path = typer.Argument(
+        ..., help="Path to an OptimizationProblem JSON file"
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Print the full BackendRecommendationResult as JSON"
+    ),
+) -> None:
+    """Rank the backends for a problem without solving it (3a §25).
+
+    Advisory only: ``solve`` still uses solver.backend exactly as given.
+    """
+    problem = _load_problem(problem_file)
+
+    # Same composition root and the same one-line delegation as MCP; no
+    # ranking logic lives here.
+    result = _build_state().service.recommend(problem)
+
+    if json_output:
+        typer.echo(result.model_dump_json(indent=2))
+    else:
+        typer.echo(_render_recommendation(problem, result))
 
     if not result.valid:
         raise typer.Exit(code=1)

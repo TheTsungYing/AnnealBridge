@@ -1,6 +1,6 @@
 """Generic, declaration-driven limit and gate checks (Phase 3a spec §12).
 
-Pure functions shared by the service (and, later, routing). They read a
+Pure functions shared by the service and by routing. They read a
 backend's *declaration* — ``SolverCapabilities.parameter_limits`` and the
 capability flags — never a backend name, and this module imports no
 concrete backend or compiler (spec §4, overview principle 4).
@@ -10,7 +10,9 @@ from typing import get_args
 
 from pydantic import BaseModel
 
+from annealbridge.compiler.base import ModelCompiler
 from annealbridge.models import (
+    ModelType,
     SolveError,
     SolverCapabilities,
     SolverPreferences,
@@ -71,6 +73,22 @@ def read_preference(preferences: SolverPreferences, path: str) -> float | int | 
                 f"{type(preferences).__name__}: '{part}' is not an option block"
             )
     return value  # type: ignore[return-value]
+
+
+def select_model_type(
+    capabilities: SolverCapabilities, compilers: dict[ModelType, ModelCompiler]
+) -> ModelType | None:
+    """3a §16.1: the first declared model type there is a compiler for.
+
+    The single rule that decides which compiler path a backend takes;
+    ``solve``, ``validate`` and ``recommend`` all call it so they agree.
+    It dispatches on the backend's *declaration*, never on its name. None
+    means no compiler fits (solve reports NO_COMPILER_FOR_MODEL_TYPE).
+    """
+    for model_type in capabilities.supported_model_types:
+        if model_type in compilers:
+            return model_type
+    return None
 
 
 def limit_error(code: str, label: str, value: object, maximum: object) -> SolveError:

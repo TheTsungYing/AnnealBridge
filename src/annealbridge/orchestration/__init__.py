@@ -9,11 +9,14 @@ from annealbridge.orchestration.optimizer import (
     process_candidates,
 )
 from annealbridge.orchestration.policy import ExecutionPolicy
+from annealbridge.orchestration.routing import REASON_DESCRIPTIONS, recommend
 
 __all__ = [
     "CandidateSet",
     "ExecutionPolicy",
     "OptimizationService",
+    "REASON_DESCRIPTIONS",
+    "recommend",
     "deduplicate_samples",
     "evaluate_objective",
     "evaluate_objective_batch",
