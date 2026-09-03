@@ -1,4 +1,8 @@
-"""Tests keeping the error catalog in sync with Phase 2 spec §13.2."""
+"""Tests keeping the error catalog in sync with Phase 2 spec §13.2 and 3a §20."""
+
+import ast
+import re
+from pathlib import Path
 
 import pytest
 
@@ -134,3 +138,197 @@ class TestCatalogError:
         error = catalog_error("NOT_A_CODE", "m")
         assert error.recommended_action is None
         assert error.retryable is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 3a §20 / §30 step 10: every code the service, the validator and the
+# solver layer can actually emit must have catalog guidance. The emitted set
+# is collected from the source (AST) and from the shipped declarations, so a
+# new ``catalog_error("NEW_CODE", ...)`` without a catalog entry fails here.
+# ---------------------------------------------------------------------------
+
+SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "annealbridge"
+
+# Where the service and the validator build errors and warnings.
+EMITTING_PACKAGES = ["orchestration", "validation", "interfaces"]
+
+# Functions whose first positional argument (or ``code=`` keyword) is a code.
+ERROR_BUILDERS = frozenset({"catalog_error", "_error", "SolverExecutionError"})
+WARNING_BUILDERS = frozenset({"_warning"})
+
+
+def _call_name(node: ast.Call) -> str | None:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _literal_codes(files: list[Path], builders: frozenset[str]) -> dict[str, list[str]]:
+    """``code -> [file:line, ...]`` for every literal code passed to ``builders``."""
+    found: dict[str, list[str]] = {}
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or _call_name(node) not in builders:
+                continue
+            code = None
+            if (
+                node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                code = node.args[0].value
+            for keyword in node.keywords:
+                if (
+                    keyword.arg == "code"
+                    and isinstance(keyword.value, ast.Constant)
+                    and isinstance(keyword.value.value, str)
+                ):
+                    code = keyword.value.value
+            if code is not None:
+                where = f"{path.relative_to(SRC_ROOT).as_posix()}:{node.lineno}"
+                found.setdefault(code, []).append(where)
+    return found
+
+
+def _package_files(*packages: str) -> list[Path]:
+    files: list[Path] = []
+    for package in packages:
+        directory = SRC_ROOT / package
+        assert directory.is_dir(), f"missing package directory: {directory}"
+        files.extend(sorted(directory.rglob("*.py")))
+    return files
+
+
+def literal_error_codes() -> dict[str, list[str]]:
+    return _literal_codes(_package_files(*EMITTING_PACKAGES, "solvers"), ERROR_BUILDERS)
+
+
+def literal_warning_codes() -> dict[str, list[str]]:
+    return _literal_codes(_package_files(*EMITTING_PACKAGES), WARNING_BUILDERS)
+
+
+def declared_error_codes() -> dict[str, list[str]]:
+    """Codes the service emits from *declarations* rather than literals.
+
+    ``limit_error`` uses each backend's declared ``ParameterLimit.error_code``;
+    the availability gate uses ``AVAILABILITY_MAP``'s defaults; solver
+    exceptions are classified through the Ocean code tables and the
+    fallback code.
+    """
+    from annealbridge.orchestration.limits import AVAILABILITY_MAP
+    from annealbridge.solvers import SolverRegistry
+    from annealbridge.solvers.metadata import REMOTE_ERROR_FALLBACK_CODE
+    from annealbridge.solvers.ocean import (
+        HYBRID_SAMPLE_EXCEPTION_CODES,
+        SAMPLER_INIT_EXCEPTION_CODES,
+    )
+
+    found: dict[str, list[str]] = {}
+    for category, (_status, code) in AVAILABILITY_MAP.items():
+        found.setdefault(code, []).append(f"AVAILABILITY_MAP[{category!r}]")
+    registry = SolverRegistry.default()
+    for name in registry.names():
+        for declaration in registry.get(name).capabilities.parameter_limits:
+            found.setdefault(declaration.error_code, []).append(
+                f"{name}.parameter_limits[{declaration.preference!r}]"
+            )
+    for table_name, table in (
+        ("SAMPLER_INIT_EXCEPTION_CODES", SAMPLER_INIT_EXCEPTION_CODES),
+        ("HYBRID_SAMPLE_EXCEPTION_CODES", HYBRID_SAMPLE_EXCEPTION_CODES),
+    ):
+        for exception_name, code in table.items():
+            found.setdefault(code, []).append(f"{table_name}[{exception_name!r}]")
+    found.setdefault(REMOTE_ERROR_FALLBACK_CODE, []).append("REMOTE_ERROR_FALLBACK_CODE")
+    return found
+
+
+class TestEmittedErrorCodesAreCatalogued:
+    """3a §20: the coverage check spans every code the code base can emit."""
+
+    def test_collector_sees_the_3a_codes(self):
+        literal = literal_error_codes()
+        declared = declared_error_codes()
+        # Literal emitters in the service (3a §20 rows).
+        assert "NO_COMPILER_FOR_MODEL_TYPE" in literal
+        assert "UNKNOWN_BACKEND" in literal
+        # Declaration-driven emitters.
+        assert "BACKEND_CONFIG_INVALID" in declared
+        assert "REMOTE_TIME_LIMIT" in declared
+        assert "REMOTE_SOLVER_ERROR" in declared
+
+    def test_every_literal_code_has_a_recommended_action(self):
+        missing = {
+            code: where
+            for code, where in literal_error_codes().items()
+            if code not in RECOMMENDED_ACTIONS
+        }
+        assert missing == {}, f"codes emitted without catalog guidance: {missing}"
+
+    def test_every_declared_code_has_a_recommended_action(self):
+        missing = {
+            code: where
+            for code, where in declared_error_codes().items()
+            if code not in RECOMMENDED_ACTIONS
+        }
+        assert missing == {}, f"codes emitted without catalog guidance: {missing}"
+
+    def test_unknown_backend_is_shared_by_solve_and_validate(self):
+        """§20: validate()'s UNKNOWN_BACKEND warning reuses the existing entry."""
+        where = literal_error_codes()["UNKNOWN_BACKEND"]
+        assert len(where) >= 2
+        assert all(site.startswith("orchestration/optimizer.py") for site in where)
+
+    def test_validator_error_codes_are_exactly_its_literal_codes(self):
+        """``VALIDATOR_ERROR_CODES`` (the documented set) matches the source."""
+        from annealbridge.validation.problem_validator import VALIDATOR_ERROR_CODES
+
+        literal = _literal_codes(_package_files("validation"), ERROR_BUILDERS)
+        assert set(literal) == set(VALIDATOR_ERROR_CODES)
+
+
+class TestEmittedWarningCodesAreCatalogued:
+    """Every ``_warning("CODE", ...)`` in the validator has fixed guidance."""
+
+    def test_every_emitted_warning_has_guidance_and_none_is_stale(self):
+        from annealbridge.validation.problem_validator import (
+            _WARNING_RECOMMENDED_ACTIONS,
+        )
+
+        emitted = literal_warning_codes()
+        assert emitted, "no warning emitters were found; the collector is broken"
+        assert set(emitted) == set(_WARNING_RECOMMENDED_ACTIONS)
+        for code, text in _WARNING_RECOMMENDED_ACTIONS.items():
+            assert isinstance(text, str) and text.strip(), code
+
+    def test_service_warnings_reuse_the_error_catalog(self):
+        """§20: warnings the *service* adds (UNKNOWN_BACKEND, ...) are catalog codes."""
+        for code in _literal_codes(_package_files("orchestration"), ERROR_BUILDERS):
+            assert code in RECOMMENDED_ACTIONS, code
+
+
+class TestGuidanceTextCarriesNoConfigValues:
+    """§20 / Phase 2 §13.2: guidance is categorical and never embeds a limit."""
+
+    @pytest.mark.parametrize("code", EXPECTED_CODES)
+    def test_recommended_action_has_no_numbers(self, code):
+        assert not re.search(r"\d", RECOMMENDED_ACTIONS[code]), code
+
+    def test_warning_guidance_has_no_numbers(self):
+        from annealbridge.validation.problem_validator import (
+            _WARNING_RECOMMENDED_ACTIONS,
+        )
+
+        for code, text in _WARNING_RECOMMENDED_ACTIONS.items():
+            assert not re.search(r"\d", text), code
+
+    def test_3a_texts_match_the_spec_wording(self):
+        assert RECOMMENDED_ACTIONS["BACKEND_CONFIG_INVALID"].startswith(
+            "The backend's configuration is present but invalid"
+        )
+        assert RECOMMENDED_ACTIONS["NO_COMPILER_FOR_MODEL_TYPE"].startswith(
+            "The server has no compiler for the model types this backend accepts"
+        )

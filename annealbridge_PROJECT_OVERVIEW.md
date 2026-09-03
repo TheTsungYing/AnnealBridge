@@ -2,8 +2,8 @@
 
 > 這份文件是給「人」和「AI coding agent」一起看的。
 > 目的是說清楚：我們到底在做什麼、為什麼這樣做、哪些事絕對不能偏。
-> 細節規格在另外兩份文件：`optimization_middleware_phase1_spec_v2.md`、`annealbridge_phase2_spec_v2.md`。
-> 兩份規格若與這份文件衝突，以規格為準；但如果你發現自己正在做的事違反了本文件的「核心原則」，先停下來問。
+> 細節規格在另外三份文件：`optimization_middleware_phase1_spec_v2.md`、`annealbridge_phase2_spec_v2.md`、`annealbridge_phase3a_spec_v1.md`。
+> 規格若與這份文件衝突，以規格為準；但如果你發現自己正在做的事違反了本文件的「核心原則」，先停下來問。
 
 ---
 
@@ -83,16 +83,16 @@ AI 負責「說清楚要什麼」    →    程式負責「精確地算出來並
 | Objective（目標） | 想要最大或最小的那個數，例如總成本 |
 | Hard constraint（硬限制） | 絕對不能違反的規則。違反 = 答案無效 |
 | Soft constraint（軟限制） | 希望盡量滿足，但可以妥協的偏好。有 weight 表示多重要 |
-| Compiler（編譯器） | 把 JSON 翻成求解器看得懂的數學模型（BQM / QUBO）。這是**我們的程式**做，不是 AI |
+| Compiler（編譯器） | 把 JSON 翻成求解器看得懂的數學模型（BQM / QUBO）。這是**我們的程式**做，不是 AI。Phase 3a 起有兩個：BQM compiler（penalty + slack）與 CQM compiler（限制原生表達） |
 | Penalty（懲罰係數） | 編譯時為了讓求解器「不敢違反硬限制」加上的數學重量。**由程式自動算**，AI 不用給、也不該給 |
 | Slack variable | 編譯器為了表達「小於等於」自己加的內部輔助變數。AI 看不到、最後答案也不會出現 |
-| Solver / Backend（求解器） | 真正算答案的引擎。Phase 1 有本機的模擬退火（SA）和窮舉（Exact）；Phase 2 加 D-Wave 量子退火與雲端混合求解器 |
+| Solver / Backend（求解器） | 真正算答案的引擎。Phase 1 有本機的模擬退火（SA）和窮舉（Exact）；Phase 2 加 D-Wave 量子退火與雲端混合求解器；Phase 3a 加 D-Wave Leap hybrid CQM 求解器 |
 | Solution Validator（答案驗證器） | 拿求解器的每個候選答案，回到**原始 JSON** 逐條檢查限制有沒有違反。這一步不信任求解器，一律重查 |
 | MCP | 讓 AI 能標準化呼叫外部工具的協定。Phase 2 用它把 AnnealBridge 包成 AI 可以呼叫的工具 |
 
 ---
 
-## 四、兩個階段各做什麼
+## 四、各階段做什麼
 
 ### Phase 1：把核心引擎做出來（不碰 AI、不碰 MCP、不碰雲端）
 
@@ -114,6 +114,15 @@ AI 負責「說清楚要什麼」    →    程式負責「精確地算出來並
 3. 加安全機制：遠端預設關閉、不外洩 token、有用量上限、不偷偷降級
 
 **Phase 2 不改 Phase 1 的核心邏輯。** 如果做 Phase 2 時發現要重寫 compiler、validator、retry，代表 Phase 1 架構有問題，要回頭修 Phase 1，而不是在 Phase 2 另寫一套。
+
+### Phase 3a：加 CQM 路徑、加推薦工具、清掉「認名字」的架構債
+
+1. **加一條 CQM 路徑。** 硬限制直接交給求解器原生處理，不用 penalty、不用 slack、也不用重試（只會有一次嘗試）。求解器自己說「這個答案可行」我們也不信，一樣把每個候選答案拿回原始 JSON 重查一遍；它的說法只被當成統計數字記下來。
+2. **加一個「推薦工具」**（MCP 的 `recommend_backend`、CLI 的 `annealbridge recommend`）。它只把所有求解器排個名、講清楚哪個能用、為什麼不能用，**只建議、不代替使用者選**：真的要算的時候，永遠用使用者自己指定的那個 backend。
+3. **清掉架構債。** service、validator、介面層不再「認名字」（不再寫 `if backend == "..."` 這種特判），改成看每個求解器自己宣告的能力。並且有測試證明：新增第五個求解器，核心一行都不用改。
+4. **不動 IR。** 那份 JSON 的格式完全沒變（`version` 仍是 `"1.0"`、仍然只有 0/1 變數）。整數變數和 Fujitsu 留給 Phase 3b。
+
+**Phase 3a 不改 Phase 1／2 的核心邏輯。** 新東西一律以插件和宣告的方式加上去，不是回頭改既有流程。
 
 ---
 
@@ -206,15 +215,17 @@ Validator  → 只檢查，不修改
 |---|---|
 | Phase 1 規格 | 完成（v2） |
 | Phase 2 規格 | 完成（v2） |
+| Phase 3a 規格 | 完成（v1） |
 | Phase 1 實作 | 完成（2026-08，`optimizer` 套件，後於 Phase 2 Step 1 改名 `annealbridge`） |
 | Phase 2 實作 | 完成（2026-09-02，spec §35 全部 16 步；`pytest` 510 passed，remote_live 為 opt-in） |
+| Phase 3a 實作 | 完成（2026-09-02，spec §30 全部 10 步；`pytest` 1311 passed，remote_live 為 opt-in） |
 | 版本控制 / CI | 2026-09-02 建立 git repo；CI workflow 已就緒，推上 GitHub 後生效 |
-| Phase 3（CQM、整數變數、Fujitsu、solver routing） | 只留擴充點，不實作；開工前先寫 Phase 3 spec |
+| Phase 3b（整數變數、Fujitsu DA） | 只留擴充點（3a spec §32），開工前先寫 3b spec |
 
 技術選型（已確定，不要換）：
 
 - Python ≥ 3.11、Pydantic v2
-- 求解：dimod、dwave-samplers（本機）、dwave-system（Phase 2 遠端）
+- 求解：dimod、dwave-samplers（本機）、dwave-system（Phase 2 / 3a 遠端）
 - MCP：官方 Python SDK v2（`mcp>=2,<3`，`MCPServer`，2026-07 已穩定釋出）
 - 測試：pytest
 - 套件名：`annealbridge`

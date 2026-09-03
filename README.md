@@ -4,15 +4,16 @@ A combinatorial optimization middleware designed to be called by AI agents over
 [MCP](https://modelcontextprotocol.io). An agent produces a structured
 `OptimizationProblem` JSON — variables, objective, constraints, nothing else —
 and AnnealBridge deterministically validates it, compiles it into a Binary
-Quadratic Model (BQM), solves it on a local or D-Wave backend, re-validates
-every candidate against the *original* problem, and returns ranked feasible
-business solutions.
+Quadratic Model (BQM) or a Constrained Quadratic Model (CQM), solves it on a
+local or D-Wave backend, re-validates every candidate against the *original*
+problem, and returns ranked feasible business solutions.
 
 The agent never writes a QUBO matrix, a penalty weight, or a slack variable.
 The deterministic Python core owns all of that.
 
-Specifications: [Phase 1](optimization_middleware_phase1_spec_v2.md) and
-[Phase 2](annealbridge_phase2_spec_v2.md).
+Specifications: [Phase 1](optimization_middleware_phase1_spec_v2.md),
+[Phase 2](annealbridge_phase2_spec_v2.md) and
+[Phase 3a](annealbridge_phase3a_spec_v1.md).
 
 ## Architecture
 
@@ -36,9 +37,13 @@ optimization logic lives in either of them.
                                     │  OptimizationService.solve(problem)
   ┌─────────────────────────────────▼──────────────── core ───────────────┐
   │                                                                       │
-  │     models → validation → compiler → penalty → solvers                │
-  │                                                    │                  │
-  │                                             orchestration             │
+  │     models → validation → compiler {bqm, cqm} → penalty → solvers     │
+  │                                                              │        │
+  │                                                        orchestration  │
+  │                                                                       │
+  │     penalty is applied on the bqm path only.                          │
+  │     solvers: exact, simulated_annealing, dwave_qpu,                   │
+  │              leap_hybrid_bqm, leap_hybrid_cqm                         │
   │                                                                       │
   │     pydantic + dimod + dwave-samplers only.                           │
   │     Imports no mcp, no dwave.cloud, no config.                        │
@@ -68,9 +73,9 @@ Key principles:
 
 Package layout under `src/annealbridge/`: `models/` (pydantic schema),
 `validation/` (problem + solution validators), `compiler/` (BQM compiler with
-slack encoding), `penalty/` (penalty strategy), `solvers/` (backends and
-registry), `orchestration/` (the `OptimizationService` pipeline and
-`ExecutionPolicy`), `config/` (environment settings), and `interfaces/`
+slack encoding and CQM compiler), `penalty/` (penalty strategy), `solvers/`
+(backends and registry), `orchestration/` (the `OptimizationService` pipeline
+and `ExecutionPolicy`), `config/` (environment settings), and `interfaces/`
 (`cli/`, `mcp/`).
 
 ## Installation
@@ -85,8 +90,8 @@ pip install annealbridge
 # + MCP server (mcp>=2,<3): adds the `annealbridge-mcp` entry point.
 pip install "annealbridge[mcp]"
 
-# + D-Wave cloud (dwave-system): enables the remote `dwave_qpu`
-#   and `leap_hybrid_bqm` backends.
+# + D-Wave cloud (dwave-system): enables the remote `dwave_qpu`,
+#   `leap_hybrid_bqm` and `leap_hybrid_cqm` backends.
 pip install "annealbridge[dwave]"
 
 # Everything.
@@ -161,6 +166,7 @@ Domain failures are returned as structured results, never raised:
           ▼
        Agent ─────────── get_optimization_capabilities (what is supported?)
           │              validate_optimization_problem (dry-run check)
+          │              recommend_backend             (which backend fits?)
           │
           │  emits OptimizationProblem JSON
           │  (variables / objective / constraints only —
@@ -172,8 +178,9 @@ Domain failures are returned as structured results, never raised:
   ┌───────────────── AnnealBridge ─────────────────┐
   │  1. validate      schema + semantics, all      │
   │                   errors collected in one pass │
-  │  2. compile       objective + constraints → BQM│
-  │                   (penalty λ, slack encoding)  │
+  │  2. compile       objective + constraints →    │
+  │                   BQM (penalty λ, slack) or    │
+  │                   CQM (native constraints)     │
   │  3. solve         exact / SA / QPU / hybrid    │
   │  4. re-validate   every sample independently   │
   │                   against the ORIGINAL JSON,   │
@@ -284,7 +291,9 @@ value** (the JSON number may be written as `6` or `6.0`, but it must be
 mathematically integral). Non-integer values are rejected with the
 `NON_INTEGER_INEQUALITY` validation error. Equality (`==`) constraints are not
 subject to this restriction; no automatic scaling of fractional coefficients
-is performed.
+is performed. This restriction also applies on the CQM path, where slack
+variables are not used at all — it is kept deliberately conservative so that
+both paths accept exactly the same problems (Phase 3a spec §21.3).
 
 ### Soft constraint weights
 
@@ -335,6 +344,12 @@ annealbridge solve examples/knapsack.json --backend exact
 # Full SolveResult as JSON
 annealbridge solve examples/knapsack.json --json
 
+# Validate without solving; add --backend / --json
+annealbridge validate examples/knapsack.json
+
+# Rank the backends for a problem without solving it; advisory only
+annealbridge recommend examples/knapsack.json
+
 # Which backends are installed, enabled, and under what limits
 annealbridge capabilities
 
@@ -350,6 +365,15 @@ before any credentials are configured.
 Exit code is `0` on `success` and non-zero otherwise (`1` for a non-success
 `SolveResult`, `2` for unreadable or malformed input files).
 
+`annealbridge validate` exits `0` when the problem is valid, `1` when it is
+invalid, and `2` for an unreadable or malformed file; `annealbridge recommend`
+exits `0` on a successful ranking, `1` for an invalid problem, and `2` for a
+file error. Both are one-line delegations to `OptimizationService.validate()`
+and `OptimizationService.recommend()` — the same code paths the MCP tools use,
+so the CLI and an agent always see the same answer. `recommend` never rewrites
+`solver.backend`: it only ranks, and solving still uses the backend you asked
+for.
+
 ## Solver Backends
 
 | Backend               | Kind      | Notes                                                       |
@@ -358,6 +382,7 @@ Exit code is `0` on `success` and non-zero otherwise (`1` for a non-success
 | `simulated_annealing` | local     | `dwave.samplers.SimulatedAnnealingSampler`; heuristic       |
 | `dwave_qpu`           | remote    | `EmbeddingComposite(DWaveSampler())`                        |
 | `leap_hybrid_bqm`     | remote    | `LeapHybridSampler`                                         |
+| `leap_hybrid_cqm`     | remote    | `LeapHybridCQMSampler`; native constraints (CQM path)       |
 
 - **`exact`** — a testing/debugging backend and a ground-truth benchmark for
   the annealer. The state space doubles with every variable, so it refuses
@@ -370,10 +395,38 @@ Exit code is `0` on `success` and non-zero otherwise (`1` for a non-success
   the service retries with a doubled hard-constraint penalty, up to
   `max_retries` times. An `infeasible` result only means "not found under this
   configuration" (`infeasibility_proven: false`).
-- **`dwave_qpu`** and **`leap_hybrid_bqm`** — require the `[dwave]` extra,
-  D-Wave Leap credentials, and `ANNEALBRIDGE_ALLOW_REMOTE=true`. See
-  [D-Wave Setup](#d-wave-setup). Without all three they report
-  `backend_unavailable`; there is never a silent fallback to a local solver.
+- **`dwave_qpu`**, **`leap_hybrid_bqm`** and **`leap_hybrid_cqm`** — require
+  the `[dwave]` extra, D-Wave Leap credentials, and
+  `ANNEALBRIDGE_ALLOW_REMOTE=true`. See [D-Wave Setup](#d-wave-setup). Without
+  all three they report `backend_unavailable`; there is never a silent
+  fallback to a local solver.
+- **`leap_hybrid_cqm`** — the only backend on the **CQM path**. The problem is
+  compiled into a `dimod.ConstrainedQuadraticModel`, so hard constraints are
+  submitted natively: no penalty λ, no slack variables. Soft constraints become
+  weighted constraints (`weight × violation²`, the same formula the validator
+  uses for `soft_violation_score`). There is therefore always exactly one
+  attempt, `SolveAttempt.penalty` is `null`, there is no penalty retry, and no
+  `REMOTE_RETRIES_DISABLED` warning is emitted. The sampler's own `is_feasible`
+  flag is **not trusted**: every sample is still re-validated against the
+  original JSON, and the flag is only counted into
+  `metadata.sampler_reported_feasible`. `metadata.model_type` records `"bqm"`
+  or `"cqm"` for every solve. Preferences go in their own block:
+  `"solver": {"backend": "leap_hybrid_cqm", "leap_hybrid_cqm":
+  {"time_limit_seconds": 5}}`. The sampler's minimum `time_limit_seconds` is
+  5 s — a lower value is raised to the minimum and recorded in
+  `metadata.effective_time_limit_seconds`, while a value above
+  `ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS` is rejected with
+  `resource_limit_exceeded` / `REMOTE_TIME_LIMIT` rather than clamped. Leap's
+  published ceilings — 5,000,000 variables and 100,000 constraints — are
+  enforced by D-Wave, not by this server.
+
+Which compiler runs is decided by the backend, not by a name check: each
+backend declares its `supported_model_types`, and the service picks the first
+declared model type it has a compiler for (`{bqm: BQMCompiler,
+cqm: CQMCompiler}`). If none of the declared model types has a compiler, the
+result is `configuration_error` / `NO_COMPILER_FOR_MODEL_TYPE`. `exact`,
+`simulated_annealing`, `dwave_qpu` and `leap_hybrid_bqm` all take the BQM path,
+with unchanged behaviour.
 
 ## MCP Server
 
@@ -383,13 +436,21 @@ Install the extra and the `annealbridge-mcp` entry point becomes available:
 pip install "annealbridge[mcp]"
 ```
 
-It exposes three tools:
+It exposes four tools:
 
 | Tool                             | Purpose                                                        |
 | -------------------------------- | -------------------------------------------------------------- |
 | `get_optimization_capabilities`  | Supported types/operators, backend availability, JSON schema    |
 | `validate_optimization_problem`  | Validate a problem without solving it                           |
+| `recommend_backend`              | Rank the backends for a problem without solving it (advisory only) |
 | `solve_optimization`             | Validate → compile → solve → re-validate → rank                 |
+
+`recommend_backend` is **advisory only**. It ranks every backend for a given
+problem — usable or not, model type, reason codes, blocking errors, warnings,
+and the estimated number of compiled variables — deterministically, with no
+network I/O, no solving, no concurrency slot, and no quota consumed. It never
+rewrites `problem.solver.backend`; `solve_optimization` always uses the backend
+the caller asked for.
 
 ### Claude Desktop (stdio)
 
@@ -460,7 +521,7 @@ Inspector:
 npx @modelcontextprotocol/inspector annealbridge-mcp
 ```
 
-Either way the Inspector lists the three tools, shows their generated
+Either way the Inspector lists the four tools, shows their generated
 input/output schemas, and lets you submit a problem JSON by hand.
 
 ## D-Wave Setup
@@ -494,8 +555,8 @@ not reach the network until you say so:
 export ANNEALBRIDGE_ALLOW_REMOTE=true
 ```
 
-Verify with `annealbridge capabilities` — `dwave_qpu` and `leap_hybrid_bqm`
-should now show as available and enabled.
+Verify with `annealbridge capabilities` — `dwave_qpu`, `leap_hybrid_bqm` and
+`leap_hybrid_cqm` should now show as available and enabled.
 
 ### Environment variables
 
@@ -512,6 +573,15 @@ All settings use the `ANNEALBRIDGE_` prefix:
 | `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES`     | `4`    | Concurrent solves allowed                      |
 | `ANNEALBRIDGE_HTTP_HOST`            | `127.0.0.1` | Default bind host for streamable-http          |
 | `ANNEALBRIDGE_HTTP_PORT`            | `8000`      | Default port for streamable-http               |
+| `ANNEALBRIDGE_LIMITS`               | `{}`        | Generic policy limits as a JSON object, e.g. `{"iterations": 100}`; for backends that declare custom limit keys. Not needed by the built-in backends |
+
+Every `ANNEALBRIDGE_*` variable above is retained with unchanged semantics.
+`ANNEALBRIDGE_LIMITS` only adds *generic* limit keys for third-party backends
+that register custom limit keys declaratively; the five built-in backends use
+the dedicated variables instead. It must not contain a key that already has a
+dedicated variable — `variables`, `reads`, `annealing_time_us` and
+`time_seconds` are rejected, and have to be configured through the older
+variables.
 
 D-Wave credentials are deliberately **not** among them: they belong to Ocean's
 configuration (`dwave config create` or `DWAVE_API_TOKEN`), so AnnealBridge
@@ -520,14 +590,16 @@ never has to read, store, or pass a token itself.
 ## Security
 
 - **Remote execution is off by default.** `ANNEALBRIDGE_ALLOW_REMOTE` defaults
-  to `false`; a request for `dwave_qpu` or `leap_hybrid_bqm` then returns
+  to `false`; a request for `dwave_qpu`, `leap_hybrid_bqm` or
+  `leap_hybrid_cqm` then returns
   `backend_unavailable` rather than silently falling back to a local solver.
   Nothing touches the network, and no quota is consumed, until you opt in.
 - **Remote retries are off by default.** `ANNEALBRIDGE_ALLOW_REMOTE_RETRIES`
   defaults to `false`, so a `max_retries: 3` problem cannot turn into multiple
   billed QPU submissions. Resource limits (`MAX_QPU_READS`,
   `MAX_QPU_ANNEALING_TIME_US`, `MAX_REMOTE_TIME_SECONDS`) are enforced as
-  errors, never silently clamped.
+  errors, never silently clamped. The CQM path never retries at all: it always
+  runs exactly one attempt.
 - **Streamable HTTP binds `127.0.0.1` by default.** The server has **no
   authentication or authorization of any kind**. Do not expose it directly to
   a public network or bind it to `0.0.0.0`. If remote access is genuinely
@@ -551,7 +623,8 @@ never has to read, store, or pass a token itself.
   cyclic tour a-b-c-d has total length 8.
 
 All three declare a local backend; try `--backend simulated_annealing` to
-compare against `exact`.
+compare against `exact`. With remote execution configured,
+`--backend leap_hybrid_cqm` runs the same problem down the CQM path instead.
 
 ## Testing
 
@@ -565,15 +638,21 @@ Remote live tests are opt-in and excluded by default:
 
 ```bash
 # Requires DWAVE_API_TOKEN and CONSUMES REAL LEAP QUOTA.
+# Now includes the Leap hybrid CQM live test
+# (tests/remote_live/test_leap_hybrid_cqm_live.py, a 3-variable knapsack
+# with a 5 s time limit).
 pytest -m remote
 ```
 
 `tests/unit/` covers models, validators, slack encoding, the BQM compiler, the
-penalty strategy, and the solver backends; `tests/scenarios/` runs the full
+CQM compiler, the penalty strategy, the policy limits, backend routing, and the
+solver backends; `tests/scenarios/` runs the full
 JSON → validate → compile → solve → validate → rank pipeline;
 `tests/remote_mock/` exercises the D-Wave backends against mocks;
-`tests/mcp/` drives the three tools through an in-memory MCP client; and
-`tests/architecture/` enforces the import boundaries described above.
+`tests/mcp/` drives the four tools through an in-memory MCP client; and
+`tests/architecture/` enforces the import boundaries described above, plus two
+further rules: no backend-name constants in `orchestration/`, `validation/` or
+the interfaces, and a fake fifth backend that plugs in with zero core changes.
 
 ## Limitations
 
@@ -585,7 +664,9 @@ The simulated annealing backend is heuristic and does not guarantee a global opt
 The exact backend is for testing/debugging and is limited to small problems.
 Leap Hybrid returns a single sample.
 QPU embedding may fail for dense problems.
+The CQM path still requires integer coefficients and right-hand sides for inequality constraints (kept deliberately conservative; spec §21.3).
+Integer variables are planned for Phase 3b.
 ```
 
-Out of scope: integer and real variables, nonlinear constraints, CQM models,
-and automatic soft-weight normalization.
+Out of scope for now: integer and real variables (Phase 3b), nonlinear
+constraints, and automatic soft-weight normalization.

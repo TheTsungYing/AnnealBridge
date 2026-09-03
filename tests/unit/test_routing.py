@@ -8,7 +8,9 @@ package or config is involved), and the fake declared backend of
 ``tests/fakes`` stands in for an always-available remote.
 """
 
+import ast
 import json
+from pathlib import Path
 
 import pytest
 
@@ -405,3 +407,51 @@ class TestServiceDelegation:
                 validated.estimated_compiled_variables
             )
             assert entry.warnings == validated.warnings
+
+
+def _reason_constants_in_source() -> tuple[set[str], set[str], set[str]]:
+    """``(emitted, keyed, all_r)`` R_ string constants found in routing.py.
+
+    ``emitted`` are the codes appended to a ``reasons`` list, ``keyed`` the
+    keys of the ``REASON_DESCRIPTIONS`` dict literal, ``all_r`` every R_
+    constant anywhere in the module (3a §23.4 / step 10).
+    """
+    from annealbridge.orchestration import routing
+
+    tree = ast.parse(Path(routing.__file__).read_text(encoding="utf-8"))
+    emitted: set[str] = set()
+    keyed: set[str] = set()
+    all_r: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value.startswith("R_"):
+                all_r.add(node.value)
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "append":
+                for arg in node.args:
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        if arg.value.startswith("R_"):
+                            emitted.add(arg.value)
+        elif isinstance(node, ast.Dict):
+            for key in node.keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    if key.value.startswith("R_"):
+                        keyed.add(key.value)
+    return emitted, keyed, all_r
+
+
+class TestReasonCatalogMatchesTheSource:
+    """The reason codes *emitted* by routing.py, collected from its source,
+    are exactly the described vocabulary (3a §23.4, step 10)."""
+
+    def test_every_source_reason_code_is_described(self):
+        emitted, keyed, _all_r = _reason_constants_in_source()
+        assert emitted, "no reason emitters were found; the collector is broken"
+        assert emitted == set(REASON_DESCRIPTIONS)
+        assert keyed == set(REASON_DESCRIPTIONS)
+        assert emitted == ALL_REASON_CODES
+
+    def test_no_other_r_constant_hides_in_the_module(self):
+        _emitted, _keyed, all_r = _reason_constants_in_source()
+        assert all_r == set(REASON_DESCRIPTIONS)
