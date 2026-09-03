@@ -242,7 +242,9 @@ class TestConstruction:
 class TestNoCompilerForModelType:
     def test_cqm_only_backend_with_bqm_only_service(self):
         backend = FakeCQMOnlyBackend()
-        service = _service(backend)  # default compilers: [BQMCompiler()]
+        # The default list now ships CQMCompiler too (3a step 6), so the
+        # "no compiler" case needs an explicit bqm-only list.
+        service = _service(backend, compilers=[BQMCompiler()])
 
         result = service.solve(make_problem(backend.name))
 
@@ -263,7 +265,7 @@ class TestNoCompilerForModelType:
 
     def test_validate_reports_model_type_none_without_compiler(self):
         backend = FakeCQMOnlyBackend()
-        service = _service(backend)
+        service = _service(backend, compilers=[BQMCompiler()])
 
         result = service.validate(make_problem(backend.name))
 

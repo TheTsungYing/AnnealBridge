@@ -2,6 +2,7 @@
 
 from annealbridge.compiler.base import ModelCompiler
 from annealbridge.compiler.bqm import BQMCompiler
+from annealbridge.compiler.cqm import CQMCompiler
 from annealbridge.compiler.objective import build_objective_bqm
 from annealbridge.compiler.slack import (
     InequalityEncoding,
@@ -11,6 +12,7 @@ from annealbridge.compiler.slack import (
 
 __all__ = [
     "BQMCompiler",
+    "CQMCompiler",
     "InequalityEncoding",
     "ModelCompiler",
     "build_objective_bqm",

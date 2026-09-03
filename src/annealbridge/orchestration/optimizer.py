@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from annealbridge.compiler import BQMCompiler
+from annealbridge.compiler import BQMCompiler, CQMCompiler
 from annealbridge.compiler.base import ModelCompiler
 from annealbridge.exceptions import CompilationError, OptimizerError
 from annealbridge.models import (
@@ -284,8 +284,10 @@ class OptimizationService:
         self._policy = policy
         # 3a §16.1: one compiler per model type, chosen per solve from the
         # backend's declaration. This is the only place the service names
-        # a concrete compiler (§4); step 6 of the 3a plan adds CQMCompiler.
-        compiler_list = list(compilers) if compilers is not None else [BQMCompiler()]
+        # a concrete compiler (§4).
+        compiler_list = (
+            list(compilers) if compilers is not None else [BQMCompiler(), CQMCompiler()]
+        )
         self._compilers: dict[ModelType, ModelCompiler] = {}
         for compiler in compiler_list:
             if compiler.model_type in self._compilers:
