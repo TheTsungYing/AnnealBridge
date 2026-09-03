@@ -128,3 +128,105 @@ def test_validation_does_not_import_upper_layers() -> None:
 
     assert scanned_files > 0, "no validation .py files scanned"
     assert not violations, "validation imports upper layers:\n" + "\n".join(violations)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3a §13.3: orchestration never names a concrete backend or, outside
+# the one place that builds the default compiler list, a concrete compiler.
+# ---------------------------------------------------------------------------
+
+# Concrete backend modules. ``annealbridge.solvers`` itself, ``.base``,
+# ``.registry`` and ``.metadata`` remain importable: those are the seams.
+CONCRETE_BACKEND_MODULES = [
+    "annealbridge.solvers.exact",
+    "annealbridge.solvers.simulated_annealing",
+    "annealbridge.solvers.dwave_qpu",
+    "annealbridge.solvers.leap_hybrid_bqm",
+    "annealbridge.solvers.leap_hybrid_cqm",
+]
+
+CONCRETE_COMPILER_MODULES = ["annealbridge.compiler.bqm", "annealbridge.compiler.cqm"]
+CONCRETE_COMPILER_NAMES = {"BQMCompiler", "CQMCompiler"}
+
+# The only orchestration file allowed to know the concrete compilers: it
+# assembles the default ``compilers`` list there and nowhere else (§4).
+COMPILER_IMPORT_ALLOWED_IN = "orchestration/optimizer.py"
+
+
+def _orchestration_files() -> list[Path]:
+    files = sorted((SRC_ROOT / "orchestration").rglob("*.py"))
+    assert files, "no orchestration .py files scanned"
+    return files
+
+
+def test_orchestration_does_not_import_concrete_backends() -> None:
+    violations: list[str] = []
+    for py_file in _orchestration_files():
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        for lineno, module, _in_function in _imported_modules(tree):
+            if any(
+                module == banned or module.startswith(banned + ".")
+                for banned in CONCRETE_BACKEND_MODULES
+            ):
+                relative = py_file.relative_to(SRC_ROOT.parent.parent)
+                violations.append(f"{relative}:{lineno} -> {module}")
+    assert not violations, (
+        "orchestration imports a concrete backend (go through the registry "
+        "/ SolverBackend protocol instead):\n" + "\n".join(violations)
+    )
+
+
+def _concrete_compiler_imports(tree: ast.AST):
+    """Yield ``(lineno, description)`` for every concrete-compiler import.
+
+    Catches both the module form (``annealbridge.compiler.bqm``, possibly as
+    a ``from`` target) and the re-exported names
+    (``from annealbridge.compiler import BQMCompiler``).
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in CONCRETE_COMPILER_MODULES:
+                    yield node.lineno, alias.name
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module in CONCRETE_COMPILER_MODULES:
+                yield node.lineno, node.module
+            elif node.module == "annealbridge.compiler":
+                for alias in node.names:
+                    if alias.name in CONCRETE_COMPILER_NAMES:
+                        yield node.lineno, f"annealbridge.compiler.{alias.name}"
+            elif node.module.startswith("annealbridge.compiler."):
+                for alias in node.names:
+                    if alias.name in CONCRETE_COMPILER_NAMES:
+                        yield node.lineno, f"{node.module}.{alias.name}"
+
+
+def test_concrete_compilers_only_imported_by_optimizer() -> None:
+    violations: list[str] = []
+    for py_file in _orchestration_files():
+        relative_to_src = py_file.relative_to(SRC_ROOT).as_posix()
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        for lineno, description in _concrete_compiler_imports(tree):
+            if relative_to_src != COMPILER_IMPORT_ALLOWED_IN:
+                relative = py_file.relative_to(SRC_ROOT.parent.parent)
+                violations.append(f"{relative}:{lineno} -> {description}")
+    assert not violations, (
+        f"concrete compilers may only be imported by {COMPILER_IMPORT_ALLOWED_IN} "
+        "(everything else uses the ModelCompiler protocol):\n" + "\n".join(violations)
+    )
+
+
+def test_compiler_import_detector_recognises_every_form() -> None:
+    """Guard the detector itself so the rule above cannot silently go blind."""
+    source = (
+        "import annealbridge.compiler.bqm\n"
+        "from annealbridge.compiler.cqm import CQMCompiler\n"
+        "from annealbridge.compiler import BQMCompiler, ModelCompiler\n"
+        "from annealbridge.compiler.base import ModelCompiler\n"
+    )
+    found = list(_concrete_compiler_imports(ast.parse(source)))
+    assert found == [
+        (1, "annealbridge.compiler.bqm"),
+        (2, "annealbridge.compiler.cqm"),
+        (3, "annealbridge.compiler.BQMCompiler"),
+    ]
