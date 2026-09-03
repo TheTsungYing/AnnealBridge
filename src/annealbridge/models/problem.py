@@ -30,11 +30,28 @@ class LeapHybridBQMOptions(BaseModel):
     time_limit_seconds: float | None = _FINITE  # None → sampler 最小值
 
 
+class LeapHybridCQMOptions(BaseModel):
+    """Options specific to the Leap hybrid CQM backend (Phase 3a spec §18)."""
+
+    time_limit_seconds: float | None = _FINITE  # None → sampler 最小值
+
+
 class SolverPreferences(BaseModel):
-    """Caller preferences for solver backend and search parameters."""
+    """Caller preferences for solver backend and search parameters.
+
+    Each backend-specific option block is a field named exactly like the
+    backend it belongs to (3a §9.3 naming contract): a backend declares its
+    limited parameters as dotted paths such as
+    ``"leap_hybrid_cqm.time_limit_seconds"`` and the service reads them by
+    that path, so the block name and the backend name must agree.
+    """
 
     backend: Literal[
-        "simulated_annealing", "exact", "dwave_qpu", "leap_hybrid_bqm"
+        "simulated_annealing",
+        "exact",
+        "dwave_qpu",
+        "leap_hybrid_bqm",
+        "leap_hybrid_cqm",
     ] = "simulated_annealing"
     num_reads: int = 100
     num_sweeps: int = 1000
@@ -44,6 +61,7 @@ class SolverPreferences(BaseModel):
     penalty_multiplier: float = 2.0
     dwave_qpu: DWaveQPUOptions | None = None
     leap_hybrid_bqm: LeapHybridBQMOptions | None = None
+    leap_hybrid_cqm: LeapHybridCQMOptions | None = None
 
 
 class OptimizationProblem(BaseModel):

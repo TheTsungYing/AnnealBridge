@@ -35,7 +35,16 @@ class TestCapabilities:
             "simulated_annealing",
             "dwave_qpu",
             "leap_hybrid_bqm",
+            "leap_hybrid_cqm",
         }
+        # 3a §17.7: rows follow the fixed registry order.
+        assert [line.split()[0] for line in lines[1:]] == [
+            "exact",
+            "simulated_annealing",
+            "dwave_qpu",
+            "leap_hybrid_bqm",
+            "leap_hybrid_cqm",
+        ]
         # Local backends: available, enabled, not remote.
         assert rows["exact"].split()[1:4] == ["yes", "yes", "no"]
         assert "max_variables=24" in rows["exact"]
@@ -43,10 +52,12 @@ class TestCapabilities:
         # Remote backends are not enabled while allow_remote is off (default).
         assert rows["dwave_qpu"].split()[2] == "no"
         assert rows["leap_hybrid_bqm"].split()[2] == "no"
+        assert rows["leap_hybrid_cqm"].split()[2] == "no"
         # Limits come from the policy, same source as MCP capabilities.
         assert "max_reads=1000" in rows["dwave_qpu"]
         assert "max_annealing_time_us=2000" in rows["dwave_qpu"]
         assert "max_time=300s" in rows["leap_hybrid_bqm"]
+        assert "max_time=300s" in rows["leap_hybrid_cqm"]
 
     def test_remote_backends_enabled_when_policy_allows(self, monkeypatch):
         monkeypatch.setenv("ANNEALBRIDGE_ALLOW_REMOTE", "true")
@@ -57,6 +68,7 @@ class TestCapabilities:
         }
         assert rows["dwave_qpu"].split()[2] == "yes"
         assert rows["leap_hybrid_bqm"].split()[2] == "yes"
+        assert rows["leap_hybrid_cqm"].split()[2] == "yes"
 
     def test_unavailable_reason_shown_in_parentheses(self):
         # In an environment without configured D-Wave access the remote rows
@@ -66,7 +78,7 @@ class TestCapabilities:
         rows = {
             line.split()[0]: line for line in result.output.splitlines()[1:]
         }
-        for name in ("dwave_qpu", "leap_hybrid_bqm"):
+        for name in ("dwave_qpu", "leap_hybrid_bqm", "leap_hybrid_cqm"):
             if rows[name].split()[1] == "no":
                 assert "(" in rows[name] and rows[name].endswith(")")
 
@@ -97,7 +109,13 @@ class TestSolveErrors:
         )
         assert result.exit_code == 2
         text = _output(result)
-        for name in ("simulated_annealing", "exact", "dwave_qpu", "leap_hybrid_bqm"):
+        for name in (
+            "simulated_annealing",
+            "exact",
+            "dwave_qpu",
+            "leap_hybrid_bqm",
+            "leap_hybrid_cqm",
+        ):
             assert name in text
 
 

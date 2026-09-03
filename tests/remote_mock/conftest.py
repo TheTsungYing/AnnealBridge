@@ -251,6 +251,110 @@ class FakeLeapHybridSampler:
         return self._build_sampleset(bqm)
 
 
+class FakeCQMSampler:
+    """Fake with the LeapHybridCQMSampler surface the CQM backend touches.
+
+    ``assignments`` are business assignments widened over the CQM's
+    variables (a CQM has no slack, so this is the identity for a complete
+    assignment); ``None`` keeps the default two rows (all-zero, then the
+    first variable flipped on) — the CQM hybrid solver returns several
+    samples, unlike the BQM one.
+
+    The sampleset is built with ``dimod.SampleSet.from_samples_cqm`` so
+    it carries the real ``is_feasible`` / ``is_satisfied`` vectors and the
+    energies dimod computes from the CQM (objective plus soft-constraint
+    penalties). ``feasible_flags`` overrides the verdict: the rows are
+    then built with ``SampleSet.from_samples`` and the given flags, which
+    is how a test makes the sampler *lie* (flag a hard-constraint violator
+    as feasible) to prove the service never trusts the flag. Values
+    outside {0, 1} pass through both builders unchecked, so a test can
+    also feed the backend a non-binary sample.
+
+    ``lazy=True`` reproduces Ocean's real shape: ``sample_cqm()`` returns
+    immediately with a ``SampleSet.from_future`` whose hook only runs
+    (and only fails) when the sampleset is resolved.
+    """
+
+    def __init__(
+        self,
+        assignments: list[dict[str, float]] | None = None,
+        min_time_limit: float = FAKE_MIN_TIME_LIMIT,
+        raise_on_sample: Exception | None = None,
+        raise_on_min_time_limit: Exception | None = None,
+        lazy: bool = False,
+        feasible_flags: list[bool] | None = None,
+        info: dict | None = None,
+    ) -> None:
+        self.assignments = assignments
+        self._min_time_limit = min_time_limit
+        self.raise_on_sample = raise_on_sample
+        self.raise_on_min_time_limit = raise_on_min_time_limit
+        self.lazy = lazy
+        self.feasible_flags = feasible_flags
+        self.info = FAKE_HYBRID_SAMPLESET_INFO if info is None else info
+        # Categorical solver properties only, never config values.
+        self.properties = {
+            "category": "hybrid",
+            "minimum_time_limit_s": min_time_limit,
+            "maximum_time_limit_hrs": 24.0,
+            "maximum_number_of_variables": 5_000_000,
+            "maximum_number_of_constraints": 100_000,
+        }
+        self.min_time_limit_cqm = None
+        self.min_time_limit_calls = 0
+        self.sample_cqm_model = None
+        self.sample_kwargs = None
+        self.sample_calls = 0
+
+    def min_time_limit(self, cqm) -> float:
+        self.min_time_limit_cqm = cqm
+        self.min_time_limit_calls += 1
+        if self.raise_on_min_time_limit is not None:
+            raise self.raise_on_min_time_limit
+        return self._min_time_limit
+
+    def _rows(self, cqm) -> list[dict]:
+        variables = list(cqm.variables)
+        if self.assignments is not None:
+            # Not ``expand()``: that casts to int, and a test may want to
+            # hand the backend a float (1.0, or an out-of-range 0.5).
+            return [
+                {variable: assignment.get(str(variable), 0) for variable in variables}
+                for assignment in self.assignments
+            ]
+        return [
+            {variable: 0 for variable in variables},
+            {**{variable: 0 for variable in variables}, variables[0]: 1},
+        ]
+
+    def _build_sampleset(self, cqm) -> dimod.SampleSet:
+        if self.raise_on_sample is not None:
+            raise self.raise_on_sample
+        rows = self._rows(cqm)
+        info = dict(self.info)
+        if self.feasible_flags is None:
+            return dimod.SampleSet.from_samples_cqm(rows, cqm, info=info)
+        assert len(self.feasible_flags) == len(rows)
+        return dimod.SampleSet.from_samples(
+            rows,
+            vartype=dimod.BINARY,
+            energy=[cqm.objective.energy(row) for row in rows],
+            is_feasible=list(self.feasible_flags),
+            info=info,
+            sort_labels=False,
+        )
+
+    def sample_cqm(self, cqm, **kwargs) -> dimod.SampleSet:
+        self.sample_cqm_model = cqm
+        self.sample_kwargs = kwargs
+        self.sample_calls += 1
+        if self.lazy:
+            return lazy_sampleset(
+                lambda: self._build_sampleset(cqm), self.raise_on_sample
+            )
+        return self._build_sampleset(cqm)
+
+
 class CountingFactory:
     """``sampler_factory`` seam that counts constructions and can fail on demand.
 

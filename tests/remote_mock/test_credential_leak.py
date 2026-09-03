@@ -1,9 +1,13 @@
-"""Credential-leak tests for the remote solve path (Phase 2 spec §19, §27).
+"""Credential-leak tests for the remote solve path (Phase 2 spec §19, §27;
+3a spec §26.5, §28).
 
 A fake D-Wave token is placed in ``DWAVE_API_TOKEN`` and a fake sampler
 raises an exception whose text embeds it. Nothing that leaves the service —
 the ``SolveResult`` JSON, its errors/warnings, or any ``annealbridge`` log
-record — may contain the token.
+record — may contain the token. The service-level tests run once per
+remote backend kind (``dwave_qpu`` on the BQM path, ``leap_hybrid_cqm`` on
+the CQM path) so the new backend is proven to share the same redaction
+route.
 
 The token deliberately contains hyphens, so it does *not* match the
 ``DEV-[A-Za-z0-9]{20,}`` redaction pattern: masking has to come from the
@@ -19,18 +23,20 @@ import traceback
 
 import pytest
 
-from annealbridge.compiler import BQMCompiler
+from annealbridge.compiler import BQMCompiler, CQMCompiler
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.orchestration import OptimizationService
 from annealbridge.orchestration.policy import ExecutionPolicy
 from annealbridge.solvers import (
     DWaveQPUBackend,
     LeapHybridBQMBackend,
+    LeapHybridCQMBackend,
     SolverRegistry,
 )
 import annealbridge.solvers.metadata as metadata_module
 from tests.remote_mock.conftest import (
     FAKE_UNPATTERNED_TOKEN,
+    FakeCQMSampler,
     FakeLeapHybridSampler,
     FakeQPUSampler,
     make_problem,
@@ -41,21 +47,37 @@ from tests.remote_mock.conftest import (
 FAKE_TOKEN = FAKE_UNPATTERNED_TOKEN
 
 
-def solve_with_leaky_sampler(monkeypatch, caplog, message: str, *, lazy: bool = False):
-    """Run a full remote solve whose sampler raises ``message``."""
+# (backend name, fake sampler class, backend class): one BQM-path backend
+# and the CQM-path backend, so both compile paths are proven to redact.
+REMOTE_KINDS = {
+    "dwave_qpu": (FakeQPUSampler, DWaveQPUBackend),
+    "leap_hybrid_cqm": (FakeCQMSampler, LeapHybridCQMBackend),
+}
+
+
+@pytest.fixture(params=sorted(REMOTE_KINDS))
+def remote_kind(request) -> str:
+    return request.param
+
+
+def solve_with_leaky_sampler(
+    monkeypatch, caplog, message: str, *, kind: str, lazy: bool = False
+):
+    """Run a full remote solve on ``kind`` whose sampler raises ``message``."""
     monkeypatch.setenv("DWAVE_API_TOKEN", FAKE_TOKEN)
     monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
     # The env token alone makes ocean_config_status() report "ok"; that path
     # is under test, so it is deliberately not patched.
     assert metadata_module.ocean_config_status() == "ok"
 
-    fake = FakeQPUSampler(raise_on_sample=RuntimeError(message), lazy=lazy)
+    fake_class, backend_class = REMOTE_KINDS[kind]
+    fake = fake_class(raise_on_sample=RuntimeError(message), lazy=lazy)
     service = OptimizationService(
-        registry=SolverRegistry({"dwave_qpu": DWaveQPUBackend(lambda: fake)}),
+        registry=SolverRegistry({kind: backend_class(lambda: fake)}),
         policy=ExecutionPolicy(allow_remote=True),
     )
     caplog.set_level(logging.DEBUG, logger="annealbridge")
-    result = service.solve(make_problem())
+    result = service.solve(make_problem(backend=kind))
     assert fake.sample_calls == 1
     return result
 
@@ -63,47 +85,54 @@ def solve_with_leaky_sampler(monkeypatch, caplog, message: str, *, lazy: bool = 
 class TestTokenNeverLeaves:
     # Each test drives its own solve so the log records land in the calling
     # test's ``caplog`` phase rather than in a fixture's setup phase.
-    def solve(self, monkeypatch, caplog):
+    def solve(self, monkeypatch, caplog, kind: str):
         return solve_with_leaky_sampler(
             monkeypatch,
             caplog,
             f"connection rejected for token={FAKE_TOKEN} "
             f"at https://cloud.dwavesys.com",
+            kind=kind,
         )
 
-    def test_solve_fails_as_a_structured_solver_error(self, monkeypatch, caplog):
-        result = self.solve(monkeypatch, caplog)
+    def test_solve_fails_as_a_structured_solver_error(
+        self, monkeypatch, caplog, remote_kind
+    ):
+        result = self.solve(monkeypatch, caplog, remote_kind)
 
         assert result.status == "solver_error"
-        assert result.backend == "dwave_qpu"
+        assert result.backend == remote_kind
         assert result.solutions == []
         assert result.errors
 
-    def test_token_absent_from_the_serialized_result(self, monkeypatch, caplog):
-        result = self.solve(monkeypatch, caplog)
+    def test_token_absent_from_the_serialized_result(
+        self, monkeypatch, caplog, remote_kind
+    ):
+        result = self.solve(monkeypatch, caplog, remote_kind)
 
         assert FAKE_TOKEN not in result.model_dump_json()
 
-    def test_token_absent_from_every_log_record(self, monkeypatch, caplog):
-        self.solve(monkeypatch, caplog)
+    def test_token_absent_from_every_log_record(self, monkeypatch, caplog, remote_kind):
+        self.solve(monkeypatch, caplog, remote_kind)
 
         assert caplog.records  # the solve really did log something
         for record in caplog.records:
             assert FAKE_TOKEN not in record.getMessage()
 
-    def test_token_absent_from_errors_and_warnings(self, monkeypatch, caplog):
-        result = self.solve(monkeypatch, caplog)
+    def test_token_absent_from_errors_and_warnings(
+        self, monkeypatch, caplog, remote_kind
+    ):
+        result = self.solve(monkeypatch, caplog, remote_kind)
 
         for entry in [*result.errors, *result.warnings]:
             assert FAKE_TOKEN not in entry.message
 
-    def test_error_message_is_visibly_redacted(self, monkeypatch, caplog):
-        result = self.solve(monkeypatch, caplog)
+    def test_error_message_is_visibly_redacted(self, monkeypatch, caplog, remote_kind):
+        result = self.solve(monkeypatch, caplog, remote_kind)
 
         assert "***" in result.errors[0].message
 
-    def test_error_carries_catalog_guidance(self, monkeypatch, caplog):
-        error = self.solve(monkeypatch, caplog).errors[0]
+    def test_error_carries_catalog_guidance(self, monkeypatch, caplog, remote_kind):
+        error = self.solve(monkeypatch, caplog, remote_kind).errors[0]
 
         assert error.code == "REMOTE_SOLVER_ERROR"
         assert error.recommended_action is not None
@@ -112,12 +141,13 @@ class TestTokenNeverLeaves:
 class TestBareTokenIsMasked:
     """A token with no ``token=`` prefix: only the env candidate can mask it."""
 
-    def test_bare_token_is_still_redacted(self, monkeypatch, caplog):
+    def test_bare_token_is_still_redacted(self, monkeypatch, caplog, remote_kind):
         result = solve_with_leaky_sampler(
             monkeypatch,
             caplog,
             f"connection rejected (credential {FAKE_TOKEN}) "
             f"at https://cloud.dwavesys.com",
+            kind=remote_kind,
         )
 
         assert result.status == "solver_error"
@@ -131,22 +161,25 @@ class TestBareTokenIsMasked:
 class TestLazyResolveFailureIsRedacted:
     """The token must not leak when the failure surfaces at resolve time."""
 
-    def solve(self, monkeypatch, caplog):
+    def solve(self, monkeypatch, caplog, kind: str):
         return solve_with_leaky_sampler(
             monkeypatch,
             caplog,
             f"request failed for token={FAKE_TOKEN} (credential {FAKE_TOKEN})",
+            kind=kind,
             lazy=True,
         )
 
-    def test_structured_error_instead_of_an_escaping_exception(self, monkeypatch, caplog):
-        result = self.solve(monkeypatch, caplog)
+    def test_structured_error_instead_of_an_escaping_exception(
+        self, monkeypatch, caplog, remote_kind
+    ):
+        result = self.solve(monkeypatch, caplog, remote_kind)
 
         assert result.status == "solver_error"
         assert result.errors[0].code == "REMOTE_SOLVER_ERROR"
 
-    def test_token_absent_from_result_and_logs(self, monkeypatch, caplog):
-        result = self.solve(monkeypatch, caplog)
+    def test_token_absent_from_result_and_logs(self, monkeypatch, caplog, remote_kind):
+        result = self.solve(monkeypatch, caplog, remote_kind)
 
         assert FAKE_TOKEN not in result.model_dump_json()
         assert "***" in result.errors[0].message
@@ -159,8 +192,16 @@ def compile_problem():
     return BQMCompiler().compile(make_problem(), hard_penalty=100.0)
 
 
+def compile_cqm_problem():
+    return CQMCompiler().compile(make_problem(backend="leap_hybrid_cqm"), hard_penalty=None)
+
+
 def hybrid_preferences():
     return make_problem().solver.model_copy(update={"backend": "leap_hybrid_bqm"})
+
+
+def cqm_preferences():
+    return make_problem(backend="leap_hybrid_cqm").solver
 
 
 class TestExceptionChainCarriesNoToken:
@@ -224,6 +265,43 @@ class TestExceptionChainCarriesNoToken:
 
         with pytest.raises(SolverExecutionError) as exc_info:
             backend.resolve_time_limit(compile_problem(), hybrid_preferences())
+
+        assert exc_info.value.code == "REMOTE_SOLVER_ERROR"
+        self.assert_chain_is_clean(exc_info.value)
+
+    @pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
+    def test_cqm_sample_failure(self, lazy):
+        fake = FakeCQMSampler(
+            raise_on_sample=RuntimeError(f"rejected token={FAKE_TOKEN}"), lazy=lazy
+        )
+        backend = LeapHybridCQMBackend(sampler_factory=lambda: fake)
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(compile_cqm_problem(), cqm_preferences())
+
+        assert fake.sample_calls == 1
+        self.assert_chain_is_clean(exc_info.value)
+
+    def test_cqm_sampler_construction_failure(self):
+        def failing_factory():
+            raise ValueError(f"invalid endpoint for token={FAKE_TOKEN}")
+
+        backend = LeapHybridCQMBackend(sampler_factory=failing_factory)
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(compile_cqm_problem(), cqm_preferences())
+
+        assert exc_info.value.code == "DWAVE_CONFIG_INVALID"
+        self.assert_chain_is_clean(exc_info.value)
+
+    def test_cqm_time_limit_resolution_failure(self):
+        fake = FakeCQMSampler(
+            raise_on_min_time_limit=RuntimeError(f"cannot reach solver, token={FAKE_TOKEN}")
+        )
+        backend = LeapHybridCQMBackend(sampler_factory=lambda: fake)
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.resolve_time_limit(compile_cqm_problem(), cqm_preferences())
 
         assert exc_info.value.code == "REMOTE_SOLVER_ERROR"
         self.assert_chain_is_clean(exc_info.value)

@@ -11,6 +11,7 @@ from annealbridge.solvers import (
     DWaveQPUBackend,
     ExactSolverBackend,
     LeapHybridBQMBackend,
+    LeapHybridCQMBackend,
     SimulatedAnnealingBackend,
 )
 
@@ -21,7 +22,10 @@ BACKEND_CLASSES = (
     SimulatedAnnealingBackend,
     DWaveQPUBackend,
     LeapHybridBQMBackend,
+    LeapHybridCQMBackend,
 )
+
+REMOTE_BACKEND_NAMES = ("dwave_qpu", "leap_hybrid_bqm", "leap_hybrid_cqm")
 
 # The categorical strings is_available() may return for the D-Wave backends;
 # they must never contain configuration values (spec §10).
@@ -44,13 +48,14 @@ async def test_structured_content_is_dict():
     assert isinstance(result.structured_content, dict)
 
 
-async def test_all_four_backends_listed():
+async def test_all_five_backends_listed():
     content = (await _get_capabilities()).structured_content
     names = [backend["name"] for backend in content["backends"]]
     assert sorted(names) == [
         "dwave_qpu",
         "exact",
         "leap_hybrid_bqm",
+        "leap_hybrid_cqm",
         "simulated_annealing",
     ]
 
@@ -67,7 +72,7 @@ async def test_local_backends_available_and_enabled():
 async def test_dwave_backends_unavailable_with_categorical_reason():
     content = (await _get_capabilities()).structured_content
     by_name = {backend["name"]: backend for backend in content["backends"]}
-    for name in ("dwave_qpu", "leap_hybrid_bqm"):
+    for name in REMOTE_BACKEND_NAMES:
         assert by_name[name]["available"] is False
         assert by_name[name]["unavailable_reason"] in DWAVE_UNAVAILABLE_REASONS
         # Default policy has allow_remote=False, so remote backends are disabled.
@@ -92,6 +97,7 @@ async def test_limits_come_from_policy():
         "max_annealing_time_us": 2000.0,
     }
     assert by_name["leap_hybrid_bqm"]["limits"] == {"max_time_seconds": 300}
+    assert by_name["leap_hybrid_cqm"]["limits"] == {"max_time_seconds": 300}
     assert by_name["simulated_annealing"]["limits"] == {}
 
 

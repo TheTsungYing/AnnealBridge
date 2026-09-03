@@ -1,5 +1,6 @@
 """Solver backends: exact enumeration, simulated annealing and the remote
-D-Wave QPU and Leap hybrid BQM solvers (spec §20–§22, Phase 2 §15–§16)."""
+D-Wave QPU, Leap hybrid BQM and Leap hybrid CQM solvers (spec §20–§22,
+Phase 2 §15–§16, Phase 3a §17)."""
 
 from annealbridge.solvers.base import (
     AvailabilityStatus,
@@ -10,6 +11,7 @@ from annealbridge.solvers.base import (
 from annealbridge.solvers.dwave_qpu import DWaveQPUBackend
 from annealbridge.solvers.exact import ExactSolverBackend
 from annealbridge.solvers.leap_hybrid_bqm import LeapHybridBQMBackend
+from annealbridge.solvers.leap_hybrid_cqm import LeapHybridCQMBackend
 from annealbridge.solvers.metadata import (
     REASON_CONFIG_INVALID,
     REASON_CREDENTIALS_MISSING,
@@ -25,6 +27,7 @@ __all__ = [
     "DWaveQPUBackend",
     "ExactSolverBackend",
     "LeapHybridBQMBackend",
+    "LeapHybridCQMBackend",
     "REASON_CONFIG_INVALID",
     "REASON_CREDENTIALS_MISSING",
     "REASON_NOT_INSTALLED",

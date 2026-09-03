@@ -4,6 +4,7 @@ from annealbridge.solvers.base import SolverBackend
 from annealbridge.solvers.dwave_qpu import DWaveQPUBackend
 from annealbridge.solvers.exact import ExactSolverBackend
 from annealbridge.solvers.leap_hybrid_bqm import LeapHybridBQMBackend
+from annealbridge.solvers.leap_hybrid_cqm import LeapHybridCQMBackend
 from annealbridge.solvers.simulated_annealing import SimulatedAnnealingBackend
 
 
@@ -29,19 +30,20 @@ class SolverRegistry:
     def default(cls) -> "SolverRegistry":
         """Build the default registry.
 
-        Registering the remote backends (``dwave_qpu``, ``leap_hybrid_bqm``)
-        never imports any D-Wave cloud package: each backend lazy-imports
-        ``dwave.system`` inside ``solve()`` only (spec §4).
+        Registration order is fixed (3a §17.7): ``exact``,
+        ``simulated_annealing``, ``dwave_qpu``, ``leap_hybrid_bqm``,
+        ``leap_hybrid_cqm``. The capabilities list, the CLI table and the
+        routing tie-break all follow it.
+
+        Registering the remote backends never imports any D-Wave cloud
+        package: each backend lazy-imports ``dwave.system`` inside its
+        sampler factory only (spec §4).
         """
-        exact = ExactSolverBackend()
-        annealer = SimulatedAnnealingBackend()
-        qpu = DWaveQPUBackend()
-        leap_hybrid = LeapHybridBQMBackend()
-        return cls(
-            {
-                exact.name: exact,
-                annealer.name: annealer,
-                qpu.name: qpu,
-                leap_hybrid.name: leap_hybrid,
-            }
+        backends = (
+            ExactSolverBackend(),
+            SimulatedAnnealingBackend(),
+            DWaveQPUBackend(),
+            LeapHybridBQMBackend(),
+            LeapHybridCQMBackend(),
         )
+        return cls({backend.name: backend for backend in backends})

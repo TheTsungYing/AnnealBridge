@@ -1,9 +1,11 @@
-"""Phase 1 backward-compatibility tests (Phase 2 spec §12).
+"""Phase 1 backward-compatibility tests (Phase 2 spec §12, 3a spec §18).
 
 The Phase 2 schema extension (new backend literals, ``dwave_qpu`` and
-``leap_hybrid_bqm`` option blocks) must be purely additive: the Phase 1
-example JSON files parse unchanged, without a single character edited,
-and the new option blocks default to ``None``.
+``leap_hybrid_bqm`` option blocks) and the 3a extension (the
+``leap_hybrid_cqm`` literal and option block) must be purely additive: the
+Phase 1 example JSON files parse unchanged, without a single character
+edited, ``version`` stays ``"1.0"`` and the new option blocks default to
+``None``.
 """
 
 import pytest
@@ -30,3 +32,13 @@ class TestPhase1ExamplesStillParse:
         problem = OptimizationProblem.model_validate_json(path.read_text())
         assert problem.solver.dwave_qpu is None
         assert problem.solver.leap_hybrid_bqm is None
+
+    @pytest.mark.parametrize(
+        "filename", ["knapsack.json", "assignment.json", "tsp.json"]
+    )
+    def test_cqm_backend_options_default_to_none(self, examples_dir, filename):
+        """3a §18: the ``leap_hybrid_cqm`` block is additive and defaults to None."""
+        path = examples_dir / filename
+        problem = OptimizationProblem.model_validate_json(path.read_text())
+        assert problem.version == "1.0"
+        assert problem.solver.leap_hybrid_cqm is None

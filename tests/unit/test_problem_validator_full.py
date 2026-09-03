@@ -693,13 +693,18 @@ class TestOptionBlockReflection:
     """§9.4: option blocks and their positive numeric fields come from the model."""
 
     def test_blocks_are_the_optional_model_fields(self):
-        assert set(problem_validator._option_blocks()) == {"dwave_qpu", "leap_hybrid_bqm"}
+        assert set(problem_validator._option_blocks()) == {
+            "dwave_qpu",
+            "leap_hybrid_bqm",
+            "leap_hybrid_cqm",
+        }
 
     def test_positive_fields_exclude_bool(self):
         assert set(problem_validator._POSITIVE_OPTION_FIELDS) == {
             ("dwave_qpu", "annealing_time_us"),
             ("dwave_qpu", "chain_strength"),
             ("leap_hybrid_bqm", "time_limit_seconds"),
+            ("leap_hybrid_cqm", "time_limit_seconds"),
         }
 
     def test_seed_is_not_a_block(self):
@@ -732,6 +737,7 @@ class TestOptionBlockReflection:
             ("dwave_qpu", "annealing_time_us", 0),
             ("dwave_qpu", "chain_strength", -1.0),
             ("leap_hybrid_bqm", "time_limit_seconds", 0),
+            ("leap_hybrid_cqm", "time_limit_seconds", 0),
         ],
     )
     def test_non_positive_option_is_rejected(self, block, field, value):

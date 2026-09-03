@@ -19,6 +19,7 @@ from annealbridge.models.objective import LinearTerm, Objective, QuadraticTerm
 from annealbridge.models.problem import (
     DWaveQPUOptions,
     LeapHybridBQMOptions,
+    LeapHybridCQMOptions,
     OptimizationProblem,
     SolverPreferences,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "ConstraintTrace",
     "DWaveQPUOptions",
     "LeapHybridBQMOptions",
+    "LeapHybridCQMOptions",
     "LinearTerm",
     "ModelType",
     "Objective",

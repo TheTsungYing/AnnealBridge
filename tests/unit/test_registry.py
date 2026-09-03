@@ -6,6 +6,8 @@ mapped by the service to a structured ``UNKNOWN_BACKEND`` error — never to
 a silent fallback onto another backend.
 """
 
+import sys
+
 import pytest
 
 from annealbridge.models import RECOMMENDED_ACTIONS, OptimizationProblem
@@ -67,24 +69,32 @@ class TestSolverRegistryLookup:
 
 
 class TestDefaultRegistry:
-    def test_default_registers_exactly_the_expected_backends(self):
+    def test_default_registers_exactly_the_expected_backends_in_order(self):
+        # 3a §17.7: the registration order is fixed; capabilities, the CLI
+        # table and routing's final tie-break all follow it.
         registry = SolverRegistry.default()
 
-        assert set(registry.names()) == {
+        assert registry.names() == [
             "exact",
             "simulated_annealing",
             "dwave_qpu",
             "leap_hybrid_bqm",
-        }
-        assert len(registry.names()) == 4
+            "leap_hybrid_cqm",
+        ]
 
     def test_default_backends_report_their_own_names(self):
         registry = SolverRegistry.default()
 
-        assert registry.get("exact").name == "exact"
-        assert registry.get("simulated_annealing").name == "simulated_annealing"
-        assert registry.get("dwave_qpu").name == "dwave_qpu"
-        assert registry.get("leap_hybrid_bqm").name == "leap_hybrid_bqm"
+        for name in registry.names():
+            assert registry.get(name).name == name
+
+    def test_default_registry_needs_no_dwave_system(self):
+        # 3a §17.7 / §31: the remote backends lazy-import ``dwave.system``
+        # inside their sampler factories, so the default registry (and the
+        # CQM backend in it) is importable without the ``dwave`` extra.
+        SolverRegistry.default()
+
+        assert "dwave.system" not in sys.modules
 
 
 def make_service_without_dwave_qpu() -> OptimizationService:
