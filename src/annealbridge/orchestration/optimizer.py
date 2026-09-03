@@ -9,6 +9,7 @@ never on the concrete compiled model type (spec §17).
 
 import logging
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import numpy as np
@@ -18,6 +19,7 @@ from annealbridge.compiler.base import ModelCompiler
 from annealbridge.exceptions import CompilationError, OptimizerError
 from annealbridge.models import (
     CompiledProblem,
+    ModelType,
     Objective,
     OptimizationProblem,
     Solution,
@@ -274,13 +276,23 @@ class OptimizationService:
 
     def __init__(
         self,
-        compiler: ModelCompiler | None = None,
+        compilers: Iterable[ModelCompiler] | None = None,
         penalty_strategy: PenaltyStrategy | None = None,
         registry: SolverRegistry | None = None,
         policy: ExecutionPolicy = ExecutionPolicy(),
     ) -> None:
         self._policy = policy
-        self._compiler: ModelCompiler = compiler if compiler is not None else BQMCompiler()
+        # 3a §16.1: one compiler per model type, chosen per solve from the
+        # backend's declaration. This is the only place the service names
+        # a concrete compiler (§4); step 6 of the 3a plan adds CQMCompiler.
+        compiler_list = list(compilers) if compilers is not None else [BQMCompiler()]
+        self._compilers: dict[ModelType, ModelCompiler] = {}
+        for compiler in compiler_list:
+            if compiler.model_type in self._compilers:
+                raise ValueError(
+                    f"duplicate compiler for model type '{compiler.model_type}'"
+                )
+            self._compilers[compiler.model_type] = compiler
         self._penalty_strategy: PenaltyStrategy = (
             penalty_strategy if penalty_strategy is not None else ScaledPenaltyStrategy()
         )
@@ -308,6 +320,23 @@ class OptimizationService:
                         f"but the policy has no value for it"
                     )
 
+    def _select_model_type(self, caps: SolverCapabilities) -> ModelType | None:
+        """3a §16.1: the first declared model type the service can compile.
+
+        This is the single place the service dispatches on model type, and
+        it dispatches on the backend's *declaration*, never on its name.
+        ``validate`` and ``solve`` (and later routing) all call it, so they
+        agree on which path a backend takes. None means no compiler fits.
+        """
+        for model_type in caps.supported_model_types:
+            if model_type in self._compilers:
+                return model_type
+        return None
+
+    def _select_compiler(self, caps: SolverCapabilities) -> ModelCompiler | None:
+        model_type = self._select_model_type(caps)
+        return None if model_type is None else self._compilers[model_type]
+
     def validate(self, problem: OptimizationProblem) -> ProblemValidationResult:
         """Dry-run check of ``problem`` against the named backend (3a §10).
 
@@ -327,10 +356,10 @@ class OptimizationService:
             ).capabilities
         except KeyError:
             caps = None
-        # Step 5 of the 3a plan replaces this with _select_model_type once
-        # the service owns a compiler list; until then the declared
-        # preference is the only path.
-        model_type = caps.preferred_model_type if caps is not None else None
+        # Same selection as solve (§16.1), so the estimate describes the
+        # path the problem would actually take; None when no compiler fits
+        # (solve would then fail with NO_COMPILER_FOR_MODEL_TYPE).
+        model_type = self._select_model_type(caps) if caps is not None else None
         result = validate_problem_full(
             problem,
             capabilities=caps,
@@ -343,6 +372,21 @@ class OptimizationService:
                     "UNKNOWN_BACKEND",
                     f"Unknown solver backend '{backend_name}'; "
                     f"available backends: {', '.join(self._registry.names())}",
+                    path="solver.backend",
+                )
+            )
+        elif model_type is None:
+            # The validator assumes the backend's preferred type when told
+            # nothing; here we *know* no compiler fits, so report no path
+            # and warn the way an unknown backend is warned about (solve
+            # would fail with the same code as an error).
+            result.model_type = None
+            result.warnings.append(
+                catalog_error(
+                    "NO_COMPILER_FOR_MODEL_TYPE",
+                    f"Backend '{backend_name}' accepts model types "
+                    f"[{', '.join(caps.supported_model_types)}] but the "
+                    f"server has no compiler for any of them",
                     path="solver.backend",
                 )
             )
@@ -482,12 +526,19 @@ class OptimizationService:
         )
 
     def _max_attempts(
-        self, backend: SolverBackend, preferences: SolverPreferences
+        self,
+        backend: SolverBackend,
+        compiler: ModelCompiler,
+        preferences: SolverPreferences,
     ) -> int:
         # §19: the exact backend enumerates every state, so retrying with a
-        # larger penalty can never surface new feasible samples. §14 step
-        # 14: remote retries burn quota, so policy must opt in explicitly.
+        # larger penalty can never surface new feasible samples. 3a §16.3:
+        # without a hard penalty there is no lever to turn, so a retry
+        # would repeat the same submission. §14 step 14: remote retries
+        # burn quota, so policy must opt in explicitly.
         if backend.is_exhaustive:
+            return 1
+        if not compiler.uses_hard_penalty:
             return 1
         if backend.capabilities.remote and not self._policy.allow_remote_retries:
             return 1
@@ -499,7 +550,23 @@ class OptimizationService:
         backend: SolverBackend,
         direction: str,
     ) -> SolveResult:
-        """§14 steps 7–16: the compile/solve/validate loop."""
+        """3a §16.2 steps 7–19: the compile/solve/validate loop."""
+        compiler = self._select_compiler(backend.capabilities)
+        if compiler is None:
+            declared = ", ".join(backend.capabilities.supported_model_types)
+            return self._failure(
+                "configuration_error",
+                backend.name,
+                direction,
+                [
+                    catalog_error(
+                        "NO_COMPILER_FOR_MODEL_TYPE",
+                        f"Backend '{backend.name}' accepts model types "
+                        f"[{declared}] but the server has no compiler for "
+                        f"any of them",
+                    )
+                ],
+            )
         preference_errors = self._preference_limit_errors(backend, problem.solver)
         if preference_errors:
             return self._failure(
@@ -514,19 +581,25 @@ class OptimizationService:
         # report the last completed attempt's metadata.
         raw: RawSolverResult | None = None
         try:
-            max_attempts = self._max_attempts(backend, problem.solver)
-            penalty = self._penalty_strategy.initial_penalty(problem)
+            max_attempts = self._max_attempts(backend, compiler, problem.solver)
+            # §16.2 step 9: a native-constraint model has no hard penalty.
+            penalty: float | None = (
+                self._penalty_strategy.initial_penalty(problem)
+                if compiler.uses_hard_penalty
+                else None
+            )
             logger.info(
-                "Problem %s: objective_scale=%s, penalty_scale=%s, "
-                "initial hard_penalty=%s",
+                "Problem %s: model_type=%s, objective_scale=%s, "
+                "penalty_scale=%s, initial hard_penalty=%s",
                 problem.name,
+                compiler.model_type,
                 self._penalty_strategy.objective_scale(problem),
                 self._penalty_strategy.penalty_scale(problem),
                 penalty,
             )
 
             for attempt in range(1, max_attempts + 1):
-                compiled = self._compiler.compile(problem, penalty)
+                compiled = compiler.compile(problem, penalty)
                 # §14 step 9: this limit needs compiled info (slack included),
                 # so it runs after compile. Never clamp, never fall back.
                 variable_limit = self._policy.limit("variables")
@@ -562,6 +635,12 @@ class OptimizationService:
                         attempts=attempts,
                     )
                 raw = backend.solve(compiled, problem.solver)
+                # 3a §22: the service, not the backend, knows the model
+                # type; never create metadata a local backend did not.
+                if raw.metadata is not None:
+                    raw.metadata = raw.metadata.model_copy(
+                        update={"model_type": compiled.model_type}
+                    )
                 solutions, unique_samples, feasible_samples = process_candidates(
                     problem, raw, compiled.internal_variables, problem.solver.top_k
                 )
@@ -575,12 +654,13 @@ class OptimizationService:
                     )
                 )
                 logger.info(
-                    "Problem %s backend %s attempt %d: hard_penalty=%s, "
-                    "compiled_variables=%d, samples=%d, unique=%d, feasible=%d, "
-                    "best_ranking_score=%s",
+                    "Problem %s backend %s attempt %d: model_type=%s, "
+                    "hard_penalty=%s, compiled_variables=%d, samples=%d, "
+                    "unique=%d, feasible=%d, best_ranking_score=%s",
                     problem.name,
                     backend.name,
                     attempt,
+                    compiled.model_type,
                     penalty,
                     compiled.num_variables,
                     raw.num_samples,
@@ -597,14 +677,17 @@ class OptimizationService:
                         attempts=attempts,
                         metadata=raw.metadata,
                     )
-                if attempt < max_attempts:
+                if attempt < max_attempts and penalty is not None:
                     penalty = self._penalty_strategy.next_penalty(penalty, attempt)
 
             warnings: list[SolveError] = []
             # Only a real cut deserves a warning: with max_retries == 0 the
             # user asked for a single attempt and policy blocked nothing.
+            # 3a §16.2 step 17: only the hard-penalty path ever retries, so
+            # only it can have had a retry cut by policy.
             remote_retries_blocked = (
-                backend.capabilities.remote
+                compiler.uses_hard_penalty
+                and backend.capabilities.remote
                 and not self._policy.allow_remote_retries
                 and problem.solver.max_retries > 0
             )
@@ -622,6 +705,13 @@ class OptimizationService:
                 message = (
                     "No feasible solution found: the exhaustive backend "
                     "returned no samples, so infeasibility is not proven"
+                )
+            elif not compiler.uses_hard_penalty:
+                # §16.2 step 16 / §16.3: one attempt, nothing to retune.
+                message = (
+                    "No feasible solution found: the constraint-model backend "
+                    "returned no sample satisfying the hard constraints under "
+                    "independent validation; infeasibility is not proven"
                 )
             elif remote_retries_blocked:
                 message = (

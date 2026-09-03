@@ -26,6 +26,7 @@ EXPECTED_CODES = [
     "BACKEND_UNAVAILABLE",
     # Phase 3a spec §20
     "BACKEND_CONFIG_INVALID",
+    "NO_COMPILER_FOR_MODEL_TYPE",
     # Problem validator codes (Phase 1 spec §12)
     "UNKNOWN_VARIABLE",
     "DUPLICATE_VARIABLE",
@@ -64,7 +65,7 @@ class TestRecommendedActions:
         assert set(RECOMMENDED_ACTIONS) == set(EXPECTED_CODES)
 
     def test_expected_codes_are_unique(self):
-        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 33
+        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 34
 
 
 class TestRetryableCodes:

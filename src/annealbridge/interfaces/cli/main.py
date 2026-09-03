@@ -128,7 +128,8 @@ def _render_human(problem: OptimizationProblem, result: SolveResult) -> str:
         for attempt in result.attempts:
             lines.append(
                 f"  attempt {attempt.attempt}: "
-                f"penalty={_format_number(attempt.penalty)}, "
+                f"penalty="
+                f"{'-' if attempt.penalty is None else _format_number(attempt.penalty)}, "
                 f"samples={attempt.samples_received}, "
                 f"unique={attempt.unique_samples}, "
                 f"feasible={attempt.feasible_samples}"

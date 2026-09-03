@@ -5,7 +5,8 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-from annealbridge.interfaces.cli.main import app
+from annealbridge.interfaces.cli.main import _render_human, app
+from annealbridge.models import OptimizationProblem, SolveAttempt, SolveResult
 from tests.conftest import EXAMPLES_DIR
 
 runner = CliRunner()
@@ -253,3 +254,39 @@ class TestInvalidSettings:
         result = runner.invoke(app, ["export-schema"])
 
         assert result.exit_code == 0
+
+
+class TestRenderInfeasibleAttempts:
+    """3a §16.4: an attempt without a hard penalty prints ``penalty=-``."""
+
+    def _render(self, penalty):
+        problem = OptimizationProblem.model_validate_json(
+            (EXAMPLES_DIR / "knapsack.json").read_text(encoding="utf-8")
+        )
+        result = SolveResult(
+            status="infeasible",
+            backend="simulated_annealing",
+            objective_direction="maximize",
+            solutions=[],
+            attempts=[
+                SolveAttempt(
+                    attempt=1,
+                    penalty=penalty,
+                    samples_received=10,
+                    unique_samples=4,
+                    feasible_samples=0,
+                )
+            ],
+            message="No feasible solution found",
+        )
+        return _render_human(problem, result)
+
+    def test_none_penalty_prints_a_dash(self):
+        text = self._render(None)
+
+        assert "attempt 1: penalty=-, samples=10, unique=4, feasible=0" in text
+
+    def test_float_penalty_still_prints_the_number(self):
+        text = self._render(62.0)
+
+        assert "attempt 1: penalty=62, samples=10, unique=4, feasible=0" in text

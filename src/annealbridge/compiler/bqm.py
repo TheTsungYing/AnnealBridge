@@ -4,12 +4,14 @@ import logging
 
 import dimod
 
+from annealbridge.compiler.objective import build_objective_bqm
 from annealbridge.compiler.slack import accumulate_terms, encode_slack
 from annealbridge.exceptions import CompilationError
 from annealbridge.models import (
     CompiledProblem,
     Constraint,
     ConstraintTrace,
+    ModelType,
     Objective,
     OptimizationProblem,
 )
@@ -50,12 +52,27 @@ class BQMCompiler:
     The input problem is never mutated.
     """
 
+    @property
+    def model_type(self) -> ModelType:
+        return "bqm"
+
+    @property
+    def uses_hard_penalty(self) -> bool:
+        return True
+
     def compile(
         self,
         problem: OptimizationProblem,
-        hard_penalty: float,
+        hard_penalty: float | None,
     ) -> CompiledProblem:
-        """Compile ``problem``; hard constraints use ``hard_penalty`` as lambda."""
+        """Compile ``problem``; hard constraints use ``hard_penalty`` as lambda.
+
+        ``hard_penalty`` must be a float: the BQM compiler expresses hard
+        constraints as penalty terms, so ``None`` is a caller (service)
+        error, not a problem error.
+        """
+        if hard_penalty is None:
+            raise CompilationError("BQMCompiler requires a hard_penalty; got None")
         bqm = dimod.BinaryQuadraticModel(vartype="BINARY")
         for variable in problem.variables:
             bqm.add_variable(variable.name)
@@ -69,6 +86,7 @@ class BQMCompiler:
         ]
 
         compiled = CompiledProblem(
+            model_type=self.model_type,
             model=bqm,
             original_problem=problem,
             internal_variables=internal_variables,
@@ -89,12 +107,10 @@ class BQMCompiler:
     def _compile_objective(
         self, bqm: dimod.BinaryQuadraticModel, objective: Objective
     ) -> None:
-        sign = -1.0 if objective.direction == "maximize" else 1.0
-        for term in objective.linear_terms:
-            bqm.add_linear(term.variable, sign * term.coefficient)
-        for term in objective.quadratic_terms:
-            bqm.add_quadratic(term.variable1, term.variable2, sign * term.coefficient)
-        bqm.offset += sign * objective.constant
+        # Shared with the CQM compiler (3a §14). ``update`` adds the other
+        # model's biases into the pre-registered variables exactly like the
+        # former inline ``add_*`` loop did, so the output is unchanged.
+        bqm.update(build_objective_bqm(objective))
 
     def _compile_constraint(
         self,

@@ -92,6 +92,11 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "The backend's configuration is present but invalid; fix or remove "
         "it on the server, or use a local backend."
     ),
+    "NO_COMPILER_FOR_MODEL_TYPE": (
+        "The server has no compiler for the model types this backend "
+        "accepts; this is a server configuration error—report it, or "
+        "choose another backend."
+    ),
     # Problem validator codes (Phase 1 spec §12)
     "UNKNOWN_VARIABLE": (
         "A term references a variable that is not declared; add the variable "

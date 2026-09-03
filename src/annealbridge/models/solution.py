@@ -47,7 +47,8 @@ class SolveAttempt(BaseModel):
     """Statistics for one compile/solve/validate attempt."""
 
     attempt: int
-    penalty: float
+    # None on a path whose compiler uses no hard penalty (3a spec §16.4).
+    penalty: float | None
     samples_received: int
     unique_samples: int
     feasible_samples: int

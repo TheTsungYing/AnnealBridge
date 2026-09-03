@@ -169,7 +169,19 @@ class TestNoVariables:
 
 
 class FakeFailingCompiler:
-    """A compiler that refuses everything, to exercise the §27 fallback."""
+    """A compiler that refuses everything, to exercise the §27 fallback.
+
+    Declares the BQM slot (3a §16.1) so the service selects it for the
+    shipped backends and walks the hard-penalty path up to ``compile``.
+    """
+
+    @property
+    def model_type(self):
+        return "bqm"
+
+    @property
+    def uses_hard_penalty(self):
+        return True
 
     def compile(self, problem, hard_penalty):
         raise CompilationError("boom")
@@ -177,7 +189,7 @@ class FakeFailingCompiler:
 
 class TestCompilationErrorFallback:
     def test_compilation_error_is_reported_as_invalid_problem(self):
-        service = OptimizationService(compiler=FakeFailingCompiler())
+        service = OptimizationService(compilers=[FakeFailingCompiler()])
 
         result = service.solve(feasible_problem())
 

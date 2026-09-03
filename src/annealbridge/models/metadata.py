@@ -7,6 +7,8 @@ helpers that produce it live in ``annealbridge.solvers.metadata``.
 
 from pydantic import BaseModel
 
+from annealbridge.models.capabilities import ModelType
+
 
 class SolverExecutionMetadata(BaseModel):
     """Sanitized execution facts about one solver run."""
@@ -21,3 +23,8 @@ class SolverExecutionMetadata(BaseModel):
     timing_us: dict[str, float] = {}
     average_chain_break_fraction: float | None = None
     embedding_max_chain_length: int | None = None
+    # 3a spec §22: filled in by the service (the backend never knows it).
+    model_type: ModelType | None = None
+    # 3a spec §22: only constraint-model backends report this; it is
+    # informational and never feeds feasibility or ranking.
+    sampler_reported_feasible: int | None = None
