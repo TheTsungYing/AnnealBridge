@@ -2,18 +2,20 @@
 
 A combinatorial optimization middleware designed to be called by AI agents over
 [MCP](https://modelcontextprotocol.io). An agent produces a structured
-`OptimizationProblem` JSON — variables, objective, constraints, nothing else —
-and AnnealBridge deterministically validates it, compiles it into a Binary
-Quadratic Model (BQM) or a Constrained Quadratic Model (CQM), solves it on a
-local or D-Wave backend, re-validates every candidate against the *original*
-problem, and returns ranked feasible business solutions.
+`OptimizationProblem` JSON — binary or bounded-integer variables, an objective,
+constraints, nothing else — and AnnealBridge deterministically validates it,
+compiles it into a Binary Quadratic Model (BQM) or a Constrained Quadratic
+Model (CQM), solves it on a local, D-Wave or Fujitsu backend, re-validates
+every candidate against the *original* problem, and returns ranked feasible
+business solutions.
 
-The agent never writes a QUBO matrix, a penalty weight, or a slack variable.
-The deterministic Python core owns all of that.
+The agent never writes a QUBO matrix, a penalty weight, a slack variable, or
+an integer encoding. The deterministic Python core owns all of that.
 
 Specifications: [Phase 1](optimization_middleware_phase1_spec_v2.md),
-[Phase 2](annealbridge_phase2_spec_v2.md) and
-[Phase 3a](annealbridge_phase3a_spec_v1.md).
+[Phase 2](annealbridge_phase2_spec_v2.md),
+[Phase 3a](annealbridge_phase3a_spec_v1.md) and
+[Phase 3b](annealbridge_phase3b_spec_v1.md).
 
 ## Architecture
 
@@ -42,11 +44,13 @@ optimization logic lives in either of them.
   │                                                        orchestration  │
   │                                                                       │
   │     penalty is applied on the bqm path only.                          │
+  │     integers are binary-encoded on the bqm path, native on cqm.       │
   │     solvers: exact, simulated_annealing, dwave_qpu,                   │
-  │              leap_hybrid_bqm, leap_hybrid_cqm                         │
+  │              leap_hybrid_bqm, leap_hybrid_cqm, fujitsu_da             │
   │                                                                       │
   │     pydantic + dimod + dwave-samplers only.                           │
-  │     Imports no mcp, no dwave.cloud, no config.                        │
+  │     Imports no mcp, no dwave.cloud, no config,                        │
+  │     no third-party HTTP client.                                       │
   │     Usable as a plain Python library with zero extras installed.      │
   │                                                                       │
   └───────────────────────────────────────────────────────────────────────┘
@@ -72,11 +76,12 @@ Key principles:
   protocol, discovered through a registry.
 
 Package layout under `src/annealbridge/`: `models/` (pydantic schema),
-`validation/` (problem + solution validators), `compiler/` (BQM compiler with
-slack encoding and CQM compiler), `penalty/` (penalty strategy), `solvers/`
-(backends and registry), `orchestration/` (the `OptimizationService` pipeline
-and `ExecutionPolicy`), `config/` (environment settings), and `interfaces/`
-(`cli/`, `mcp/`).
+`validation/` (problem + solution validators, bounds-aware size estimates),
+`compiler/` (BQM compiler with slack and integer encoding, CQM compiler, and
+the `decode` step that folds encoding bits back into integers), `penalty/`
+(penalty strategy), `solvers/` (backends and registry), `orchestration/` (the
+`OptimizationService` pipeline and `ExecutionPolicy`), `config/` (environment
+settings), and `interfaces/` (`cli/`, `mcp/`).
 
 ## Installation
 
@@ -100,7 +105,10 @@ pip install "annealbridge[all]"
 
 The core install has no dependency on `mcp` or `dwave-system`; the solver
 registry still imports cleanly and simply reports the remote backends as
-unavailable.
+unavailable. The Fujitsu `fujitsu_da` backend needs **no extra at all**: it
+talks to the vendor's HTTPS API through the standard library, so it is part of
+the core install and only waits for `FUJITSU_DA_API_KEY` (see
+[Fujitsu Setup](#fujitsu-setup)).
 
 Two entry points are installed:
 
@@ -170,7 +178,8 @@ Domain failures are returned as structured results, never raised:
           │
           │  emits OptimizationProblem JSON
           │  (variables / objective / constraints only —
-          │   no QUBO, no penalty λ, no slack variables)
+          │   no QUBO, no penalty λ, no slack variables,
+          │   no integer encoding)
           ▼
    MCP tool call: solve_optimization
           │
@@ -181,7 +190,8 @@ Domain failures are returned as structured results, never raised:
   │  2. compile       objective + constraints →    │
   │                   BQM (penalty λ, slack) or    │
   │                   CQM (native constraints)     │
-  │  3. solve         exact / SA / QPU / hybrid    │
+  │  3. solve         exact / SA / QPU / hybrid /  │
+  │                   Fujitsu DA                   │
   │  4. re-validate   every sample independently   │
   │                   against the ORIGINAL JSON,   │
   │                   never against BQM energy     │
@@ -270,8 +280,10 @@ solver preferences:
 }
 ```
 
-- Only **binary variables** are supported. Variable names must be unique and
-  must not start with `__` (reserved for compiler-internal slack variables).
+- Variables are **binary** (`0/1`, the default) or **bounded integers** (see
+  [Integer variables](#integer-variables-version-11)). Variable names must be
+  unique and must not start with `__` (reserved for compiler-internal slack
+  and integer-encoding bits).
 - `type: "hard"` constraints must be satisfied and must not carry a `weight`;
   `type: "soft"` constraints require a `weight > 0`.
 - Validation collects **all** errors in one pass and returns them as a
@@ -281,6 +293,70 @@ solver preferences:
 Run `annealbridge export-schema` for the complete JSON Schema — the same
 schema an agent can use for structured output, and the same one returned by
 the `get_optimization_capabilities` tool.
+
+### Integer variables (version 1.1)
+
+A variable may be a bounded integer instead of a 0/1 choice. It is declared
+with `type: "integer"` plus **both** `lower_bound` and `upper_bound`, and the
+problem must then carry `"version": "1.1"` at its top level. This is the
+variable block of [examples/integer_knapsack.json](examples/integer_knapsack.json)
+(how many copies of each item to take):
+
+```json
+{
+  "version": "1.1",
+  "variables": [
+    {"name": "item_a", "type": "integer", "lower_bound": 0, "upper_bound": 3},
+    {"name": "item_b", "type": "integer", "lower_bound": 0, "upper_bound": 3},
+    {"name": "item_c", "type": "integer", "lower_bound": 0, "upper_bound": 3},
+    {"name": "item_d", "type": "integer", "lower_bound": 0, "upper_bound": 3}
+  ]
+}
+```
+
+Rules, each enforced by the validator with its own error code:
+
+- Both bounds are required (`INTEGER_BOUNDS_MISSING`), both must be integers
+  (a JSON `1.5` or a boolean is rejected at the schema), and
+  `upper_bound > lower_bound` (`INTEGER_BOUNDS_INVALID` — equal bounds are a
+  constant, not a variable). A negative `lower_bound` is fine.
+- Each bound must satisfy `|bound| <= 2³¹ − 1` (`INTEGER_RANGE_TOO_LARGE`).
+  Inside that range every decoded value and every product of two values is
+  exact in 64-bit integer and float arithmetic; unbounded integers are not
+  supported.
+- A problem that declares any integer variable must say `"version": "1.1"`;
+  with `"version": "1.0"` it is rejected with `INTEGER_REQUIRES_VERSION_1_1`.
+  Version `1.1` is a superset of `1.0`: a `1.1` problem with only binary
+  variables is legal, and every `1.0` document keeps its exact `1.0`
+  behaviour (the compiled models, estimates and penalties for `1.0` problems
+  are pinned bit for bit by a golden test, see [Testing](#testing)).
+- Binary variables take no bounds (`BOUNDS_ON_BINARY`).
+- An objective term `x·x` is legal for an integer `x` (it is a genuine
+  square); for a binary variable it is still rejected with
+  `SELF_QUADRATIC_TERM`, because there `x·x = x`.
+
+What the compiler does with an integer depends on the model type of the
+chosen backend, and the agent never sees either encoding:
+
+- **BQM path** (`exact`, `simulated_annealing`, `dwave_qpu`,
+  `leap_hybrid_bqm`, `fujitsu_da`): the integer is expanded into
+  `(upper_bound − lower_bound).bit_length()` binary bits (`0..3` → 2 bits,
+  `−3..4` → 3 bits) using the same binary expansion as inequality slack.
+  These bits are compiler-internal (`__int_` prefix), they count towards the
+  estimated number of compiled variables, and the solver's bit rows are
+  decoded back into integer values before any candidate is validated or
+  ranked. The four `0..3` integers of the knapsack example plus its slack
+  bits compile to 15 variables, which `annealbridge validate` reports.
+- **CQM path** (`leap_hybrid_cqm`): the integer is passed to the model
+  natively as a `dimod` `INTEGER` variable with its bounds; no encoding bits
+  are counted.
+
+Solutions always report integers as plain `int` values inside their declared
+bounds. `annealbridge recommend` labels the difference with the reason codes
+`R_INTEGER_NATIVE` (cqm backend), `R_INTEGER_ENCODED` (bqm backend) and
+`R_INTEGER_BLOWUP` (bqm backend whose encoding triggers the
+`INTEGER_QUADRATIC_BLOWUP` warning; such a backend is ranked after the
+others). See [Limitations](#limitations) for the cost of wide ranges.
 
 ### Integer coefficients for inequality constraints
 
@@ -293,7 +369,9 @@ mathematically integral). Non-integer values are rejected with the
 subject to this restriction; no automatic scaling of fractional coefficients
 is performed. This restriction also applies on the CQM path, where slack
 variables are not used at all — it is kept deliberately conservative so that
-both paths accept exactly the same problems (Phase 3a spec §21.3).
+both paths accept exactly the same problems (Phase 3a spec §21.3) — and it
+applies to integer variables as well: their bounds are integers, so an integer
+coefficient keeps the slack range exact.
 
 ### Soft constraint weights
 
@@ -302,9 +380,20 @@ and to the solution's `soft_violation_score`. The `weight` is expressed **in
 objective units** and is **not normalized** — if your objective coefficients
 are in the thousands, a weight of 5 has almost no influence. The compile step
 exposes `objective_scale`
-(`max(1.0, Σ|linear coefficients| + Σ|quadratic coefficients|)`), an upper
-bound on the objective's range over binary variables; choose weights relative
+(`max(1.0, Σ|cᵢ|·Mᵢ + Σ|cᵢⱼ|·Mᵢ·Mⱼ)` where `M = max(|lower_bound|,
+|upper_bound|)`, i.e. `1` for a binary variable, so the formula reduces to
+`Σ|linear| + Σ|quadratic|` for an all-binary problem), an upper bound on the
+objective's absolute value over the declared bounds; choose weights relative
 to that scale. `objective_scale` never includes soft weights.
+
+On the CQM path a soft constraint over binary variables only is submitted as
+a native weighted constraint. A soft constraint that involves an integer
+variable is instead folded into the objective as `weight × (violation)²`
+(with an integer slack for inequalities), because `dimod` only offers a
+linear penalty for integer variables and that would not be the formula the
+validator scores with. Either way the solver's soft energy equals the
+validator's `soft_violation_score`, which a dedicated test proves for every
+assignment.
 
 ### Hard constraint penalties
 
@@ -318,7 +407,8 @@ retry           = previous × 2
 ```
 
 where `D` is the largest absolute value the soft constraint's squared term
-can reach over all binary assignments (slack bits included). A soft weight far
+can reach over all assignments within the declared bounds (encoding and
+slack bits included). A soft weight far
 above the objective therefore cannot drown a hard constraint: with
 `multiplier > 1` the lowest-energy assignment is always feasible whenever one
 exists (assuming integer coefficients, which inequalities already require).
@@ -343,6 +433,9 @@ annealbridge solve examples/knapsack.json --backend exact
 
 # Full SolveResult as JSON
 annealbridge solve examples/knapsack.json --json
+
+# A version 1.1 problem with bounded integer variables
+annealbridge solve examples/integer_knapsack.json
 
 # Validate without solving; add --backend / --json
 annealbridge validate examples/knapsack.json
@@ -372,7 +465,10 @@ file error. Both are one-line delegations to `OptimizationService.validate()`
 and `OptimizationService.recommend()` — the same code paths the MCP tools use,
 so the CLI and an agent always see the same answer. `recommend` never rewrites
 `solver.backend`: it only ranks, and solving still uses the backend you asked
-for.
+for. For a problem with integer variables the ranking carries
+`R_INTEGER_NATIVE` / `R_INTEGER_ENCODED` / `R_INTEGER_BLOWUP` (see
+[Integer variables](#integer-variables-version-11)); only the last one
+changes the order, and only by moving that backend behind the others.
 
 ## Solver Backends
 
@@ -383,13 +479,14 @@ for.
 | `dwave_qpu`           | remote    | `EmbeddingComposite(DWaveSampler())`                        |
 | `leap_hybrid_bqm`     | remote    | `LeapHybridSampler`                                         |
 | `leap_hybrid_cqm`     | remote    | `LeapHybridCQMSampler`; native constraints (CQM path)       |
+| `fujitsu_da`          | remote    | Fujitsu Digital Annealer, QUBO API V4 over HTTPS (BQM path) |
 
 - **`exact`** — a testing/debugging backend and a ground-truth benchmark for
   the annealer. The state space doubles with every variable, so it refuses
   problems with more than **24 variables** (including compiler-generated slack
-  variables; configurable via `ANNEALBRIDGE_EXACT_MAX_VARIABLES`). It never
-  retries, and when it finds no feasible solution the result carries
-  `infeasibility_proven: true`.
+  and integer-encoding bits; configurable via
+  `ANNEALBRIDGE_EXACT_MAX_VARIABLES`). It never retries, and when it finds no
+  feasible solution the result carries `infeasibility_proven: true`.
 - **`simulated_annealing`** — honors `num_reads`, `num_sweeps`, and `seed`
   (fixed seeds give reproducible sampling). If no feasible solution is found,
   the service retries with a doubled hard-constraint penalty, up to
@@ -419,14 +516,51 @@ for.
   `resource_limit_exceeded` / `REMOTE_TIME_LIMIT` rather than clamped. Leap's
   published ceilings — 5,000,000 variables and 100,000 constraints — are
   enforced by D-Wave, not by this server.
+- **`fujitsu_da`** — the Fujitsu Digital Annealer through its **QUBO API V4**
+  (`fujitsuDA3` solver block), the first backend that is not a D-Wave
+  product. There is no vendor SDK: the backend speaks the HTTPS JSON API
+  through the standard library, so it needs no extra and adds no dependency.
+  It requires `FUJITSU_DA_API_KEY` (sent as the `X-Api-Key` header) and
+  `ANNEALBRIDGE_ALLOW_REMOTE=true`; see [Fujitsu Setup](#fujitsu-setup). It
+  takes the **BQM path**: the whole compiled QUBO — objective, hard-constraint
+  penalties, slack and integer-encoding bits — is submitted as one
+  `binary_polynomial`, and the annealer's native inequality, one-hot and
+  penalty-polynomial features are not used. Integer variables are therefore
+  supported through the same binary encoding as on every other BQM backend.
+  The vendor enforces a ceiling of 100,000 bits per problem and at most 16
+  pending jobs per account. Preferences go in their own block:
+  `"solver": {"backend": "fujitsu_da", "fujitsu_da": {"time_limit_seconds": 10,
+  "num_run": 16, "num_group": 1, "num_output_solution": 5}}` — the schema
+  allows `time_limit_seconds` 1–3600, `num_run` 1–1024, `num_group` 1–16 and
+  `num_output_solution` 1–1024; an unset option is simply not sent, so the
+  vendor default applies (10 s, 16, 1, 5). Only these four values are ever
+  forwarded; `num_reads`, `num_sweeps` and `seed` are not and are reported as
+  `PARAMETER_IGNORED` / `SEED_IGNORED`. The effective time limit (the option
+  or the 10 s default) is compared against `ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS`
+  and, when above it, refused with `resource_limit_exceeded` /
+  `REMOTE_TIME_LIMIT` — never clamped. The job is submitted asynchronously
+  and polled until it is `Done`; the result is then deleted from the vendor
+  side to free the job slot, and a job that outruns its time budget is
+  cancelled and reported as `REMOTE_TIMEOUT`. Every returned solution becomes
+  one candidate row (the vendor's `frequency` is not expanded into duplicate
+  rows) and is re-validated against the original problem; the annealer's
+  `energy` / `penalty_energy` are never used to judge feasibility. Vendor
+  errors map to catalog codes: HTTP 401/403 → `REMOTE_AUTH_FAILED`, a 400
+  quota message → `REMOTE_QUOTA_EXCEEDED`, a 400 request-header rejection →
+  `BACKEND_CONFIG_INVALID` with status `configuration_error` (the server's
+  own configuration is wrong, not the problem), any other 400 / 413 / 5xx →
+  `REMOTE_SOLVER_ERROR`, HTTP 429 → `REMOTE_BUSY` (marked `retryable`), and a
+  network timeout → `REMOTE_TIMEOUT`. `metadata.solver_id` is
+  `fujitsuDA3/v4`, and the vendor's `solve_time` / `total_elapsed_time` are
+  the only timing fields kept (converted to microseconds).
 
 Which compiler runs is decided by the backend, not by a name check: each
 backend declares its `supported_model_types`, and the service picks the first
 declared model type it has a compiler for (`{bqm: BQMCompiler,
 cqm: CQMCompiler}`). If none of the declared model types has a compiler, the
 result is `configuration_error` / `NO_COMPILER_FOR_MODEL_TYPE`. `exact`,
-`simulated_annealing`, `dwave_qpu` and `leap_hybrid_bqm` all take the BQM path,
-with unchanged behaviour.
+`simulated_annealing`, `dwave_qpu`, `leap_hybrid_bqm` and `fujitsu_da` all
+take the BQM path, with unchanged behaviour for binary-only problems.
 
 ## MCP Server
 
@@ -440,8 +574,8 @@ It exposes four tools:
 
 | Tool                             | Purpose                                                        |
 | -------------------------------- | -------------------------------------------------------------- |
-| `get_optimization_capabilities`  | Supported types/operators, backend availability, JSON schema    |
-| `validate_optimization_problem`  | Validate a problem without solving it                           |
+| `get_optimization_capabilities`  | Supported variable types/operators, schema versions, backend availability, JSON schema |
+| `validate_optimization_problem`  | Validate a problem without solving it; reports the estimated compiled size |
 | `recommend_backend`              | Rank the backends for a problem without solving it (advisory only) |
 | `solve_optimization`             | Validate → compile → solve → re-validate → rank                 |
 
@@ -451,6 +585,12 @@ and the estimated number of compiled variables — deterministically, with no
 network I/O, no solving, no concurrency slot, and no quota consumed. It never
 rewrites `problem.solver.backend`; `solve_optimization` always uses the backend
 the caller asked for.
+
+`get_optimization_capabilities` reports `schema_version` (`"1.1"`, the newest
+accepted version), `schema_versions` (`["1.0", "1.1"]`) and
+`supported_variable_types` (`["binary", "integer"]`), all derived from the
+pydantic model rather than hard-coded, together with the six backends and
+their limits.
 
 ### Claude Desktop (stdio)
 
@@ -558,13 +698,46 @@ export ANNEALBRIDGE_ALLOW_REMOTE=true
 Verify with `annealbridge capabilities` — `dwave_qpu`, `leap_hybrid_bqm` and
 `leap_hybrid_cqm` should now show as available and enabled.
 
+## Fujitsu Setup
+
+The `fujitsu_da` backend has no vendor SDK and no extra to install: it is
+part of the core package and uses the standard library for HTTPS. Two steps
+make it usable.
+
+**1. Provide the API key.** AnnealBridge reads it from one environment
+variable, inside the backend only, on every call — it is never stored in
+settings, a model, or metadata:
+
+```bash
+export FUJITSU_DA_API_KEY="da-xxxxxxxxxxxxxxxxxxxx"   # placeholder, not a real key
+```
+
+The base URL defaults to `https://api.aispf.global.fujitsu.com/da` and can be
+overridden with `FUJITSU_DA_URL`. It must start with `https://`; any other
+scheme makes the backend unavailable with `configuration_error` /
+`BACKEND_CONFIG_INVALID`. Only the V4 endpoints are supported, and only the
+permanent API key (no OAuth access token).
+
+**2. Allow remote execution**, exactly as for D-Wave:
+
+```bash
+export ANNEALBRIDGE_ALLOW_REMOTE=true
+```
+
+Verify with `annealbridge capabilities` — `fujitsu_da` shows
+`Fujitsu DA API key not configured` until the key is set, and available and
+enabled afterwards. The check is local; nothing is sent to Fujitsu until a
+`solve` actually targets the backend. The live test
+`tests/remote_live/test_fujitsu_da_live.py` is opt-in and consumes paid DA
+time; see [Testing](#testing).
+
 ### Environment variables
 
 All settings use the `ANNEALBRIDGE_` prefix:
 
 | Variable                            | Default     | Meaning                                        |
 | ----------------------------------- | ----------- | ---------------------------------------------- |
-| `ANNEALBRIDGE_ALLOW_REMOTE`         | `false`     | Enable the remote (D-Wave) backends            |
+| `ANNEALBRIDGE_ALLOW_REMOTE`         | `false`     | Enable the remote (D-Wave and Fujitsu) backends |
 | `ANNEALBRIDGE_ALLOW_REMOTE_RETRIES` | `false`     | Allow penalty retries on remote backends       |
 | `ANNEALBRIDGE_EXACT_MAX_VARIABLES`  | `24`        | Variable ceiling for the `exact` backend       |
 | `ANNEALBRIDGE_MAX_QPU_READS`        | `1000`      | Upper bound on QPU `num_reads`                 |
@@ -577,21 +750,31 @@ All settings use the `ANNEALBRIDGE_` prefix:
 
 Every `ANNEALBRIDGE_*` variable above is retained with unchanged semantics.
 `ANNEALBRIDGE_LIMITS` only adds *generic* limit keys for third-party backends
-that register custom limit keys declaratively; the five built-in backends use
-the dedicated variables instead. It must not contain a key that already has a
-dedicated variable — `variables`, `reads`, `annealing_time_us` and
-`time_seconds` are rejected, and have to be configured through the older
-variables.
+that register custom limit keys declaratively; the six built-in backends use
+the dedicated variables instead (`fujitsu_da` shares
+`ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS` with the hybrid solvers and declares no
+limit key of its own). It must not contain a key that already has a dedicated
+variable — `variables`, `reads`, `annealing_time_us` and `time_seconds` are
+rejected, and have to be configured through the older variables.
 
-D-Wave credentials are deliberately **not** among them: they belong to Ocean's
-configuration (`dwave config create` or `DWAVE_API_TOKEN`), so AnnealBridge
-never has to read, store, or pass a token itself.
+Vendor credentials are deliberately **not** `ANNEALBRIDGE_*` settings:
+
+| Variable              | Default                                    | Meaning                                              |
+| --------------------- | ------------------------------------------ | ---------------------------------------------------- |
+| `FUJITSU_DA_API_KEY`  | unset                                      | Fujitsu Digital Annealer API key (required by `fujitsu_da`) |
+| `FUJITSU_DA_URL`      | `https://api.aispf.global.fujitsu.com/da`  | Fujitsu DA base URL; must use `https://`             |
+
+D-Wave credentials belong to Ocean's configuration (`dwave config create` or
+`DWAVE_API_TOKEN`), so AnnealBridge never has to read, store, or pass a token
+itself. The two Fujitsu variables are read by the `fujitsu_da` backend alone,
+live on every call, and never enter `ServerSettings`, the policy, or any
+model.
 
 ## Security
 
 - **Remote execution is off by default.** `ANNEALBRIDGE_ALLOW_REMOTE` defaults
-  to `false`; a request for `dwave_qpu`, `leap_hybrid_bqm` or
-  `leap_hybrid_cqm` then returns
+  to `false`; a request for `dwave_qpu`, `leap_hybrid_bqm`, `leap_hybrid_cqm`
+  or `fujitsu_da` then returns
   `backend_unavailable` rather than silently falling back to a local solver.
   Nothing touches the network, and no quota is consumed, until you opt in.
 - **Remote retries are off by default.** `ANNEALBRIDGE_ALLOW_REMOTE_RETRIES`
@@ -609,6 +792,16 @@ never has to read, store, or pass a token itself.
   logs, and metadata all pass through redaction, so an API token cannot leak
   into a tool response or a stack trace. This is covered by a dedicated
   credential-leak test.
+- **The Fujitsu key is handled the same way.** `FUJITSU_DA_API_KEY` is read
+  from the environment inside the backend only; it is never written to a log
+  line, metadata, an error message, an exception chain, or a URL query
+  string, and it is sent solely as the `X-Api-Key` request header. Redaction
+  masks the key's value wherever it might be echoed (for example in a vendor
+  error body) and also masks `X-Api-Key` / `X-Access-Token` header lines, so
+  a dumped request cannot reveal it. The credential-leak test suite runs
+  every case against `fujitsu_da` as well as the D-Wave backends. The request
+  body carries only variable indices and coefficients — no problem name,
+  description, or any other business string.
 
 ## Examples
 
@@ -621,10 +814,19 @@ never has to read, store, or pass a token itself.
 - [examples/tsp.json](examples/tsp.json) — traveling salesman over 4 cities
   with symmetric distances, encoded as city×position binaries. The optimal
   cyclic tour a-b-c-d has total length 8.
+- [examples/integer_knapsack.json](examples/integer_knapsack.json) — a
+  `version: "1.1"` bounded integer knapsack: four items, each taken 0–3
+  times, capacity 18, one hard `<=` constraint and one soft constraint
+  (prefer at most two of B and C combined, weight 3). The unique global
+  optimum is `item_a=0, item_b=1, item_c=1, item_d=3` with value 34;
+  `annealbridge validate` reports 15 compiled variables on the BQM path.
 
-All three declare a local backend; try `--backend simulated_annealing` to
-compare against `exact`. With remote execution configured,
-`--backend leap_hybrid_cqm` runs the same problem down the CQM path instead.
+All four declare a local backend; try `--backend simulated_annealing` to
+compare against `exact` (simulated annealing is heuristic — without a fixed
+`seed` and enough `num_reads` it may return a feasible but sub-optimal
+integer knapsack). With remote execution configured,
+`--backend leap_hybrid_cqm` runs the same problem down the CQM path, and
+`--backend fujitsu_da` sends the compiled QUBO to the Digital Annealer.
 
 ## Testing
 
@@ -634,39 +836,58 @@ compare against `exact`. With remote execution configured,
 pytest
 ```
 
+The default run is 2900 tests with no skip and no xfail; the only skips the
+suite allows are the opt-in live tests below.
+
 Remote live tests are opt-in and excluded by default:
 
 ```bash
-# Requires DWAVE_API_TOKEN and CONSUMES REAL LEAP QUOTA.
-# Now includes the Leap hybrid CQM live test
-# (tests/remote_live/test_leap_hybrid_cqm_live.py, a 3-variable knapsack
-# with a 5 s time limit).
+# CONSUMES REAL VENDOR QUOTA. Each live test skips unless its own credential
+# is set: DWAVE_API_TOKEN for the three D-Wave tests (QPU, Leap hybrid BQM,
+# Leap hybrid CQM), FUJITSU_DA_API_KEY for
+# tests/remote_live/test_fujitsu_da_live.py (a minimal knapsack with a 1 s
+# time limit, the smallest the schema allows).
 pytest -m remote
 ```
 
-`tests/unit/` covers models, validators, slack encoding, the BQM compiler, the
-CQM compiler, the penalty strategy, the policy limits, backend routing, and the
-solver backends; `tests/scenarios/` runs the full
-JSON → validate → compile → solve → validate → rank pipeline;
-`tests/remote_mock/` exercises the D-Wave backends against mocks;
-`tests/mcp/` drives the four tools through an in-memory MCP client; and
-`tests/architecture/` enforces the import boundaries described above, plus two
-further rules: no backend-name constants in `orchestration/`, `validation/` or
-the interfaces, and a fake fifth backend that plugs in with zero core changes.
+`tests/unit/` covers models, validators, the bounds-aware size estimates
+(checked against brute-force enumeration), slack and integer encoding, the
+BQM and CQM compilers including their integer paths, the `decode` step, the
+penalty strategy, the policy limits, backend routing, candidate arrays over
+integer rows, and the solver backends. `tests/unit/test_golden_phase3a.py`
+pins the compiled BQM / CQM, size estimate, penalty scale and full validation
+output of 40 fixed `version: "1.0"` problems to the numbers recorded from the
+Phase 3a code (commit `20ba640`, snapshot in `tests/golden/`), so every
+later change is proven bit-for-bit neutral for `1.0` documents.
+`tests/scenarios/` runs the full JSON → validate → compile → solve →
+validate → rank pipeline, including the integer knapsack down all three
+paths (exact, simulated annealing, fake CQM) with the same optimum;
+`tests/remote_mock/` exercises the D-Wave backends against mocks and the
+Fujitsu backend against a scripted HTTP transport (request shape, polling,
+delete / cancel, every error mapping, credential redaction); `tests/mcp/`
+drives the four tools through an in-memory MCP client; and
+`tests/architecture/` enforces the import boundaries described above, plus
+three further rules: no backend-name constants in `orchestration/`,
+`validation/` or the interfaces, no third-party HTTP package anywhere in the
+core, and a fake extra backend that plugs in with zero core changes.
 
 ## Limitations
 
 ```text
-AnnealBridge currently supports binary-variable optimization problems only.
-Inequality constraints require integer coefficients and right-hand sides.
+AnnealBridge supports binary and bounded-integer variables; real and unbounded integers are not supported.
+Integer variables require version "1.1" and bounds within ±(2^31 − 1).
+On a BQM backend each integer costs (upper − lower).bit_length() encoding bits: a variable needing more than 10 bits raises the LARGE_INTEGER_RANGE warning, and a problem whose encoding yields more than 2000 quadratic interactions raises INTEGER_QUADRATIC_BLOWUP (and is ranked behind CQM backends by recommend).
+Only binary expansion is implemented for integers; there is no one-hot or unary encoding option.
+Inequality constraints require integer coefficients and right-hand sides (NON_INTEGER_INEQUALITY); this applies to integer variables as well.
 Soft constraint weights are expressed in objective units and are not normalized.
 The simulated annealing backend is heuristic and does not guarantee a global optimum.
 The exact backend is for testing/debugging and is limited to small problems.
 Leap Hybrid returns a single sample.
 QPU embedding may fail for dense problems.
 The CQM path still requires integer coefficients and right-hand sides for inequality constraints (kept deliberately conservative; spec §21.3).
-Integer variables are planned for Phase 3b.
+The Fujitsu backend uses the QUBO API V4 with an API key only: no OAuth access token, no V3c endpoints, and none of the annealer's native inequality / one-hot / penalty-polynomial features (the whole QUBO is sent as one binary polynomial).
+Fujitsu's vendor-side limits (100,000 bits, 16 pending jobs, monthly quota) surface as REMOTE_SOLVER_ERROR, REMOTE_BUSY and REMOTE_QUOTA_EXCEEDED; the returned frequency is not expanded into duplicate samples.
 ```
 
-Out of scope for now: integer and real variables (Phase 3b), nonlinear
-constraints, and automatic soft-weight normalization.
+Out of scope for now: real variables, unbounded integers, alternative integer
+encodings, nonlinear constraints, and automatic soft-weight normalization.

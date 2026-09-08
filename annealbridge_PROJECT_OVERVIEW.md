@@ -2,7 +2,7 @@
 
 > 這份文件是給「人」和「AI coding agent」一起看的。
 > 目的是說清楚：我們到底在做什麼、為什麼這樣做、哪些事絕對不能偏。
-> 細節規格在另外三份文件：`optimization_middleware_phase1_spec_v2.md`、`annealbridge_phase2_spec_v2.md`、`annealbridge_phase3a_spec_v1.md`。
+> 細節規格在另外四份文件：`optimization_middleware_phase1_spec_v2.md`、`annealbridge_phase2_spec_v2.md`、`annealbridge_phase3a_spec_v1.md`、`annealbridge_phase3b_spec_v1.md`。
 > 規格若與這份文件衝突，以規格為準；但如果你發現自己正在做的事違反了本文件的「核心原則」，先停下來問。
 
 ---
@@ -79,14 +79,14 @@ AI 負責「說清楚要什麼」    →    程式負責「精確地算出來並
 | 名詞 | 白話 |
 |---|---|
 | Optimization Problem / IR | AI 交給我們的那份 JSON。裡面只有「變數、目標、限制」，沒有任何數學公式 |
-| Variable（變數） | 一個是/否的選擇，例如「alice 要不要做 A」。Phase 1、2 只支援 0/1 |
+| Variable（變數） | 一個是/否的選擇（0/1），例如「alice 要不要做 A」；或一個有上下界的整數（Phase 3b 起），例如「A 物品拿幾個，0 到 3 個」。JSON 只寫型別和上下界，不寫任何編碼方式 |
 | Objective（目標） | 想要最大或最小的那個數，例如總成本 |
 | Hard constraint（硬限制） | 絕對不能違反的規則。違反 = 答案無效 |
 | Soft constraint（軟限制） | 希望盡量滿足，但可以妥協的偏好。有 weight 表示多重要 |
-| Compiler（編譯器） | 把 JSON 翻成求解器看得懂的數學模型（BQM / QUBO）。這是**我們的程式**做，不是 AI。Phase 3a 起有兩個：BQM compiler（penalty + slack）與 CQM compiler（限制原生表達） |
+| Compiler（編譯器） | 把 JSON 翻成求解器看得懂的數學模型（BQM / QUBO）。這是**我們的程式**做，不是 AI。Phase 3a 起有兩個：BQM compiler（penalty + slack）與 CQM compiler（限制原生表達）。Phase 3b 起整數變數也由它處理：BQM 路徑拆成幾個 0/1 位元送出、拿回來再組回整數；CQM 路徑直接以整數送出 |
 | Penalty（懲罰係數） | 編譯時為了讓求解器「不敢違反硬限制」加上的數學重量。**由程式自動算**，AI 不用給、也不該給 |
-| Slack variable | 編譯器為了表達「小於等於」自己加的內部輔助變數。AI 看不到、最後答案也不會出現 |
-| Solver / Backend（求解器） | 真正算答案的引擎。Phase 1 有本機的模擬退火（SA）和窮舉（Exact）；Phase 2 加 D-Wave 量子退火與雲端混合求解器；Phase 3a 加 D-Wave Leap hybrid CQM 求解器 |
+| Slack variable | 編譯器為了表達「小於等於」自己加的內部輔助變數。AI 看不到、最後答案也不會出現。Phase 3b 的整數編碼位元也是同一類內部變數 |
+| Solver / Backend（求解器） | 真正算答案的引擎。Phase 1 有本機的模擬退火（SA）和窮舉（Exact）；Phase 2 加 D-Wave 量子退火與雲端混合求解器；Phase 3a 加 D-Wave Leap hybrid CQM 求解器；Phase 3b 加富士通 Digital Annealer（第一個不是 D-Wave 的遠端引擎） |
 | Solution Validator（答案驗證器） | 拿求解器的每個候選答案，回到**原始 JSON** 逐條檢查限制有沒有違反。這一步不信任求解器，一律重查 |
 | MCP | 讓 AI 能標準化呼叫外部工具的協定。Phase 2 用它把 AnnealBridge 包成 AI 可以呼叫的工具 |
 
@@ -123,6 +123,16 @@ AI 負責「說清楚要什麼」    →    程式負責「精確地算出來並
 4. **不動 IR。** 那份 JSON 的格式完全沒變（`version` 仍是 `"1.0"`、仍然只有 0/1 變數）。整數變數和 Fujitsu 留給 Phase 3b。
 
 **Phase 3a 不改 Phase 1／2 的核心邏輯。** 新東西一律以插件和宣告的方式加上去，不是回頭改既有流程。
+
+### Phase 3b：加整數變數、接富士通 Digital Annealer
+
+1. **變數可以是整數了。** 以前只能問「要不要」（0/1），現在可以問「要幾個」：JSON 裡寫 `type: "integer"` 加上下界（例如 0 到 3），問題的 `version` 要寫 `"1.1"`。JSON 裡**仍然**只有「是什麼、範圍多大」，沒有任何位元或編碼方式（原則 1）。舊的 `"1.0"` 問題一個字都不用改，行為也一個位元都沒變——開工前先把 3a 程式對 40 個舊問題算出的模型、估算、懲罰係數全部錄下來（golden 測試），之後每一步都證明數字完全相同。
+2. **兩條路徑各自處理整數。** 走 BQM 的求解器（本機 SA / Exact、D-Wave QPU / hybrid BQM、富士通）只認 0/1，所以 compiler 把每個整數拆成幾個位元（範圍 0 到 3 用 2 個位元，範圍越大位元越多），送去求解，拿回來再由 compiler 組回整數、把位元藏掉，之後的驗證與排名看到的都是整數。走 CQM 的求解器（Leap hybrid CQM）本來就懂整數，直接送。**編碼與解碼都是 compiler 的事**，求解器插件不碰（原則 4、6）。
+3. **含整數的軟限制，在 CQM 路徑改寫成目標函數的一部分。** 為什麼：dimod 對含整數的軟限制只提供「線性懲罰」（weight × |偏差|），但我們驗證答案時算的是 weight × 偏差²。兩個公式不一樣，求解器看到的偏好強度就會跟我們排名用的不一致（原則 2、3）。所以只要限制裡有整數，就把 weight × 偏差² 直接加進目標函數（不等式再配一個整數 slack），測試逐一枚舉證明求解器能量與驗證器分數完全相等。只有 0/1 變數的軟限制維持 3a 的原生寫法不變。
+4. **富士通 Digital Annealer 走既有的 BQM 路徑，不用它的原生功能。** 富士通沒有官方 Python SDK，只有一個 HTTP API；我們用 Python 標準庫直接打，**不加任何新依賴**。compiler 產出的整個 QUBO（目標、硬限制懲罰、slack 與整數位元）當一個多項式送過去，它原生的「不等式」「one-hot」功能先不用——3b 的目的是證明 3a 留的擴充點對「沒有 SDK、只有 HTTP」的廠商同樣成立，核心一行都不用改；原生功能留給之後（3b spec §30.2）。API key 只從環境變數 `FUJITSU_DA_API_KEY` 讀、只在插件內讀、不進任何設定物件或輸出，遮罩也一併涵蓋富士通的 header；遠端預設關閉、超過上限就拒絕不砍值（原則 5）。它回傳的能量一樣不採信，每個答案都拿回原始 JSON 重驗（原則 2）。
+5. **推薦工具知道整數的代價。** 走 BQM 的求解器會標「整數要編碼、模型會變大」，走 CQM 的標「原生支援」；編碼後二次項太多時才把該求解器往後排，但不會因為「有整數」就自動偏好遠端（遠端花 quota，免費的本機求解器仍排前面）。
+
+**Phase 3b 不改 Phase 1／2／3a 的核心流程。** 整數是 IR 與 compiler 的擴充，富士通是第六個插件；service、validator、介面層沒有為任何一個新增特判。
 
 ---
 
@@ -216,16 +226,17 @@ Validator  → 只檢查，不修改
 | Phase 1 規格 | 完成（v2） |
 | Phase 2 規格 | 完成（v2） |
 | Phase 3a 規格 | 完成（v1） |
+| Phase 3b 規格 | 完成（v1） |
 | Phase 1 實作 | 完成（2026-08，`optimizer` 套件，後於 Phase 2 Step 1 改名 `annealbridge`） |
 | Phase 2 實作 | 完成（2026-09-02，spec §35 全部 16 步；`pytest` 510 passed，remote_live 為 opt-in） |
 | Phase 3a 實作 | 完成（2026-09-03，spec §30 全部 10 步；`pytest` 1311 passed，remote_live 為 opt-in） |
+| Phase 3b 實作 | 完成（2026-09-08，spec §25 步驟 0–7 全部；`pytest` 2900 passed，remote_live 為 opt-in；六個 backend、error catalog 41 個 code；驗收報告 `annealbridge_phase3b_acceptance.md`） |
 | 版本控制 / CI | 2026-09-02 建立 git repo；CI workflow 已就緒，推上 GitHub 後生效 |
-| Phase 3b（整數變數、Fujitsu DA） | 只留擴充點（3a spec §32），開工前先寫 3b spec |
 
 技術選型（已確定，不要換）：
 
 - Python ≥ 3.11、Pydantic v2
-- 求解：dimod、dwave-samplers（本機）、dwave-system（Phase 2 / 3a 遠端）
+- 求解：dimod、dwave-samplers（本機）、dwave-system（Phase 2 / 3a 遠端）；富士通 Digital Annealer 走標準庫 `urllib` 的 HTTPS，不加額外依賴（Phase 3b）
 - MCP：官方 Python SDK v2（`mcp>=2,<3`，`MCPServer`，2026-07 已穩定釋出）
 - 測試：pytest
 - 套件名：`annealbridge`
