@@ -30,6 +30,12 @@ async def get_optimization_capabilities() -> OptimizationCapabilities:
     JSON schema) and, per backend, whether it is installed/configured
     (available), whether server policy permits it (enabled), and its resource
     limits. This performs no solving and no network requests.
+
+    supported_variable_types lists the variable types a problem may declare —
+    "binary" and "integer" — and schema_versions lists every problem schema
+    version this server accepts, newest last. Integer variables are only
+    allowed when the problem carries "version": "1.1" at its top level;
+    "version": "1.0" accepts binary variables only.
     """
     state = get_state()
     return build_capabilities(state.registry, state.policy)
@@ -46,6 +52,12 @@ async def validate_optimization_problem(
     bits. Call this before solve_optimization when planning to use a remote
     backend, so problems can be fixed before spending quota. Nothing is
     compiled or solved and no network requests are made.
+
+    The estimate follows the model type the chosen backend compiles to. On a
+    bqm backend it counts the slack bits of every inequality constraint plus
+    the binary-encoding bits of every integer variable, so a wider
+    lower_bound..upper_bound range costs more compiled variables. On a cqm
+    backend integer variables are native and no encoding bits are counted.
     """
     return get_state().service.validate(problem)
 
@@ -61,17 +73,32 @@ async def recommend_backend(problem: OptimizationProblem) -> BackendRecommendati
     and the same warnings validate_optimization_problem would give for that backend.
     Based only on the problem structure, backend capabilities and server policy —
     no cost estimation, no network requests, no quota consumed.
+
+    A problem with integer variables adds reason codes: R_INTEGER_NATIVE when the
+    backend compiles to cqm and takes integers as they are, R_INTEGER_ENCODED when
+    it compiles to bqm and must binary-encode them, and R_INTEGER_BLOWUP when that
+    encoding also raises an INTEGER_QUADRATIC_BLOWUP warning — a backend carrying
+    that code is ranked after the ones without it.
     """
     return get_state().service.recommend(problem)
 
 
 @mcp.tool()
 async def solve_optimization(problem: OptimizationProblem) -> SolveResult:
-    """Solve a structured binary combinatorial optimization problem.
+    """Solve a structured binary or bounded-integer combinatorial optimization
+    problem.
 
-    Call this only after translating the user's request into explicit binary
-    variables, an objective (linear/quadratic, minimize or maximize), and hard
-    or soft linear constraints. Do not pass natural-language requirements.
+    Call this only after translating the user's request into explicit binary or
+    bounded-integer variables, an objective (linear/quadratic, minimize or
+    maximize), and hard or soft linear constraints. Do not pass natural-language
+    requirements.
+
+    An integer variable is declared with "type": "integer" plus integer
+    lower_bound and upper_bound (both required), and the problem must then carry
+    "version": "1.1" at its top level. A backend that compiles to bqm encodes
+    each integer in binary, so the compiled size grows with the range of the
+    bounds; a backend that compiles to cqm takes integers natively. Integer
+    values come back as ints inside their declared bounds.
 
     Inequality constraints (<=, >=) require integer coefficients and right-hand
     sides. Soft constraint weights are in objective units.

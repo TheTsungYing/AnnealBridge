@@ -65,11 +65,29 @@ REASON_DESCRIPTIONS: dict[str, str] = {
     "R_DENSE_FOR_QPU": (
         "The problem is likely too dense or too large for minor-embedding."
     ),
+    # 3b spec §17: integer variables.
+    "R_INTEGER_NATIVE": (
+        "Integer variables are passed to the model natively, with no binary "
+        "encoding."
+    ),
+    "R_INTEGER_ENCODED": (
+        "Integer variables are binary-encoded; the compiled size grows with "
+        "the range."
+    ),
+    "R_INTEGER_BLOWUP": (
+        "Binary-encoding the integer variables yields many quadratic "
+        "interactions on this backend (INTEGER_QUADRATIC_BLOWUP); a backend "
+        "that takes integers natively ranks ahead of it."
+    ),
 }
 
 
 def _has_hard_constraint(problem: OptimizationProblem) -> bool:
     return any(constraint.type == "hard" for constraint in problem.constraints)
+
+
+def _has_integer_variable(problem: OptimizationProblem) -> bool:
+    return any(variable.type == "integer" for variable in problem.variables)
 
 
 def _tier(
@@ -168,9 +186,20 @@ def _assess(
     dense = "DENSE_FOR_QPU" in warning_codes
     if dense:
         reasons.append("R_DENSE_FOR_QPU")
+    # 3b spec §17: a BQM path whose integer encoding blows up the quadratic
+    # interactions sorts with DENSE_FOR_QPU, behind the backends that do not.
+    blowup = "INTEGER_QUADRATIC_BLOWUP" in warning_codes
+    if blowup:
+        reasons.append("R_INTEGER_BLOWUP")
     tier = _tier(caps, model_type, warning_codes, problem, reasons)
+    # Informational only (no tier change, §17): how this path takes integers.
+    if _has_integer_variable(problem):
+        if model_type == "cqm":
+            reasons.append("R_INTEGER_NATIVE")
+        elif model_type == "bqm":
+            reasons.append("R_INTEGER_ENCODED")
 
-    key = (0 if usable else 1, 1 if dense else 0, tier)
+    key = (0 if usable else 1, 1 if dense or blowup else 0, tier)
     entry = BackendRecommendation(
         rank=0,  # assigned after sorting
         backend=backend_name,
@@ -193,10 +222,11 @@ def recommend(
     """Rank every registered backend for ``problem`` (spec §23.3).
 
     Deterministic: the same problem, registry, policy and compilers give
-    the same result. Sort key, ascending: usable first, then not
-    DENSE_FOR_QPU, then capability tier (exhaustive that fits → local
-    heuristic → remote with native constraints → other remote), then
-    registry order. ``rank`` counts from 1.
+    the same result. Sort key, ascending: usable first, then neither
+    DENSE_FOR_QPU nor INTEGER_QUADRATIC_BLOWUP, then capability tier
+    (exhaustive that fits → local heuristic → remote with native constraints
+    → other remote), then registry order. ``rank`` counts from 1. Integer
+    variables add a reason (native or binary-encoded) but no tier (3b §17).
     """
     errors = validate_problem(problem)
     if errors:

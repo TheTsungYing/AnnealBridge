@@ -32,6 +32,10 @@ ALL_REASON_CODES = {
     "R_REMOTE",
     "R_SINGLE_SAMPLE",
     "R_DENSE_FOR_QPU",
+    # 3b spec §17
+    "R_INTEGER_NATIVE",
+    "R_INTEGER_ENCODED",
+    "R_INTEGER_BLOWUP",
 }
 
 
@@ -43,6 +47,47 @@ def knapsack(**solver) -> OptimizationProblem:
     payload = json.loads((EXAMPLES_DIR / "knapsack.json").read_text(encoding="utf-8"))
     payload["solver"] = {**payload.get("solver", {}), **solver}
     return OptimizationProblem.model_validate(payload)
+
+
+def integer_knapsack(**solver) -> OptimizationProblem:
+    """The version 1.1 example: four integer variables in 0..3 (3b §18)."""
+    payload = json.loads(
+        (EXAMPLES_DIR / "integer_knapsack.json").read_text(encoding="utf-8")
+    )
+    payload["solver"] = {**payload.get("solver", {}), **solver}
+    return OptimizationProblem.model_validate(payload)
+
+
+def make_integer_blowup_problem() -> OptimizationProblem:
+    """Seven integers in 0..1023 (10 bits each) with every pairwise product.
+
+    Binary-encoding gives 21 * 10 * 10 = 2100 quadratic interactions, over the
+    INTEGER_QUADRATIC_BLOWUP threshold of 2000, on the BQM path only; the
+    compiled size (70 bits) stays under the QPU density threshold and there
+    is no constraint, so nothing else warns.
+    """
+    names = [f"x{i}" for i in range(7)]
+    return OptimizationProblem.model_validate(
+        {
+            "version": "1.1",
+            "name": "integer_blowup",
+            "variables": [
+                {"name": n, "type": "integer", "lower_bound": 0, "upper_bound": 1023}
+                for n in names
+            ],
+            "objective": {
+                "direction": "minimize",
+                "linear_terms": [{"variable": n, "coefficient": 1} for n in names],
+                "quadratic_terms": [
+                    {"variable1": a, "variable2": b, "coefficient": 1}
+                    for i, a in enumerate(names)
+                    for b in names[i + 1 :]
+                ],
+            },
+            "constraints": [],
+            "solver": {"backend": "exact"},
+        }
+    )
 
 
 def make_problem(
@@ -337,6 +382,110 @@ class TestDeterminism:
         assert first.model_dump() == second.model_dump()
 
 
+class TestIntegerReasons:
+    """3b spec §17: integer variables add a reason per compiler path and the
+    INTEGER_QUADRATIC_BLOWUP warning sorts a backend with DENSE_FOR_QPU. No
+    tier rule: a free local heuristic still ranks ahead of a remote CQM."""
+
+    BQM_BACKENDS = ["exact", "simulated_annealing", "dwave_qpu", "leap_hybrid_bqm"]
+
+    def test_bqm_backends_report_encoded(self, registry):
+        result = recommend(integer_knapsack(), registry, ExecutionPolicy(), compilers())
+
+        assert result.valid is True
+        assert by_name(result, "exact").reasons == ["R_EXACT_FITS", "R_INTEGER_ENCODED"]
+        assert by_name(result, "simulated_annealing").reasons == [
+            "R_LOCAL_HEURISTIC",
+            "R_INTEGER_ENCODED",
+        ]
+        # 4 integers x 2 bits + 5 slack bits for the hard capacity constraint
+        # + 2 slack bits for the soft inequality.
+        assert by_name(result, "exact").estimated_compiled_variables == 15
+        for name in self.BQM_BACKENDS:
+            entry = by_name(result, name)
+            assert entry.model_type == "bqm"
+            assert entry.reasons[-1] == "R_INTEGER_ENCODED"
+            assert "R_INTEGER_NATIVE" not in entry.reasons
+
+    def test_cqm_backend_reports_native(self, registry):
+        result = recommend(integer_knapsack(), registry, ExecutionPolicy(), compilers())
+
+        cqm = by_name(result, "leap_hybrid_cqm")
+        assert cqm.model_type == "cqm"
+        assert cqm.reasons == ["R_UNUSABLE", "R_NATIVE_CONSTRAINTS", "R_INTEGER_NATIVE"]
+        assert "R_INTEGER_ENCODED" not in cqm.reasons
+        assert "INTEGER_QUADRATIC_BLOWUP" not in [w.code for w in cqm.warnings]
+        # The native path counts the four integers themselves (no encoding
+        # bits) plus one integer slack for the soft inequality that involves
+        # integers (3b §15.3 objective form): 4 + 1.
+        assert cqm.estimated_compiled_variables == 5
+
+    def test_no_tier_rule_keeps_the_binary_order(self, registry):
+        # Same order as the binary knapsack under the default policy: the
+        # integer reasons are informational only.
+        result = recommend(integer_knapsack(), registry, ExecutionPolicy(), compilers())
+        assert [e.backend for e in result.recommendations] == [
+            "exact",
+            "simulated_annealing",
+            "leap_hybrid_cqm",
+            "dwave_qpu",
+            "leap_hybrid_bqm",
+        ]
+
+    def test_blowup_reason_and_warning(self, monkeypatch, registry):
+        make_remotes_available(monkeypatch, registry)
+        policy = ExecutionPolicy(allow_remote=True, exact_max_variables=200)
+
+        result = recommend(make_integer_blowup_problem(), registry, policy, compilers())
+
+        assert all(e.usable for e in result.recommendations)
+        for name in self.BQM_BACKENDS:
+            entry = by_name(result, name)
+            assert entry.reasons[0] == "R_INTEGER_BLOWUP"
+            assert entry.reasons[-1] == "R_INTEGER_ENCODED"
+            assert "INTEGER_QUADRATIC_BLOWUP" in [w.code for w in entry.warnings]
+            assert "R_DENSE_FOR_QPU" not in entry.reasons
+        cqm = by_name(result, "leap_hybrid_cqm")
+        assert cqm.reasons == ["R_REMOTE", "R_INTEGER_NATIVE"]
+        assert cqm.warnings == []
+
+    def test_blowup_ranks_bqm_backends_after_cqm(self, monkeypatch, registry):
+        make_remotes_available(monkeypatch, registry)
+        policy = ExecutionPolicy(allow_remote=True, exact_max_variables=200)
+
+        result = recommend(make_integer_blowup_problem(), registry, policy, compilers())
+
+        # Blowup shares the DENSE_FOR_QPU layer of the sort key, so within the
+        # usable layer every BQM path moves behind the CQM path; among the
+        # BQM paths the tiers and registry order still apply.
+        assert [e.backend for e in result.recommendations] == [
+            "leap_hybrid_cqm",
+            "exact",
+            "simulated_annealing",
+            "dwave_qpu",
+            "leap_hybrid_bqm",
+        ]
+        assert [e.rank for e in result.recommendations] == [1, 2, 3, 4, 5]
+
+    def test_blowup_still_sorts_after_usability(self, registry):
+        # Under the default policy the remote CQM backend is unusable, so the
+        # usable-but-blown-up local backends stay ahead of it.
+        policy = ExecutionPolicy(exact_max_variables=200)
+        result = recommend(make_integer_blowup_problem(), registry, policy, compilers())
+        assert [e.backend for e in result.recommendations[:2]] == [
+            "exact",
+            "simulated_annealing",
+        ]
+        assert by_name(result, "leap_hybrid_cqm").usable is False
+
+    def test_pure_binary_problem_emits_no_integer_reason(self, monkeypatch, registry):
+        make_remotes_available(monkeypatch, registry)
+        for policy in (ExecutionPolicy(), ExecutionPolicy(allow_remote=True)):
+            result = recommend(knapsack(), registry, policy, compilers())
+            for entry in result.recommendations:
+                assert not any(r.startswith("R_INTEGER_") for r in entry.reasons)
+
+
 class TestReasonCatalog:
     def test_every_reason_code_has_a_description(self):
         assert set(REASON_DESCRIPTIONS) == ALL_REASON_CODES
@@ -352,6 +501,12 @@ class TestReasonCatalog:
             (make_problem(20), ExecutionPolicy()),
             (
                 make_problem(35, constraint_width=35, rhs=20),
+                ExecutionPolicy(allow_remote=True, exact_max_variables=200),
+            ),
+            # 3b §17: the three integer reasons.
+            (integer_knapsack(), ExecutionPolicy()),
+            (
+                make_integer_blowup_problem(),
                 ExecutionPolicy(allow_remote=True, exact_max_variables=200),
             ),
         ]

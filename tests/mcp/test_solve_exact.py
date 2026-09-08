@@ -15,6 +15,9 @@ pytestmark = pytest.mark.anyio
 
 KNAPSACK_OPTIMUM_VALUE = 17.0
 
+INTEGER_KNAPSACK_OPTIMUM_VALUE = 34.0
+INTEGER_KNAPSACK_OPTIMUM = {"item_a": 0, "item_b": 1, "item_c": 1, "item_d": 3}
+
 
 async def test_solve_knapsack_on_exact_backend(load_example):
     problem = load_example("knapsack.json", backend="exact")
@@ -36,3 +39,27 @@ async def test_solve_knapsack_on_exact_backend(load_example):
     # Slack bits are named with a "__" prefix and must never reach the caller.
     for solution in content["solutions"]:
         assert all(not name.startswith("__") for name in solution["variables"])
+
+
+async def test_solve_integer_knapsack_on_exact_backend(load_example):
+    # 3b: the integer variables are binary-encoded for a bqm backend, but the
+    # caller must see decoded integers in [lower_bound, upper_bound] — never
+    # the encoding bits.
+    problem = load_example("integer_knapsack.json", backend="exact")
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("solve_optimization", {"problem": problem})
+        assert result.is_error is False
+        content = result.structured_content
+
+    assert content["status"] == "success"
+
+    best = content["solutions"][0]
+    assert best["objective_value"] == pytest.approx(INTEGER_KNAPSACK_OPTIMUM_VALUE)
+    assert best["variables"] == INTEGER_KNAPSACK_OPTIMUM
+
+    for solution in content["solutions"]:
+        for name, value in solution["variables"].items():
+            assert not name.startswith("__")
+            assert isinstance(value, int)
+            assert 0 <= value <= 3
