@@ -1,0 +1,7259 @@
+{
+  "problems": {
+    "bqm_test_duplicate_linear_terms_accumulate": {
+      "bqm": {
+        "constraint_trace": [],
+        "hard_penalty": 10.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": 5.0,
+          "x2": 0.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 5.0,
+        "offset": 0.0,
+        "quadratic": [],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 5.0,
+      "cqm": {
+        "constraint_trace": [],
+        "constraints": [],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": 5.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 5.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 5.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "DUPLICATE_TERM_MERGED",
+            "message": "Variable x1 appears 2 times in objective.linear_terms; coefficients will be summed by the compiler",
+            "path": "objective.linear_terms",
+            "recommended_action": "Duplicate objective terms are summed by the compiler; merge them in the input if the duplication is unintentional.",
+            "retryable": false
+          }
+        ]
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 5.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "DUPLICATE_TERM_MERGED",
+            "message": "Variable x1 appears 2 times in objective.linear_terms; coefficients will be summed by the compiler",
+            "path": "objective.linear_terms",
+            "recommended_action": "Duplicate objective terms are summed by the compiler; merge them in the input if the duplication is unintentional.",
+            "retryable": false
+          }
+        ]
+      }
+    },
+    "bqm_test_duplicate_quadratic_terms_accumulate_across_orderings": {
+      "bqm": {
+        "constraint_trace": [],
+        "hard_penalty": 14.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": 0.0,
+          "x2": 0.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 7.0,
+        "offset": 0.0,
+        "quadratic": [
+          [
+            "x1",
+            "x2",
+            7.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 7.0,
+      "cqm": {
+        "constraint_trace": [],
+        "constraints": [],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": 0.0,
+            "x2": 0.0
+          },
+          "offset": 0.0,
+          "quadratic": [
+            [
+              "x1",
+              "x2",
+              7.0
+            ]
+          ]
+        },
+        "objective_scale": 7.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 7.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "DUPLICATE_TERM_MERGED",
+            "message": "Variable pair ('x1', 'x2') appears 2 times in objective.quadratic_terms; coefficients will be summed by the compiler",
+            "path": "objective.quadratic_terms",
+            "recommended_action": "Duplicate objective terms are summed by the compiler; merge them in the input if the duplication is unintentional.",
+            "retryable": false
+          }
+        ]
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 7.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "DUPLICATE_TERM_MERGED",
+            "message": "Variable pair ('x1', 'x2') appears 2 times in objective.quadratic_terms; coefficients will be summed by the compiler",
+            "path": "objective.quadratic_terms",
+            "recommended_action": "Duplicate objective terms are summed by the compiler; merge them in the input if the duplication is unintentional.",
+            "retryable": false
+          }
+        ]
+      }
+    },
+    "bqm_test_energy_matches_sign_objective_plus_penalties": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "pick",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 48.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_cap_0",
+              "__slack_cap_1",
+              "__slack_cap_2"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 48.0,
+            "redundant": false,
+            "slack_range": 5,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cover",
+            "constraint_type": "soft",
+            "generated_variables": [
+              "__slack_cover_0"
+            ],
+            "native": false,
+            "operator": ">=",
+            "penalty": 2.5,
+            "redundant": false,
+            "slack_range": 1,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 48.0,
+        "internal_variables": [
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2",
+          "__slack_cover_0"
+        ],
+        "linear": {
+          "__slack_cap_0": -432.0,
+          "__slack_cap_1": -768.0,
+          "__slack_cap_2": -768.0,
+          "__slack_cover_0": 7.5,
+          "x1": -819.0,
+          "x2": -1062.5,
+          "x3": -1159.5
+        },
+        "num_variables": 7,
+        "objective_scale": 14.0,
+        "offset": 1249.5,
+        "quadratic": [
+          [
+            "__slack_cap_0",
+            "__slack_cap_1",
+            192.0
+          ],
+          [
+            "__slack_cap_0",
+            "__slack_cap_2",
+            192.0
+          ],
+          [
+            "__slack_cap_0",
+            "x1",
+            192.0
+          ],
+          [
+            "__slack_cap_0",
+            "x2",
+            288.0
+          ],
+          [
+            "__slack_cap_0",
+            "x3",
+            384.0
+          ],
+          [
+            "__slack_cap_1",
+            "__slack_cap_2",
+            384.0
+          ],
+          [
+            "__slack_cap_1",
+            "x1",
+            384.0
+          ],
+          [
+            "__slack_cap_1",
+            "x2",
+            576.0
+          ],
+          [
+            "__slack_cap_1",
+            "x3",
+            768.0
+          ],
+          [
+            "__slack_cap_2",
+            "x1",
+            384.0
+          ],
+          [
+            "__slack_cap_2",
+            "x2",
+            576.0
+          ],
+          [
+            "__slack_cap_2",
+            "x3",
+            768.0
+          ],
+          [
+            "__slack_cover_0",
+            "x2",
+            -5.0
+          ],
+          [
+            "__slack_cover_0",
+            "x3",
+            -5.0
+          ],
+          [
+            "x1",
+            "x2",
+            674.0
+          ],
+          [
+            "x1",
+            "x3",
+            768.0
+          ],
+          [
+            "x2",
+            "x3",
+            1157.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3",
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2",
+          "__slack_cover_0"
+        ]
+      },
+      "compute_penalty_scale": 24.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "pick",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cover",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": ">=",
+            "penalty": 2.5,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "pick",
+            "lhs": {
+              "linear": {
+                "x1": 1.0,
+                "x2": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "cap",
+            "lhs": {
+              "linear": {
+                "x1": 2.0,
+                "x2": 3.0,
+                "x3": 4.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 5.0,
+            "sense": "<=",
+            "weight": null
+          },
+          {
+            "label": "cover",
+            "lhs": {
+              "linear": {
+                "x2": 1.0,
+                "x3": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 1.0,
+            "sense": ">=",
+            "weight": 2.5
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": -3.0,
+            "x2": -4.0,
+            "x3": -5.0
+          },
+          "offset": -1.0,
+          "quadratic": [
+            [
+              "x1",
+              "x2",
+              2.0
+            ]
+          ]
+        },
+        "objective_scale": 14.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 7,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 14.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 7,
+        "model_type": "bqm",
+        "objective_scale": 14.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "bqm_test_formula": {
+      "bqm": {
+        "constraint_trace": [],
+        "hard_penalty": 18.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": 2.0,
+          "x2": -3.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 9.0,
+        "offset": 0.0,
+        "quadratic": [
+          [
+            "x1",
+            "x2",
+            4.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 9.0,
+      "cqm": {
+        "constraint_trace": [],
+        "constraints": [],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": 2.0,
+            "x2": -3.0
+          },
+          "offset": 0.0,
+          "quadratic": [
+            [
+              "x1",
+              "x2",
+              4.0
+            ]
+          ]
+        },
+        "objective_scale": 9.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 9.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 9.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "bqm_test_greater_equal_soft_trace_keeps_original_operator": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cover",
+            "constraint_type": "soft",
+            "generated_variables": [
+              "__slack_cover_0"
+            ],
+            "native": false,
+            "operator": ">=",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": 1,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 18.0,
+        "internal_variables": [
+          "__slack_cover_0"
+        ],
+        "linear": {
+          "__slack_cover_0": 6.0,
+          "x1": -2.0,
+          "x2": -2.0,
+          "x3": 0.0
+        },
+        "num_variables": 4,
+        "objective_scale": 1.0,
+        "offset": 2.0,
+        "quadratic": [
+          [
+            "__slack_cover_0",
+            "x1",
+            -4.0
+          ],
+          [
+            "__slack_cover_0",
+            "x2",
+            -4.0
+          ],
+          [
+            "x1",
+            "x2",
+            4.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3",
+          "__slack_cover_0"
+        ]
+      },
+      "compute_penalty_scale": 9.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cover",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": ">=",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "cover",
+            "lhs": {
+              "linear": {
+                "x1": 1.0,
+                "x2": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 1.0,
+            "sense": ">=",
+            "weight": 2.0
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {},
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 1.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 4,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 4,
+        "model_type": "bqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "bqm_test_hand_computed_expansion": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "pick",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 2.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": -2.0,
+          "x2": -2.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 1.0,
+        "offset": 2.0,
+        "quadratic": [
+          [
+            "x1",
+            "x2",
+            4.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 1.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "pick",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "pick",
+            "lhs": {
+              "linear": {
+                "x1": 1.0,
+                "x2": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {},
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 1.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "bqm_test_hard_and_soft_lambdas_never_mix": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "h",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 12.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "s",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 5.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 12.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": -12.0,
+          "x2": -5.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 1.0,
+        "offset": 17.0,
+        "quadratic": [],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 6.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "h",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "s",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": 5.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "h",
+            "lhs": {
+              "linear": {
+                "x1": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "s",
+            "lhs": {
+              "linear": {
+                "x2": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": 5.0
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {},
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 1.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "bqm_test_less_equal_hard_generates_slack": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_cap_0",
+              "__slack_cap_1",
+              "__slack_cap_2"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": 4,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 2.0,
+        "internal_variables": [
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2"
+        ],
+        "linear": {
+          "__slack_cap_0": -14.0,
+          "__slack_cap_1": -24.0,
+          "__slack_cap_2": -14.0,
+          "x1": -24.0,
+          "x2": -30.0,
+          "x3": 0.0
+        },
+        "num_variables": 6,
+        "objective_scale": 1.0,
+        "offset": 32.0,
+        "quadratic": [
+          [
+            "__slack_cap_0",
+            "__slack_cap_1",
+            8.0
+          ],
+          [
+            "__slack_cap_0",
+            "__slack_cap_2",
+            4.0
+          ],
+          [
+            "__slack_cap_0",
+            "x1",
+            8.0
+          ],
+          [
+            "__slack_cap_0",
+            "x2",
+            12.0
+          ],
+          [
+            "__slack_cap_1",
+            "__slack_cap_2",
+            8.0
+          ],
+          [
+            "__slack_cap_1",
+            "x1",
+            16.0
+          ],
+          [
+            "__slack_cap_1",
+            "x2",
+            24.0
+          ],
+          [
+            "__slack_cap_2",
+            "x1",
+            8.0
+          ],
+          [
+            "__slack_cap_2",
+            "x2",
+            12.0
+          ],
+          [
+            "x1",
+            "x2",
+            24.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3",
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2"
+        ]
+      },
+      "compute_penalty_scale": 1.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "cap",
+            "lhs": {
+              "linear": {
+                "x1": 2.0,
+                "x2": 3.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 4.0,
+            "sense": "<=",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {},
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 1.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 6,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 6,
+        "model_type": "bqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "bqm_test_lowest_energy_sample_is_feasible_optimum": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_cap_0",
+              "__slack_cap_1",
+              "__slack_cap_2"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 24.0,
+            "redundant": false,
+            "slack_range": 5,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 24.0,
+        "internal_variables": [
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2"
+        ],
+        "linear": {
+          "__slack_cap_0": -216.0,
+          "__slack_cap_1": -384.0,
+          "__slack_cap_2": -384.0,
+          "x1": -387.0,
+          "x2": -508.0,
+          "x3": -581.0
+        },
+        "num_variables": 6,
+        "objective_scale": 12.0,
+        "offset": 600.0,
+        "quadratic": [
+          [
+            "__slack_cap_0",
+            "__slack_cap_1",
+            96.0
+          ],
+          [
+            "__slack_cap_0",
+            "__slack_cap_2",
+            96.0
+          ],
+          [
+            "__slack_cap_0",
+            "x1",
+            96.0
+          ],
+          [
+            "__slack_cap_0",
+            "x2",
+            144.0
+          ],
+          [
+            "__slack_cap_0",
+            "x3",
+            192.0
+          ],
+          [
+            "__slack_cap_1",
+            "__slack_cap_2",
+            192.0
+          ],
+          [
+            "__slack_cap_1",
+            "x1",
+            192.0
+          ],
+          [
+            "__slack_cap_1",
+            "x2",
+            288.0
+          ],
+          [
+            "__slack_cap_1",
+            "x3",
+            384.0
+          ],
+          [
+            "__slack_cap_2",
+            "x1",
+            192.0
+          ],
+          [
+            "__slack_cap_2",
+            "x2",
+            288.0
+          ],
+          [
+            "__slack_cap_2",
+            "x3",
+            384.0
+          ],
+          [
+            "x1",
+            "x2",
+            288.0
+          ],
+          [
+            "x1",
+            "x3",
+            384.0
+          ],
+          [
+            "x2",
+            "x3",
+            576.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3",
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2"
+        ]
+      },
+      "compute_penalty_scale": 12.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "cap",
+            "lhs": {
+              "linear": {
+                "x1": 2.0,
+                "x2": 3.0,
+                "x3": 4.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 5.0,
+            "sense": "<=",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": -3.0,
+            "x2": -4.0,
+            "x3": -5.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 12.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 6,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 12.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 6,
+        "model_type": "bqm",
+        "objective_scale": 12.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "bqm_test_maximize_negates_all_coefficients_and_constant": {
+      "bqm": {
+        "constraint_trace": [],
+        "hard_penalty": 12.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": -2.0,
+          "x2": 0.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 6.0,
+        "offset": -5.0,
+        "quadratic": [
+          [
+            "x1",
+            "x2",
+            -4.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 6.0,
+      "cqm": {
+        "constraint_trace": [],
+        "constraints": [],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": -2.0,
+            "x2": 0.0
+          },
+          "offset": -5.0,
+          "quadratic": [
+            [
+              "x1",
+              "x2",
+              -4.0
+            ]
+          ]
+        },
+        "objective_scale": 6.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 6.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 6.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "bqm_test_minimize_linear_and_constant": {
+      "bqm": {
+        "constraint_trace": [],
+        "hard_penalty": 10.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": 2.0,
+          "x2": -3.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 5.0,
+        "offset": 5.0,
+        "quadratic": [],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 5.0,
+      "cqm": {
+        "constraint_trace": [],
+        "constraints": [],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": 2.0,
+            "x2": -3.0
+          },
+          "offset": 5.0,
+          "quadratic": []
+        },
+        "objective_scale": 5.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 5.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 5.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "bqm_test_problem_not_mutated": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_cap_0",
+              "__slack_cap_1",
+              "__slack_cap_2"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 18.0,
+            "redundant": false,
+            "slack_range": 4,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "s",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 18.0,
+        "internal_variables": [
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2"
+        ],
+        "linear": {
+          "__slack_cap_0": -126.0,
+          "__slack_cap_1": -216.0,
+          "__slack_cap_2": -126.0,
+          "x1": -219.0,
+          "x2": -274.0,
+          "x3": -2.0
+        },
+        "num_variables": 6,
+        "objective_scale": 7.0,
+        "offset": 290.0,
+        "quadratic": [
+          [
+            "__slack_cap_0",
+            "__slack_cap_1",
+            72.0
+          ],
+          [
+            "__slack_cap_0",
+            "__slack_cap_2",
+            36.0
+          ],
+          [
+            "__slack_cap_0",
+            "x1",
+            72.0
+          ],
+          [
+            "__slack_cap_0",
+            "x2",
+            108.0
+          ],
+          [
+            "__slack_cap_1",
+            "__slack_cap_2",
+            72.0
+          ],
+          [
+            "__slack_cap_1",
+            "x1",
+            144.0
+          ],
+          [
+            "__slack_cap_1",
+            "x2",
+            216.0
+          ],
+          [
+            "__slack_cap_2",
+            "x1",
+            72.0
+          ],
+          [
+            "__slack_cap_2",
+            "x2",
+            108.0
+          ],
+          [
+            "x1",
+            "x2",
+            216.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3",
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2"
+        ]
+      },
+      "compute_penalty_scale": 9.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "s",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "cap",
+            "lhs": {
+              "linear": {
+                "x1": 2.0,
+                "x2": 3.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 4.0,
+            "sense": "<=",
+            "weight": null
+          },
+          {
+            "label": "s",
+            "lhs": {
+              "linear": {
+                "x3": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": 2.0
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": -3.0,
+            "x2": -4.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 7.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 6,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 7.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 6,
+        "model_type": "bqm",
+        "objective_scale": 7.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "bqm_test_redundant_constraint_adds_nothing_base": {
+      "bqm": {
+        "constraint_trace": [],
+        "hard_penalty": 6.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": 2.0,
+          "x2": 1.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 3.0,
+        "offset": 0.0,
+        "quadratic": [],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 3.0,
+      "cqm": {
+        "constraint_trace": [],
+        "constraints": [],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": 2.0,
+            "x2": 1.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 3.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 3.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 3.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "bqm_test_redundant_constraint_adds_nothing_with_redundant": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "loose",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "<=",
+            "penalty": 6.0,
+            "redundant": true,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 6.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": 2.0,
+          "x2": 1.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 3.0,
+        "offset": 0.0,
+        "quadratic": [],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 3.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "loose",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "loose",
+            "lhs": {
+              "linear": {
+                "x1": 1.0,
+                "x2": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 5.0,
+            "sense": "<=",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": 2.0,
+            "x2": 1.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 3.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 3.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "REDUNDANT_CONSTRAINT",
+            "message": "Inequality constraint loose is always satisfied: lhs maximum 2.0 never exceeds the bound",
+            "path": "constraints[0]",
+            "recommended_action": "This inequality is always satisfied and adds nothing to the model; remove it, or fix its bound if it was meant to restrict solutions.",
+            "retryable": false
+          }
+        ]
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 3.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "REDUNDANT_CONSTRAINT",
+            "message": "Inequality constraint loose is always satisfied: lhs maximum 2.0 never exceeds the bound",
+            "path": "constraints[0]",
+            "recommended_action": "This inequality is always satisfied and adds nothing to the model; remove it, or fix its bound if it was meant to restrict solutions.",
+            "retryable": false
+          }
+        ]
+      }
+    },
+    "bqm_test_trace_has_no_slack": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "pick",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 2.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": -2.0,
+          "x2": -2.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 1.0,
+        "offset": 2.0,
+        "quadratic": [
+          [
+            "x1",
+            "x2",
+            4.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 1.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "pick",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "pick",
+            "lhs": {
+              "linear": {
+                "x1": 1.0,
+                "x2": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {},
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 1.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "bqm_test_unreferenced_declared_variable_is_in_bqm": {
+      "bqm": {
+        "constraint_trace": [],
+        "hard_penalty": 2.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": 1.0,
+          "x2": 0.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 1.0,
+        "offset": 0.0,
+        "quadratic": [],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 1.0,
+      "cqm": {
+        "constraint_trace": [],
+        "constraints": [],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": 1.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 1.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_constant_constraint_that_holds_is_redundant_and_not_added": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "noop",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "<=",
+            "penalty": 2.0,
+            "redundant": true,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "noop_soft",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": false,
+            "operator": ">=",
+            "penalty": 3.0,
+            "redundant": true,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "noop_eq",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 2.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": 1.0,
+          "x2": 0.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 1.0,
+        "offset": 0.0,
+        "quadratic": [],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 1.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "noop",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": true,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "noop_soft",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": ">=",
+            "penalty": 3.0,
+            "redundant": true,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "noop_eq",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": true,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": 1.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 1.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "REDUNDANT_CONSTRAINT",
+            "message": "Inequality constraint noop is always satisfied: lhs maximum 0 never exceeds the bound",
+            "path": "constraints[0]",
+            "recommended_action": "This inequality is always satisfied and adds nothing to the model; remove it, or fix its bound if it was meant to restrict solutions.",
+            "retryable": false
+          },
+          {
+            "code": "REDUNDANT_CONSTRAINT",
+            "message": "Inequality constraint noop_soft is always satisfied: lhs maximum 0 never exceeds the bound",
+            "path": "constraints[1]",
+            "recommended_action": "This inequality is always satisfied and adds nothing to the model; remove it, or fix its bound if it was meant to restrict solutions.",
+            "retryable": false
+          }
+        ]
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "REDUNDANT_CONSTRAINT",
+            "message": "Inequality constraint noop is always satisfied: lhs maximum 0 never exceeds the bound",
+            "path": "constraints[0]",
+            "recommended_action": "This inequality is always satisfied and adds nothing to the model; remove it, or fix its bound if it was meant to restrict solutions.",
+            "retryable": false
+          },
+          {
+            "code": "REDUNDANT_CONSTRAINT",
+            "message": "Inequality constraint noop_soft is always satisfied: lhs maximum 0 never exceeds the bound",
+            "path": "constraints[1]",
+            "recommended_action": "This inequality is always satisfied and adds nothing to the model; remove it, or fix its bound if it was meant to restrict solutions.",
+            "retryable": false
+          }
+        ]
+      }
+    },
+    "cqm_test_default": {
+      "bqm": {
+        "constraint_trace": [],
+        "hard_penalty": 2.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": 0.0,
+          "x2": 0.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 1.0,
+        "offset": 0.0,
+        "quadratic": [],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 1.0,
+      "cqm": {
+        "constraint_trace": [],
+        "constraints": [],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {},
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 1.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_duplicate_terms_accumulate_and_zero_coefficients_are_dropped": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "acc",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_acc_0",
+              "__slack_acc_1"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": 3,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 2.0,
+        "internal_variables": [
+          "__slack_acc_0",
+          "__slack_acc_1"
+        ],
+        "linear": {
+          "__slack_acc_0": -10.0,
+          "__slack_acc_1": -16.0,
+          "x1": -10.0,
+          "x2": 0.0,
+          "x3": -16.0
+        },
+        "num_variables": 5,
+        "objective_scale": 1.0,
+        "offset": 18.0,
+        "quadratic": [
+          [
+            "__slack_acc_0",
+            "__slack_acc_1",
+            8.0
+          ],
+          [
+            "__slack_acc_0",
+            "x1",
+            20.0
+          ],
+          [
+            "__slack_acc_0",
+            "x3",
+            16.0
+          ],
+          [
+            "__slack_acc_1",
+            "x1",
+            40.0
+          ],
+          [
+            "__slack_acc_1",
+            "x3",
+            32.0
+          ],
+          [
+            "x1",
+            "x3",
+            80.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3",
+          "__slack_acc_0",
+          "__slack_acc_1"
+        ]
+      },
+      "compute_penalty_scale": 1.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "acc",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "acc",
+            "lhs": {
+              "linear": {
+                "x1": 5.0,
+                "x3": 4.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 3.0,
+            "sense": "<=",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {},
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 1.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 5,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 5,
+        "model_type": "bqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_every_declared_variable_is_binary_in_problem_order": {
+      "bqm": {
+        "constraint_trace": [],
+        "hard_penalty": 2.0,
+        "internal_variables": [],
+        "linear": {
+          "a": 1.0,
+          "b": 0.0,
+          "c": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 1.0,
+        "offset": 0.0,
+        "quadratic": [],
+        "variables": [
+          "b",
+          "a",
+          "c"
+        ]
+      },
+      "compute_penalty_scale": 1.0,
+      "cqm": {
+        "constraint_trace": [],
+        "constraints": [],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "a": 1.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 1.0,
+        "variables": [
+          "b",
+          "a",
+          "c"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_hard_constraint_is_native_with_no_weight": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_cap_0",
+              "__slack_cap_1",
+              "__slack_cap_2"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": 4,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 2.0,
+        "internal_variables": [
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2"
+        ],
+        "linear": {
+          "__slack_cap_0": -14.0,
+          "__slack_cap_1": -24.0,
+          "__slack_cap_2": -14.0,
+          "x1": -24.0,
+          "x2": -30.0,
+          "x3": 0.0
+        },
+        "num_variables": 6,
+        "objective_scale": 1.0,
+        "offset": 32.0,
+        "quadratic": [
+          [
+            "__slack_cap_0",
+            "__slack_cap_1",
+            8.0
+          ],
+          [
+            "__slack_cap_0",
+            "__slack_cap_2",
+            4.0
+          ],
+          [
+            "__slack_cap_0",
+            "x1",
+            8.0
+          ],
+          [
+            "__slack_cap_0",
+            "x2",
+            12.0
+          ],
+          [
+            "__slack_cap_1",
+            "__slack_cap_2",
+            8.0
+          ],
+          [
+            "__slack_cap_1",
+            "x1",
+            16.0
+          ],
+          [
+            "__slack_cap_1",
+            "x2",
+            24.0
+          ],
+          [
+            "__slack_cap_2",
+            "x1",
+            8.0
+          ],
+          [
+            "__slack_cap_2",
+            "x2",
+            12.0
+          ],
+          [
+            "x1",
+            "x2",
+            24.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3",
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2"
+        ]
+      },
+      "compute_penalty_scale": 1.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "cap",
+            "lhs": {
+              "linear": {
+                "x1": 2.0,
+                "x2": 3.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 4.0,
+            "sense": "<=",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {},
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 1.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 6,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 6,
+        "model_type": "bqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_labels_are_constraint_ids_in_problem_order": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "zeta",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "alpha",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": false,
+            "operator": "<=",
+            "penalty": 1.0,
+            "redundant": true,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "mid",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": ">=",
+            "penalty": 2.0,
+            "redundant": true,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 2.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": -2.0,
+          "x2": -2.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 1.0,
+        "offset": 2.0,
+        "quadratic": [
+          [
+            "x1",
+            "x2",
+            4.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 1.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "zeta",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "alpha",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": 1.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "mid",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": ">=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "zeta",
+            "lhs": {
+              "linear": {
+                "x1": 1.0,
+                "x2": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "alpha",
+            "lhs": {
+              "linear": {
+                "x3": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 1.0,
+            "sense": "<=",
+            "weight": 1.0
+          },
+          {
+            "label": "mid",
+            "lhs": {
+              "linear": {
+                "x1": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 0.0,
+            "sense": ">=",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {},
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 1.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "REDUNDANT_CONSTRAINT",
+            "message": "Inequality constraint alpha is always satisfied: lhs maximum 1.0 never exceeds the bound",
+            "path": "constraints[1]",
+            "recommended_action": "This inequality is always satisfied and adds nothing to the model; remove it, or fix its bound if it was meant to restrict solutions.",
+            "retryable": false
+          },
+          {
+            "code": "REDUNDANT_CONSTRAINT",
+            "message": "Inequality constraint mid is always satisfied: lhs maximum 0.0 never exceeds the bound",
+            "path": "constraints[2]",
+            "recommended_action": "This inequality is always satisfied and adds nothing to the model; remove it, or fix its bound if it was meant to restrict solutions.",
+            "retryable": false
+          }
+        ]
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "REDUNDANT_CONSTRAINT",
+            "message": "Inequality constraint alpha is always satisfied: lhs maximum 1.0 never exceeds the bound",
+            "path": "constraints[1]",
+            "recommended_action": "This inequality is always satisfied and adds nothing to the model; remove it, or fix its bound if it was meant to restrict solutions.",
+            "retryable": false
+          },
+          {
+            "code": "REDUNDANT_CONSTRAINT",
+            "message": "Inequality constraint mid is always satisfied: lhs maximum 0.0 never exceeds the bound",
+            "path": "constraints[2]",
+            "recommended_action": "This inequality is always satisfied and adds nothing to the model; remove it, or fix its bound if it was meant to restrict solutions.",
+            "retryable": false
+          }
+        ]
+      }
+    },
+    "cqm_test_lowest_energy_feasible_sample_is_the_business_optimum": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_cap_0",
+              "__slack_cap_1",
+              "__slack_cap_2"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 24.0,
+            "redundant": false,
+            "slack_range": 5,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 24.0,
+        "internal_variables": [
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2"
+        ],
+        "linear": {
+          "__slack_cap_0": -216.0,
+          "__slack_cap_1": -384.0,
+          "__slack_cap_2": -384.0,
+          "x1": -387.0,
+          "x2": -508.0,
+          "x3": -581.0
+        },
+        "num_variables": 6,
+        "objective_scale": 12.0,
+        "offset": 600.0,
+        "quadratic": [
+          [
+            "__slack_cap_0",
+            "__slack_cap_1",
+            96.0
+          ],
+          [
+            "__slack_cap_0",
+            "__slack_cap_2",
+            96.0
+          ],
+          [
+            "__slack_cap_0",
+            "x1",
+            96.0
+          ],
+          [
+            "__slack_cap_0",
+            "x2",
+            144.0
+          ],
+          [
+            "__slack_cap_0",
+            "x3",
+            192.0
+          ],
+          [
+            "__slack_cap_1",
+            "__slack_cap_2",
+            192.0
+          ],
+          [
+            "__slack_cap_1",
+            "x1",
+            192.0
+          ],
+          [
+            "__slack_cap_1",
+            "x2",
+            288.0
+          ],
+          [
+            "__slack_cap_1",
+            "x3",
+            384.0
+          ],
+          [
+            "__slack_cap_2",
+            "x1",
+            192.0
+          ],
+          [
+            "__slack_cap_2",
+            "x2",
+            288.0
+          ],
+          [
+            "__slack_cap_2",
+            "x3",
+            384.0
+          ],
+          [
+            "x1",
+            "x2",
+            288.0
+          ],
+          [
+            "x1",
+            "x3",
+            384.0
+          ],
+          [
+            "x2",
+            "x3",
+            576.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3",
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2"
+        ]
+      },
+      "compute_penalty_scale": 12.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "cap",
+            "lhs": {
+              "linear": {
+                "x1": 2.0,
+                "x2": 3.0,
+                "x3": 4.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 5.0,
+            "sense": "<=",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": -3.0,
+            "x2": -4.0,
+            "x3": -5.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 12.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 6,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 12.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 6,
+        "model_type": "bqm",
+        "objective_scale": 12.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_maximize_negates_all_coefficients_and_constant": {
+      "bqm": {
+        "constraint_trace": [],
+        "hard_penalty": 12.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": -2.0,
+          "x2": 0.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 6.0,
+        "offset": -5.0,
+        "quadratic": [
+          [
+            "x1",
+            "x2",
+            -4.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 6.0,
+      "cqm": {
+        "constraint_trace": [],
+        "constraints": [],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": -2.0,
+            "x2": 0.0
+          },
+          "offset": -5.0,
+          "quadratic": [
+            [
+              "x1",
+              "x2",
+              -4.0
+            ]
+          ]
+        },
+        "objective_scale": 6.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 6.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 6.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_minimize_linear_quadratic_and_constant": {
+      "bqm": {
+        "constraint_trace": [],
+        "hard_penalty": 18.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": 2.0,
+          "x2": -3.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 9.0,
+        "offset": 5.0,
+        "quadratic": [
+          [
+            "x1",
+            "x2",
+            4.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 9.0,
+      "cqm": {
+        "constraint_trace": [],
+        "constraints": [],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": 2.0,
+            "x2": -3.0
+          },
+          "offset": 5.0,
+          "quadratic": [
+            [
+              "x1",
+              "x2",
+              4.0
+            ]
+          ]
+        },
+        "objective_scale": 9.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 9.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 9.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_mixed_ge_eq_hard_constraints_with_a_soft_one": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "pick",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 38.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cover",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_cover_0"
+            ],
+            "native": false,
+            "operator": ">=",
+            "penalty": 38.0,
+            "redundant": false,
+            "slack_range": 1,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "apart",
+            "constraint_type": "soft",
+            "generated_variables": [
+              "__slack_apart_0"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": 1,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 38.0,
+        "internal_variables": [
+          "__slack_apart_0",
+          "__slack_cover_0"
+        ],
+        "linear": {
+          "__slack_apart_0": -2.0,
+          "__slack_cover_0": 190.0,
+          "x1": -43.0,
+          "x2": -153.0,
+          "x3": -116.0,
+          "x4": -120.0
+        },
+        "num_variables": 6,
+        "objective_scale": 11.0,
+        "offset": 192.0,
+        "quadratic": [
+          [
+            "__slack_apart_0",
+            "x1",
+            4.0
+          ],
+          [
+            "__slack_apart_0",
+            "x4",
+            4.0
+          ],
+          [
+            "__slack_cover_0",
+            "x2",
+            -76.0
+          ],
+          [
+            "__slack_cover_0",
+            "x3",
+            -76.0
+          ],
+          [
+            "__slack_cover_0",
+            "x4",
+            -76.0
+          ],
+          [
+            "x1",
+            "x2",
+            76.0
+          ],
+          [
+            "x1",
+            "x4",
+            4.0
+          ],
+          [
+            "x2",
+            "x3",
+            76.0
+          ],
+          [
+            "x2",
+            "x4",
+            76.0
+          ],
+          [
+            "x3",
+            "x4",
+            77.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3",
+          "x4",
+          "__slack_cover_0",
+          "__slack_apart_0"
+        ]
+      },
+      "compute_penalty_scale": 19.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "pick",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cover",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": ">=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "apart",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "pick",
+            "lhs": {
+              "linear": {
+                "x1": 1.0,
+                "x2": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "cover",
+            "lhs": {
+              "linear": {
+                "x2": 1.0,
+                "x3": 1.0,
+                "x4": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 2.0,
+            "sense": ">=",
+            "weight": null
+          },
+          {
+            "label": "apart",
+            "lhs": {
+              "linear": {
+                "x1": 1.0,
+                "x4": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 1.0,
+            "sense": "<=",
+            "weight": 2.0
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 4,
+        "objective": {
+          "linear": {
+            "x1": -3.0,
+            "x2": -1.0,
+            "x3": -2.0,
+            "x4": -4.0
+          },
+          "offset": 0.0,
+          "quadratic": [
+            [
+              "x3",
+              "x4",
+              1.0
+            ]
+          ]
+        },
+        "objective_scale": 11.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3",
+          "x4"
+        ]
+      },
+      "estimate_compiled_variables": 6,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 4,
+        "model_type": "cqm",
+        "objective_scale": 11.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 6,
+        "model_type": "bqm",
+        "objective_scale": 11.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_objective_scale_uses_shared_formula": {
+      "bqm": {
+        "constraint_trace": [],
+        "hard_penalty": 18.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": 2.0,
+          "x2": -3.0,
+          "x3": 0.0
+        },
+        "num_variables": 3,
+        "objective_scale": 9.0,
+        "offset": 0.0,
+        "quadratic": [
+          [
+            "x1",
+            "x2",
+            4.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 9.0,
+      "cqm": {
+        "constraint_trace": [],
+        "constraints": [],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": 2.0,
+            "x2": -3.0
+          },
+          "offset": 0.0,
+          "quadratic": [
+            [
+              "x1",
+              "x2",
+              4.0
+            ]
+          ]
+        },
+        "objective_scale": 9.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 9.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 9.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_problem_not_mutated": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_cap_0",
+              "__slack_cap_1",
+              "__slack_cap_2"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 18.0,
+            "redundant": false,
+            "slack_range": 4,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "s",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 18.0,
+        "internal_variables": [
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2"
+        ],
+        "linear": {
+          "__slack_cap_0": -126.0,
+          "__slack_cap_1": -216.0,
+          "__slack_cap_2": -126.0,
+          "x1": -219.0,
+          "x2": -274.0,
+          "x3": -2.0
+        },
+        "num_variables": 6,
+        "objective_scale": 7.0,
+        "offset": 290.0,
+        "quadratic": [
+          [
+            "__slack_cap_0",
+            "__slack_cap_1",
+            72.0
+          ],
+          [
+            "__slack_cap_0",
+            "__slack_cap_2",
+            36.0
+          ],
+          [
+            "__slack_cap_0",
+            "x1",
+            72.0
+          ],
+          [
+            "__slack_cap_0",
+            "x2",
+            108.0
+          ],
+          [
+            "__slack_cap_1",
+            "__slack_cap_2",
+            72.0
+          ],
+          [
+            "__slack_cap_1",
+            "x1",
+            144.0
+          ],
+          [
+            "__slack_cap_1",
+            "x2",
+            216.0
+          ],
+          [
+            "__slack_cap_2",
+            "x1",
+            72.0
+          ],
+          [
+            "__slack_cap_2",
+            "x2",
+            108.0
+          ],
+          [
+            "x1",
+            "x2",
+            216.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3",
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2"
+        ]
+      },
+      "compute_penalty_scale": 9.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "s",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": 2.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "cap",
+            "lhs": {
+              "linear": {
+                "x1": 2.0,
+                "x2": 3.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 4.0,
+            "sense": "<=",
+            "weight": null
+          },
+          {
+            "label": "s",
+            "lhs": {
+              "linear": {
+                "x3": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": 2.0
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": -3.0,
+            "x2": -4.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 7.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 6,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 7.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 6,
+        "model_type": "bqm",
+        "objective_scale": 7.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_soft_constraint_carries_weight_and_quadratic_penalty": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cover",
+            "constraint_type": "soft",
+            "generated_variables": [
+              "__slack_cover_0"
+            ],
+            "native": false,
+            "operator": ">=",
+            "penalty": 2.5,
+            "redundant": false,
+            "slack_range": 1,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 22.0,
+        "internal_variables": [
+          "__slack_cover_0"
+        ],
+        "linear": {
+          "__slack_cover_0": 7.5,
+          "x1": -2.5,
+          "x2": -2.5,
+          "x3": 0.0
+        },
+        "num_variables": 4,
+        "objective_scale": 1.0,
+        "offset": 2.5,
+        "quadratic": [
+          [
+            "__slack_cover_0",
+            "x1",
+            -5.0
+          ],
+          [
+            "__slack_cover_0",
+            "x2",
+            -5.0
+          ],
+          [
+            "x1",
+            "x2",
+            5.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3",
+          "__slack_cover_0"
+        ]
+      },
+      "compute_penalty_scale": 11.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cover",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": ">=",
+            "penalty": 2.5,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "cover",
+            "lhs": {
+              "linear": {
+                "x1": 1.0,
+                "x2": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 1.0,
+            "sense": ">=",
+            "weight": 2.5
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {},
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 1.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 4,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 4,
+        "model_type": "bqm",
+        "objective_scale": 1.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_soft_energy_is_weight_times_violation_squared_maximize": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "s",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 10.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 196.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": 8.0,
+          "x2": 15.0,
+          "x3": 9.0
+        },
+        "num_variables": 3,
+        "objective_scale": 8.0,
+        "offset": 0.0,
+        "quadratic": [
+          [
+            "x1",
+            "x2",
+            20.0
+          ],
+          [
+            "x1",
+            "x3",
+            20.0
+          ],
+          [
+            "x2",
+            "x3",
+            20.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 98.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "s",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": 10.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "s",
+            "lhs": {
+              "linear": {
+                "x1": 1.0,
+                "x2": 1.0,
+                "x3": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 0.0,
+            "sense": "==",
+            "weight": 10.0
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": -2.0,
+            "x2": 5.0,
+            "x3": -1.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 8.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 8.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 8.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_soft_energy_is_weight_times_violation_squared_minimize": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "s",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 10.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 196.0,
+        "internal_variables": [],
+        "linear": {
+          "x1": 12.0,
+          "x2": 5.0,
+          "x3": 11.0
+        },
+        "num_variables": 3,
+        "objective_scale": 8.0,
+        "offset": 0.0,
+        "quadratic": [
+          [
+            "x1",
+            "x2",
+            20.0
+          ],
+          [
+            "x1",
+            "x3",
+            20.0
+          ],
+          [
+            "x2",
+            "x3",
+            20.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "compute_penalty_scale": 98.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "s",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": 10.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "s",
+            "lhs": {
+              "linear": {
+                "x1": 1.0,
+                "x2": 1.0,
+                "x3": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 0.0,
+            "sense": "==",
+            "weight": 10.0
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": 2.0,
+            "x2": -5.0,
+            "x3": 1.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 8.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 8.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 8.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "cqm_test_two_compilations_are_identical": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "pick",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 48.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_cap_0",
+              "__slack_cap_1",
+              "__slack_cap_2"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 48.0,
+            "redundant": false,
+            "slack_range": 5,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cover",
+            "constraint_type": "soft",
+            "generated_variables": [
+              "__slack_cover_0"
+            ],
+            "native": false,
+            "operator": ">=",
+            "penalty": 2.5,
+            "redundant": false,
+            "slack_range": 1,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 48.0,
+        "internal_variables": [
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2",
+          "__slack_cover_0"
+        ],
+        "linear": {
+          "__slack_cap_0": -432.0,
+          "__slack_cap_1": -768.0,
+          "__slack_cap_2": -768.0,
+          "__slack_cover_0": 7.5,
+          "x1": -820.0,
+          "x2": -1063.5,
+          "x3": -1157.5
+        },
+        "num_variables": 7,
+        "objective_scale": 14.0,
+        "offset": 1249.5,
+        "quadratic": [
+          [
+            "__slack_cap_0",
+            "__slack_cap_1",
+            192.0
+          ],
+          [
+            "__slack_cap_0",
+            "__slack_cap_2",
+            192.0
+          ],
+          [
+            "__slack_cap_0",
+            "x1",
+            192.0
+          ],
+          [
+            "__slack_cap_0",
+            "x2",
+            288.0
+          ],
+          [
+            "__slack_cap_0",
+            "x3",
+            384.0
+          ],
+          [
+            "__slack_cap_1",
+            "__slack_cap_2",
+            384.0
+          ],
+          [
+            "__slack_cap_1",
+            "x1",
+            384.0
+          ],
+          [
+            "__slack_cap_1",
+            "x2",
+            576.0
+          ],
+          [
+            "__slack_cap_1",
+            "x3",
+            768.0
+          ],
+          [
+            "__slack_cap_2",
+            "x1",
+            384.0
+          ],
+          [
+            "__slack_cap_2",
+            "x2",
+            576.0
+          ],
+          [
+            "__slack_cap_2",
+            "x3",
+            768.0
+          ],
+          [
+            "__slack_cover_0",
+            "x2",
+            -5.0
+          ],
+          [
+            "__slack_cover_0",
+            "x3",
+            -5.0
+          ],
+          [
+            "x1",
+            "x2",
+            674.0
+          ],
+          [
+            "x1",
+            "x3",
+            768.0
+          ],
+          [
+            "x2",
+            "x3",
+            1157.0
+          ]
+        ],
+        "variables": [
+          "x1",
+          "x2",
+          "x3",
+          "__slack_cap_0",
+          "__slack_cap_1",
+          "__slack_cap_2",
+          "__slack_cover_0"
+        ]
+      },
+      "compute_penalty_scale": 24.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "pick",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cap",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cover",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": ">=",
+            "penalty": 2.5,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "pick",
+            "lhs": {
+              "linear": {
+                "x1": 1.0,
+                "x2": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "cap",
+            "lhs": {
+              "linear": {
+                "x1": 2.0,
+                "x2": 3.0,
+                "x3": 4.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 5.0,
+            "sense": "<=",
+            "weight": null
+          },
+          {
+            "label": "cover",
+            "lhs": {
+              "linear": {
+                "x2": 1.0,
+                "x3": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 1.0,
+            "sense": ">=",
+            "weight": 2.5
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 3,
+        "objective": {
+          "linear": {
+            "x1": -4.0,
+            "x2": -5.0,
+            "x3": -3.0
+          },
+          "offset": -1.0,
+          "quadratic": [
+            [
+              "x1",
+              "x2",
+              2.0
+            ]
+          ]
+        },
+        "objective_scale": 14.0,
+        "variables": [
+          "x1",
+          "x2",
+          "x3"
+        ]
+      },
+      "estimate_compiled_variables": 7,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "cqm",
+        "objective_scale": 14.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 7,
+        "model_type": "bqm",
+        "objective_scale": 14.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "example_assignment": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "alice_one_task",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 84.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Alice does exactly one task"
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "bob_one_task",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 84.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Bob does exactly one task"
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "carol_one_task",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 84.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Carol does exactly one task"
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "clean_one_worker",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 84.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Cleaning is done by exactly one worker"
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "cook_one_worker",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 84.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Cooking is done by exactly one worker"
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "drive_one_worker",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 84.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Driving is done by exactly one worker"
+          }
+        ],
+        "hard_penalty": 84.0,
+        "internal_variables": [],
+        "linear": {
+          "alice_clean": -164.0,
+          "alice_cook": -166.0,
+          "alice_drive": -160.0,
+          "bob_clean": -165.0,
+          "bob_cook": -161.0,
+          "bob_drive": -163.0,
+          "carol_clean": -162.0,
+          "carol_cook": -164.0,
+          "carol_drive": -165.0
+        },
+        "num_variables": 9,
+        "objective_scale": 42.0,
+        "offset": 504.0,
+        "quadratic": [
+          [
+            "alice_clean",
+            "alice_cook",
+            168.0
+          ],
+          [
+            "alice_clean",
+            "alice_drive",
+            168.0
+          ],
+          [
+            "alice_clean",
+            "bob_clean",
+            168.0
+          ],
+          [
+            "alice_clean",
+            "carol_clean",
+            168.0
+          ],
+          [
+            "alice_cook",
+            "alice_drive",
+            168.0
+          ],
+          [
+            "alice_cook",
+            "bob_cook",
+            168.0
+          ],
+          [
+            "alice_cook",
+            "carol_cook",
+            168.0
+          ],
+          [
+            "alice_drive",
+            "bob_drive",
+            168.0
+          ],
+          [
+            "alice_drive",
+            "carol_drive",
+            168.0
+          ],
+          [
+            "bob_clean",
+            "bob_cook",
+            168.0
+          ],
+          [
+            "bob_clean",
+            "bob_drive",
+            168.0
+          ],
+          [
+            "bob_clean",
+            "carol_clean",
+            168.0
+          ],
+          [
+            "bob_cook",
+            "bob_drive",
+            168.0
+          ],
+          [
+            "bob_cook",
+            "carol_cook",
+            168.0
+          ],
+          [
+            "bob_drive",
+            "carol_drive",
+            168.0
+          ],
+          [
+            "carol_clean",
+            "carol_cook",
+            168.0
+          ],
+          [
+            "carol_clean",
+            "carol_drive",
+            168.0
+          ],
+          [
+            "carol_cook",
+            "carol_drive",
+            168.0
+          ]
+        ],
+        "variables": [
+          "alice_clean",
+          "alice_cook",
+          "alice_drive",
+          "bob_clean",
+          "bob_cook",
+          "bob_drive",
+          "carol_clean",
+          "carol_cook",
+          "carol_drive"
+        ]
+      },
+      "compute_penalty_scale": 42.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "alice_one_task",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Alice does exactly one task"
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "bob_one_task",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Bob does exactly one task"
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "carol_one_task",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Carol does exactly one task"
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "clean_one_worker",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Cleaning is done by exactly one worker"
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "cook_one_worker",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Cooking is done by exactly one worker"
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "drive_one_worker",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Driving is done by exactly one worker"
+          }
+        ],
+        "constraints": [
+          {
+            "label": "alice_one_task",
+            "lhs": {
+              "linear": {
+                "alice_clean": 1.0,
+                "alice_cook": 1.0,
+                "alice_drive": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "bob_one_task",
+            "lhs": {
+              "linear": {
+                "bob_clean": 1.0,
+                "bob_cook": 1.0,
+                "bob_drive": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "carol_one_task",
+            "lhs": {
+              "linear": {
+                "carol_clean": 1.0,
+                "carol_cook": 1.0,
+                "carol_drive": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "clean_one_worker",
+            "lhs": {
+              "linear": {
+                "alice_clean": 1.0,
+                "bob_clean": 1.0,
+                "carol_clean": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "cook_one_worker",
+            "lhs": {
+              "linear": {
+                "alice_cook": 1.0,
+                "bob_cook": 1.0,
+                "carol_cook": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "drive_one_worker",
+            "lhs": {
+              "linear": {
+                "alice_drive": 1.0,
+                "bob_drive": 1.0,
+                "carol_drive": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 9,
+        "objective": {
+          "linear": {
+            "alice_clean": 4.0,
+            "alice_cook": 2.0,
+            "alice_drive": 8.0,
+            "bob_clean": 3.0,
+            "bob_cook": 7.0,
+            "bob_drive": 5.0,
+            "carol_clean": 6.0,
+            "carol_cook": 4.0,
+            "carol_drive": 3.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 42.0,
+        "variables": [
+          "alice_clean",
+          "alice_cook",
+          "alice_drive",
+          "bob_clean",
+          "bob_cook",
+          "bob_drive",
+          "carol_clean",
+          "carol_cook",
+          "carol_drive"
+        ]
+      },
+      "estimate_compiled_variables": 9,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 9,
+        "model_type": "cqm",
+        "objective_scale": 42.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 9,
+        "model_type": "bqm",
+        "objective_scale": 42.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "example_knapsack": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "capacity",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_capacity_0",
+              "__slack_capacity_1",
+              "__slack_capacity_2",
+              "__slack_capacity_3"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 62.0,
+            "redundant": false,
+            "slack_range": 10,
+            "source_description": "Total weight must not exceed the knapsack capacity of 10"
+          }
+        ],
+        "hard_penalty": 62.0,
+        "internal_variables": [
+          "__slack_capacity_0",
+          "__slack_capacity_1",
+          "__slack_capacity_2",
+          "__slack_capacity_3"
+        ],
+        "linear": {
+          "__slack_capacity_0": -1178.0,
+          "__slack_capacity_1": -2232.0,
+          "__slack_capacity_2": -3968.0,
+          "__slack_capacity_3": -3162.0,
+          "item_a": -5218.0,
+          "item_b": -4658.0,
+          "item_c": -3975.0,
+          "item_d": -3168.0
+        },
+        "num_variables": 8,
+        "objective_scale": 31.0,
+        "offset": 6200.0,
+        "quadratic": [
+          [
+            "__slack_capacity_0",
+            "__slack_capacity_1",
+            248.0
+          ],
+          [
+            "__slack_capacity_0",
+            "__slack_capacity_2",
+            496.0
+          ],
+          [
+            "__slack_capacity_0",
+            "__slack_capacity_3",
+            372.0
+          ],
+          [
+            "__slack_capacity_0",
+            "item_a",
+            744.0
+          ],
+          [
+            "__slack_capacity_0",
+            "item_b",
+            620.0
+          ],
+          [
+            "__slack_capacity_0",
+            "item_c",
+            496.0
+          ],
+          [
+            "__slack_capacity_0",
+            "item_d",
+            372.0
+          ],
+          [
+            "__slack_capacity_1",
+            "__slack_capacity_2",
+            992.0
+          ],
+          [
+            "__slack_capacity_1",
+            "__slack_capacity_3",
+            744.0
+          ],
+          [
+            "__slack_capacity_1",
+            "item_a",
+            1488.0
+          ],
+          [
+            "__slack_capacity_1",
+            "item_b",
+            1240.0
+          ],
+          [
+            "__slack_capacity_1",
+            "item_c",
+            992.0
+          ],
+          [
+            "__slack_capacity_1",
+            "item_d",
+            744.0
+          ],
+          [
+            "__slack_capacity_2",
+            "__slack_capacity_3",
+            1488.0
+          ],
+          [
+            "__slack_capacity_2",
+            "item_a",
+            2976.0
+          ],
+          [
+            "__slack_capacity_2",
+            "item_b",
+            2480.0
+          ],
+          [
+            "__slack_capacity_2",
+            "item_c",
+            1984.0
+          ],
+          [
+            "__slack_capacity_2",
+            "item_d",
+            1488.0
+          ],
+          [
+            "__slack_capacity_3",
+            "item_a",
+            2232.0
+          ],
+          [
+            "__slack_capacity_3",
+            "item_b",
+            1860.0
+          ],
+          [
+            "__slack_capacity_3",
+            "item_c",
+            1488.0
+          ],
+          [
+            "__slack_capacity_3",
+            "item_d",
+            1116.0
+          ],
+          [
+            "item_a",
+            "item_b",
+            3720.0
+          ],
+          [
+            "item_a",
+            "item_c",
+            2976.0
+          ],
+          [
+            "item_a",
+            "item_d",
+            2232.0
+          ],
+          [
+            "item_b",
+            "item_c",
+            2480.0
+          ],
+          [
+            "item_b",
+            "item_d",
+            1860.0
+          ],
+          [
+            "item_c",
+            "item_d",
+            1488.0
+          ]
+        ],
+        "variables": [
+          "item_a",
+          "item_b",
+          "item_c",
+          "item_d",
+          "__slack_capacity_0",
+          "__slack_capacity_1",
+          "__slack_capacity_2",
+          "__slack_capacity_3"
+        ]
+      },
+      "compute_penalty_scale": 31.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "capacity",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Total weight must not exceed the knapsack capacity of 10"
+          }
+        ],
+        "constraints": [
+          {
+            "label": "capacity",
+            "lhs": {
+              "linear": {
+                "item_a": 6.0,
+                "item_b": 5.0,
+                "item_c": 4.0,
+                "item_d": 3.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 10.0,
+            "sense": "<=",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 4,
+        "objective": {
+          "linear": {
+            "item_a": -10.0,
+            "item_b": -8.0,
+            "item_c": -7.0,
+            "item_d": -6.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 31.0,
+        "variables": [
+          "item_a",
+          "item_b",
+          "item_c",
+          "item_d"
+        ]
+      },
+      "estimate_compiled_variables": 8,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 4,
+        "model_type": "cqm",
+        "objective_scale": 31.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 8,
+        "model_type": "bqm",
+        "objective_scale": 31.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "example_tsp": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "city_a_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 256.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "city a appears in exactly one position"
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "city_b_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 256.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "city b appears in exactly one position"
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "city_c_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 256.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "city c appears in exactly one position"
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "city_d_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 256.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "city d appears in exactly one position"
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "position_0_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 256.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "position 0 holds exactly one city"
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "position_1_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 256.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "position 1 holds exactly one city"
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "position_2_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 256.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "position 2 holds exactly one city"
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "position_3_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 256.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "position 3 holds exactly one city"
+          }
+        ],
+        "hard_penalty": 256.0,
+        "internal_variables": [],
+        "linear": {
+          "x_a_0": -512.0,
+          "x_a_1": -512.0,
+          "x_a_2": -512.0,
+          "x_a_3": -512.0,
+          "x_b_0": -512.0,
+          "x_b_1": -512.0,
+          "x_b_2": -512.0,
+          "x_b_3": -512.0,
+          "x_c_0": -512.0,
+          "x_c_1": -512.0,
+          "x_c_2": -512.0,
+          "x_c_3": -512.0,
+          "x_d_0": -512.0,
+          "x_d_1": -512.0,
+          "x_d_2": -512.0,
+          "x_d_3": -512.0
+        },
+        "num_variables": 16,
+        "objective_scale": 128.0,
+        "offset": 2048.0,
+        "quadratic": [
+          [
+            "x_a_0",
+            "x_a_1",
+            512.0
+          ],
+          [
+            "x_a_0",
+            "x_a_2",
+            512.0
+          ],
+          [
+            "x_a_0",
+            "x_a_3",
+            512.0
+          ],
+          [
+            "x_a_0",
+            "x_b_0",
+            512.0
+          ],
+          [
+            "x_a_0",
+            "x_b_1",
+            1.0
+          ],
+          [
+            "x_a_0",
+            "x_b_3",
+            1.0
+          ],
+          [
+            "x_a_0",
+            "x_c_0",
+            512.0
+          ],
+          [
+            "x_a_0",
+            "x_c_1",
+            3.0
+          ],
+          [
+            "x_a_0",
+            "x_c_3",
+            3.0
+          ],
+          [
+            "x_a_0",
+            "x_d_0",
+            512.0
+          ],
+          [
+            "x_a_0",
+            "x_d_1",
+            4.0
+          ],
+          [
+            "x_a_0",
+            "x_d_3",
+            4.0
+          ],
+          [
+            "x_a_1",
+            "x_a_2",
+            512.0
+          ],
+          [
+            "x_a_1",
+            "x_a_3",
+            512.0
+          ],
+          [
+            "x_a_1",
+            "x_b_0",
+            1.0
+          ],
+          [
+            "x_a_1",
+            "x_b_1",
+            512.0
+          ],
+          [
+            "x_a_1",
+            "x_b_2",
+            1.0
+          ],
+          [
+            "x_a_1",
+            "x_c_0",
+            3.0
+          ],
+          [
+            "x_a_1",
+            "x_c_1",
+            512.0
+          ],
+          [
+            "x_a_1",
+            "x_c_2",
+            3.0
+          ],
+          [
+            "x_a_1",
+            "x_d_0",
+            4.0
+          ],
+          [
+            "x_a_1",
+            "x_d_1",
+            512.0
+          ],
+          [
+            "x_a_1",
+            "x_d_2",
+            4.0
+          ],
+          [
+            "x_a_2",
+            "x_a_3",
+            512.0
+          ],
+          [
+            "x_a_2",
+            "x_b_1",
+            1.0
+          ],
+          [
+            "x_a_2",
+            "x_b_2",
+            512.0
+          ],
+          [
+            "x_a_2",
+            "x_b_3",
+            1.0
+          ],
+          [
+            "x_a_2",
+            "x_c_1",
+            3.0
+          ],
+          [
+            "x_a_2",
+            "x_c_2",
+            512.0
+          ],
+          [
+            "x_a_2",
+            "x_c_3",
+            3.0
+          ],
+          [
+            "x_a_2",
+            "x_d_1",
+            4.0
+          ],
+          [
+            "x_a_2",
+            "x_d_2",
+            512.0
+          ],
+          [
+            "x_a_2",
+            "x_d_3",
+            4.0
+          ],
+          [
+            "x_a_3",
+            "x_b_0",
+            1.0
+          ],
+          [
+            "x_a_3",
+            "x_b_2",
+            1.0
+          ],
+          [
+            "x_a_3",
+            "x_b_3",
+            512.0
+          ],
+          [
+            "x_a_3",
+            "x_c_0",
+            3.0
+          ],
+          [
+            "x_a_3",
+            "x_c_2",
+            3.0
+          ],
+          [
+            "x_a_3",
+            "x_c_3",
+            512.0
+          ],
+          [
+            "x_a_3",
+            "x_d_0",
+            4.0
+          ],
+          [
+            "x_a_3",
+            "x_d_2",
+            4.0
+          ],
+          [
+            "x_a_3",
+            "x_d_3",
+            512.0
+          ],
+          [
+            "x_b_0",
+            "x_b_1",
+            512.0
+          ],
+          [
+            "x_b_0",
+            "x_b_2",
+            512.0
+          ],
+          [
+            "x_b_0",
+            "x_b_3",
+            512.0
+          ],
+          [
+            "x_b_0",
+            "x_c_0",
+            512.0
+          ],
+          [
+            "x_b_0",
+            "x_c_1",
+            2.0
+          ],
+          [
+            "x_b_0",
+            "x_c_3",
+            2.0
+          ],
+          [
+            "x_b_0",
+            "x_d_0",
+            512.0
+          ],
+          [
+            "x_b_0",
+            "x_d_1",
+            5.0
+          ],
+          [
+            "x_b_0",
+            "x_d_3",
+            5.0
+          ],
+          [
+            "x_b_1",
+            "x_b_2",
+            512.0
+          ],
+          [
+            "x_b_1",
+            "x_b_3",
+            512.0
+          ],
+          [
+            "x_b_1",
+            "x_c_0",
+            2.0
+          ],
+          [
+            "x_b_1",
+            "x_c_1",
+            512.0
+          ],
+          [
+            "x_b_1",
+            "x_c_2",
+            2.0
+          ],
+          [
+            "x_b_1",
+            "x_d_0",
+            5.0
+          ],
+          [
+            "x_b_1",
+            "x_d_1",
+            512.0
+          ],
+          [
+            "x_b_1",
+            "x_d_2",
+            5.0
+          ],
+          [
+            "x_b_2",
+            "x_b_3",
+            512.0
+          ],
+          [
+            "x_b_2",
+            "x_c_1",
+            2.0
+          ],
+          [
+            "x_b_2",
+            "x_c_2",
+            512.0
+          ],
+          [
+            "x_b_2",
+            "x_c_3",
+            2.0
+          ],
+          [
+            "x_b_2",
+            "x_d_1",
+            5.0
+          ],
+          [
+            "x_b_2",
+            "x_d_2",
+            512.0
+          ],
+          [
+            "x_b_2",
+            "x_d_3",
+            5.0
+          ],
+          [
+            "x_b_3",
+            "x_c_0",
+            2.0
+          ],
+          [
+            "x_b_3",
+            "x_c_2",
+            2.0
+          ],
+          [
+            "x_b_3",
+            "x_c_3",
+            512.0
+          ],
+          [
+            "x_b_3",
+            "x_d_0",
+            5.0
+          ],
+          [
+            "x_b_3",
+            "x_d_2",
+            5.0
+          ],
+          [
+            "x_b_3",
+            "x_d_3",
+            512.0
+          ],
+          [
+            "x_c_0",
+            "x_c_1",
+            512.0
+          ],
+          [
+            "x_c_0",
+            "x_c_2",
+            512.0
+          ],
+          [
+            "x_c_0",
+            "x_c_3",
+            512.0
+          ],
+          [
+            "x_c_0",
+            "x_d_0",
+            512.0
+          ],
+          [
+            "x_c_0",
+            "x_d_1",
+            1.0
+          ],
+          [
+            "x_c_0",
+            "x_d_3",
+            1.0
+          ],
+          [
+            "x_c_1",
+            "x_c_2",
+            512.0
+          ],
+          [
+            "x_c_1",
+            "x_c_3",
+            512.0
+          ],
+          [
+            "x_c_1",
+            "x_d_0",
+            1.0
+          ],
+          [
+            "x_c_1",
+            "x_d_1",
+            512.0
+          ],
+          [
+            "x_c_1",
+            "x_d_2",
+            1.0
+          ],
+          [
+            "x_c_2",
+            "x_c_3",
+            512.0
+          ],
+          [
+            "x_c_2",
+            "x_d_1",
+            1.0
+          ],
+          [
+            "x_c_2",
+            "x_d_2",
+            512.0
+          ],
+          [
+            "x_c_2",
+            "x_d_3",
+            1.0
+          ],
+          [
+            "x_c_3",
+            "x_d_0",
+            1.0
+          ],
+          [
+            "x_c_3",
+            "x_d_2",
+            1.0
+          ],
+          [
+            "x_c_3",
+            "x_d_3",
+            512.0
+          ],
+          [
+            "x_d_0",
+            "x_d_1",
+            512.0
+          ],
+          [
+            "x_d_0",
+            "x_d_2",
+            512.0
+          ],
+          [
+            "x_d_0",
+            "x_d_3",
+            512.0
+          ],
+          [
+            "x_d_1",
+            "x_d_2",
+            512.0
+          ],
+          [
+            "x_d_1",
+            "x_d_3",
+            512.0
+          ],
+          [
+            "x_d_2",
+            "x_d_3",
+            512.0
+          ]
+        ],
+        "variables": [
+          "x_a_0",
+          "x_a_1",
+          "x_a_2",
+          "x_a_3",
+          "x_b_0",
+          "x_b_1",
+          "x_b_2",
+          "x_b_3",
+          "x_c_0",
+          "x_c_1",
+          "x_c_2",
+          "x_c_3",
+          "x_d_0",
+          "x_d_1",
+          "x_d_2",
+          "x_d_3"
+        ]
+      },
+      "compute_penalty_scale": 128.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "city_a_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "city a appears in exactly one position"
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "city_b_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "city b appears in exactly one position"
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "city_c_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "city c appears in exactly one position"
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "city_d_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "city d appears in exactly one position"
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "position_0_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "position 0 holds exactly one city"
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "position_1_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "position 1 holds exactly one city"
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "position_2_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "position 2 holds exactly one city"
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "position_3_once",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "position 3 holds exactly one city"
+          }
+        ],
+        "constraints": [
+          {
+            "label": "city_a_once",
+            "lhs": {
+              "linear": {
+                "x_a_0": 1.0,
+                "x_a_1": 1.0,
+                "x_a_2": 1.0,
+                "x_a_3": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "city_b_once",
+            "lhs": {
+              "linear": {
+                "x_b_0": 1.0,
+                "x_b_1": 1.0,
+                "x_b_2": 1.0,
+                "x_b_3": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "city_c_once",
+            "lhs": {
+              "linear": {
+                "x_c_0": 1.0,
+                "x_c_1": 1.0,
+                "x_c_2": 1.0,
+                "x_c_3": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "city_d_once",
+            "lhs": {
+              "linear": {
+                "x_d_0": 1.0,
+                "x_d_1": 1.0,
+                "x_d_2": 1.0,
+                "x_d_3": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "position_0_once",
+            "lhs": {
+              "linear": {
+                "x_a_0": 1.0,
+                "x_b_0": 1.0,
+                "x_c_0": 1.0,
+                "x_d_0": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "position_1_once",
+            "lhs": {
+              "linear": {
+                "x_a_1": 1.0,
+                "x_b_1": 1.0,
+                "x_c_1": 1.0,
+                "x_d_1": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "position_2_once",
+            "lhs": {
+              "linear": {
+                "x_a_2": 1.0,
+                "x_b_2": 1.0,
+                "x_c_2": 1.0,
+                "x_d_2": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          },
+          {
+            "label": "position_3_once",
+            "lhs": {
+              "linear": {
+                "x_a_3": 1.0,
+                "x_b_3": 1.0,
+                "x_c_3": 1.0,
+                "x_d_3": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": "==",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 16,
+        "objective": {
+          "linear": {
+            "x_a_0": 0.0,
+            "x_a_1": 0.0,
+            "x_a_2": 0.0,
+            "x_a_3": 0.0,
+            "x_b_0": 0.0,
+            "x_b_1": 0.0,
+            "x_b_2": 0.0,
+            "x_b_3": 0.0,
+            "x_c_0": 0.0,
+            "x_c_1": 0.0,
+            "x_c_2": 0.0,
+            "x_c_3": 0.0,
+            "x_d_0": 0.0,
+            "x_d_1": 0.0,
+            "x_d_2": 0.0,
+            "x_d_3": 0.0
+          },
+          "offset": 0.0,
+          "quadratic": [
+            [
+              "x_a_0",
+              "x_b_1",
+              1.0
+            ],
+            [
+              "x_a_0",
+              "x_b_3",
+              1.0
+            ],
+            [
+              "x_a_0",
+              "x_c_1",
+              3.0
+            ],
+            [
+              "x_a_0",
+              "x_c_3",
+              3.0
+            ],
+            [
+              "x_a_0",
+              "x_d_1",
+              4.0
+            ],
+            [
+              "x_a_0",
+              "x_d_3",
+              4.0
+            ],
+            [
+              "x_a_1",
+              "x_b_0",
+              1.0
+            ],
+            [
+              "x_a_1",
+              "x_b_2",
+              1.0
+            ],
+            [
+              "x_a_1",
+              "x_c_0",
+              3.0
+            ],
+            [
+              "x_a_1",
+              "x_c_2",
+              3.0
+            ],
+            [
+              "x_a_1",
+              "x_d_0",
+              4.0
+            ],
+            [
+              "x_a_1",
+              "x_d_2",
+              4.0
+            ],
+            [
+              "x_a_2",
+              "x_b_1",
+              1.0
+            ],
+            [
+              "x_a_2",
+              "x_b_3",
+              1.0
+            ],
+            [
+              "x_a_2",
+              "x_c_1",
+              3.0
+            ],
+            [
+              "x_a_2",
+              "x_c_3",
+              3.0
+            ],
+            [
+              "x_a_2",
+              "x_d_1",
+              4.0
+            ],
+            [
+              "x_a_2",
+              "x_d_3",
+              4.0
+            ],
+            [
+              "x_a_3",
+              "x_b_0",
+              1.0
+            ],
+            [
+              "x_a_3",
+              "x_b_2",
+              1.0
+            ],
+            [
+              "x_a_3",
+              "x_c_0",
+              3.0
+            ],
+            [
+              "x_a_3",
+              "x_c_2",
+              3.0
+            ],
+            [
+              "x_a_3",
+              "x_d_0",
+              4.0
+            ],
+            [
+              "x_a_3",
+              "x_d_2",
+              4.0
+            ],
+            [
+              "x_b_0",
+              "x_c_1",
+              2.0
+            ],
+            [
+              "x_b_0",
+              "x_c_3",
+              2.0
+            ],
+            [
+              "x_b_0",
+              "x_d_1",
+              5.0
+            ],
+            [
+              "x_b_0",
+              "x_d_3",
+              5.0
+            ],
+            [
+              "x_b_1",
+              "x_c_0",
+              2.0
+            ],
+            [
+              "x_b_1",
+              "x_c_2",
+              2.0
+            ],
+            [
+              "x_b_1",
+              "x_d_0",
+              5.0
+            ],
+            [
+              "x_b_1",
+              "x_d_2",
+              5.0
+            ],
+            [
+              "x_b_2",
+              "x_c_1",
+              2.0
+            ],
+            [
+              "x_b_2",
+              "x_c_3",
+              2.0
+            ],
+            [
+              "x_b_2",
+              "x_d_1",
+              5.0
+            ],
+            [
+              "x_b_2",
+              "x_d_3",
+              5.0
+            ],
+            [
+              "x_b_3",
+              "x_c_0",
+              2.0
+            ],
+            [
+              "x_b_3",
+              "x_c_2",
+              2.0
+            ],
+            [
+              "x_b_3",
+              "x_d_0",
+              5.0
+            ],
+            [
+              "x_b_3",
+              "x_d_2",
+              5.0
+            ],
+            [
+              "x_c_0",
+              "x_d_1",
+              1.0
+            ],
+            [
+              "x_c_0",
+              "x_d_3",
+              1.0
+            ],
+            [
+              "x_c_1",
+              "x_d_0",
+              1.0
+            ],
+            [
+              "x_c_1",
+              "x_d_2",
+              1.0
+            ],
+            [
+              "x_c_2",
+              "x_d_1",
+              1.0
+            ],
+            [
+              "x_c_2",
+              "x_d_3",
+              1.0
+            ],
+            [
+              "x_c_3",
+              "x_d_0",
+              1.0
+            ],
+            [
+              "x_c_3",
+              "x_d_2",
+              1.0
+            ]
+          ]
+        },
+        "objective_scale": 128.0,
+        "variables": [
+          "x_a_0",
+          "x_a_1",
+          "x_a_2",
+          "x_a_3",
+          "x_b_0",
+          "x_b_1",
+          "x_b_2",
+          "x_b_3",
+          "x_c_0",
+          "x_c_1",
+          "x_c_2",
+          "x_c_3",
+          "x_d_0",
+          "x_d_1",
+          "x_d_2",
+          "x_d_3"
+        ]
+      },
+      "estimate_compiled_variables": 16,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 16,
+        "model_type": "cqm",
+        "objective_scale": 128.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 16,
+        "model_type": "bqm",
+        "objective_scale": 128.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "scenario_knapsack_cqm": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "capacity",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_capacity_0",
+              "__slack_capacity_1",
+              "__slack_capacity_2",
+              "__slack_capacity_3"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 62.0,
+            "redundant": false,
+            "slack_range": 10,
+            "source_description": "Total weight must not exceed the knapsack capacity of 10"
+          }
+        ],
+        "hard_penalty": 62.0,
+        "internal_variables": [
+          "__slack_capacity_0",
+          "__slack_capacity_1",
+          "__slack_capacity_2",
+          "__slack_capacity_3"
+        ],
+        "linear": {
+          "__slack_capacity_0": -1178.0,
+          "__slack_capacity_1": -2232.0,
+          "__slack_capacity_2": -3968.0,
+          "__slack_capacity_3": -3162.0,
+          "item_a": -5218.0,
+          "item_b": -4658.0,
+          "item_c": -3975.0,
+          "item_d": -3168.0
+        },
+        "num_variables": 8,
+        "objective_scale": 31.0,
+        "offset": 6200.0,
+        "quadratic": [
+          [
+            "__slack_capacity_0",
+            "__slack_capacity_1",
+            248.0
+          ],
+          [
+            "__slack_capacity_0",
+            "__slack_capacity_2",
+            496.0
+          ],
+          [
+            "__slack_capacity_0",
+            "__slack_capacity_3",
+            372.0
+          ],
+          [
+            "__slack_capacity_0",
+            "item_a",
+            744.0
+          ],
+          [
+            "__slack_capacity_0",
+            "item_b",
+            620.0
+          ],
+          [
+            "__slack_capacity_0",
+            "item_c",
+            496.0
+          ],
+          [
+            "__slack_capacity_0",
+            "item_d",
+            372.0
+          ],
+          [
+            "__slack_capacity_1",
+            "__slack_capacity_2",
+            992.0
+          ],
+          [
+            "__slack_capacity_1",
+            "__slack_capacity_3",
+            744.0
+          ],
+          [
+            "__slack_capacity_1",
+            "item_a",
+            1488.0
+          ],
+          [
+            "__slack_capacity_1",
+            "item_b",
+            1240.0
+          ],
+          [
+            "__slack_capacity_1",
+            "item_c",
+            992.0
+          ],
+          [
+            "__slack_capacity_1",
+            "item_d",
+            744.0
+          ],
+          [
+            "__slack_capacity_2",
+            "__slack_capacity_3",
+            1488.0
+          ],
+          [
+            "__slack_capacity_2",
+            "item_a",
+            2976.0
+          ],
+          [
+            "__slack_capacity_2",
+            "item_b",
+            2480.0
+          ],
+          [
+            "__slack_capacity_2",
+            "item_c",
+            1984.0
+          ],
+          [
+            "__slack_capacity_2",
+            "item_d",
+            1488.0
+          ],
+          [
+            "__slack_capacity_3",
+            "item_a",
+            2232.0
+          ],
+          [
+            "__slack_capacity_3",
+            "item_b",
+            1860.0
+          ],
+          [
+            "__slack_capacity_3",
+            "item_c",
+            1488.0
+          ],
+          [
+            "__slack_capacity_3",
+            "item_d",
+            1116.0
+          ],
+          [
+            "item_a",
+            "item_b",
+            3720.0
+          ],
+          [
+            "item_a",
+            "item_c",
+            2976.0
+          ],
+          [
+            "item_a",
+            "item_d",
+            2232.0
+          ],
+          [
+            "item_b",
+            "item_c",
+            2480.0
+          ],
+          [
+            "item_b",
+            "item_d",
+            1860.0
+          ],
+          [
+            "item_c",
+            "item_d",
+            1488.0
+          ]
+        ],
+        "variables": [
+          "item_a",
+          "item_b",
+          "item_c",
+          "item_d",
+          "__slack_capacity_0",
+          "__slack_capacity_1",
+          "__slack_capacity_2",
+          "__slack_capacity_3"
+        ]
+      },
+      "compute_penalty_scale": 31.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "capacity",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Total weight must not exceed the knapsack capacity of 10"
+          }
+        ],
+        "constraints": [
+          {
+            "label": "capacity",
+            "lhs": {
+              "linear": {
+                "item_a": 6.0,
+                "item_b": 5.0,
+                "item_c": 4.0,
+                "item_d": 3.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 10.0,
+            "sense": "<=",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 4,
+        "objective": {
+          "linear": {
+            "item_a": -10.0,
+            "item_b": -8.0,
+            "item_c": -7.0,
+            "item_d": -6.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 31.0,
+        "variables": [
+          "item_a",
+          "item_b",
+          "item_c",
+          "item_d"
+        ]
+      },
+      "estimate_compiled_variables": 8,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 4,
+        "model_type": "cqm",
+        "objective_scale": 31.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 8,
+        "model_type": "bqm",
+        "objective_scale": 31.0,
+        "valid": true,
+        "warnings": []
+      }
+    },
+    "scenario_knapsack_retry_tiny_multiplier": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "capacity",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_capacity_0",
+              "__slack_capacity_1",
+              "__slack_capacity_2",
+              "__slack_capacity_3"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 0.31,
+            "redundant": false,
+            "slack_range": 10,
+            "source_description": "Total weight must not exceed the knapsack capacity of 10"
+          }
+        ],
+        "hard_penalty": 0.31,
+        "internal_variables": [
+          "__slack_capacity_0",
+          "__slack_capacity_1",
+          "__slack_capacity_2",
+          "__slack_capacity_3"
+        ],
+        "linear": {
+          "__slack_capacity_0": -5.89,
+          "__slack_capacity_1": -11.16,
+          "__slack_capacity_2": -19.84,
+          "__slack_capacity_3": -15.81,
+          "item_a": -36.04,
+          "item_b": -31.25,
+          "item_c": -26.84,
+          "item_d": -21.810000000000002
+        },
+        "num_variables": 8,
+        "objective_scale": 31.0,
+        "offset": 31.0,
+        "quadratic": [
+          [
+            "__slack_capacity_0",
+            "__slack_capacity_1",
+            1.24
+          ],
+          [
+            "__slack_capacity_0",
+            "__slack_capacity_2",
+            2.48
+          ],
+          [
+            "__slack_capacity_0",
+            "__slack_capacity_3",
+            1.8599999999999999
+          ],
+          [
+            "__slack_capacity_0",
+            "item_a",
+            3.7199999999999998
+          ],
+          [
+            "__slack_capacity_0",
+            "item_b",
+            3.1
+          ],
+          [
+            "__slack_capacity_0",
+            "item_c",
+            2.48
+          ],
+          [
+            "__slack_capacity_0",
+            "item_d",
+            1.8599999999999999
+          ],
+          [
+            "__slack_capacity_1",
+            "__slack_capacity_2",
+            4.96
+          ],
+          [
+            "__slack_capacity_1",
+            "__slack_capacity_3",
+            3.7199999999999998
+          ],
+          [
+            "__slack_capacity_1",
+            "item_a",
+            7.4399999999999995
+          ],
+          [
+            "__slack_capacity_1",
+            "item_b",
+            6.2
+          ],
+          [
+            "__slack_capacity_1",
+            "item_c",
+            4.96
+          ],
+          [
+            "__slack_capacity_1",
+            "item_d",
+            3.7199999999999998
+          ],
+          [
+            "__slack_capacity_2",
+            "__slack_capacity_3",
+            7.4399999999999995
+          ],
+          [
+            "__slack_capacity_2",
+            "item_a",
+            14.879999999999999
+          ],
+          [
+            "__slack_capacity_2",
+            "item_b",
+            12.4
+          ],
+          [
+            "__slack_capacity_2",
+            "item_c",
+            9.92
+          ],
+          [
+            "__slack_capacity_2",
+            "item_d",
+            7.4399999999999995
+          ],
+          [
+            "__slack_capacity_3",
+            "item_a",
+            11.16
+          ],
+          [
+            "__slack_capacity_3",
+            "item_b",
+            9.3
+          ],
+          [
+            "__slack_capacity_3",
+            "item_c",
+            7.4399999999999995
+          ],
+          [
+            "__slack_capacity_3",
+            "item_d",
+            5.58
+          ],
+          [
+            "item_a",
+            "item_b",
+            18.599999999999998
+          ],
+          [
+            "item_a",
+            "item_c",
+            14.879999999999999
+          ],
+          [
+            "item_a",
+            "item_d",
+            11.16
+          ],
+          [
+            "item_b",
+            "item_c",
+            12.4
+          ],
+          [
+            "item_b",
+            "item_d",
+            9.3
+          ],
+          [
+            "item_c",
+            "item_d",
+            7.4399999999999995
+          ]
+        ],
+        "variables": [
+          "item_a",
+          "item_b",
+          "item_c",
+          "item_d",
+          "__slack_capacity_0",
+          "__slack_capacity_1",
+          "__slack_capacity_2",
+          "__slack_capacity_3"
+        ]
+      },
+      "compute_penalty_scale": 31.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "capacity",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Total weight must not exceed the knapsack capacity of 10"
+          }
+        ],
+        "constraints": [
+          {
+            "label": "capacity",
+            "lhs": {
+              "linear": {
+                "item_a": 6.0,
+                "item_b": 5.0,
+                "item_c": 4.0,
+                "item_d": 3.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 10.0,
+            "sense": "<=",
+            "weight": null
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 4,
+        "objective": {
+          "linear": {
+            "item_a": -10.0,
+            "item_b": -8.0,
+            "item_c": -7.0,
+            "item_d": -6.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 31.0,
+        "variables": [
+          "item_a",
+          "item_b",
+          "item_c",
+          "item_d"
+        ]
+      },
+      "estimate_compiled_variables": 8,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 4,
+        "model_type": "cqm",
+        "objective_scale": 31.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 8,
+        "model_type": "bqm",
+        "objective_scale": 31.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "SEED_IGNORED",
+            "message": "Backend exact does not support seeding; solver.seed will be ignored",
+            "path": "solver.seed",
+            "recommended_action": "This backend does not support seeding; remove solver.seed or use a backend that supports seeding if reproducibility is required.",
+            "retryable": false
+          }
+        ]
+      }
+    },
+    "scenario_knapsack_with_soft_take_everything": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "capacity",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_capacity_0",
+              "__slack_capacity_1",
+              "__slack_capacity_2",
+              "__slack_capacity_3"
+            ],
+            "native": false,
+            "operator": "<=",
+            "penalty": 320062.0,
+            "redundant": false,
+            "slack_range": 10,
+            "source_description": "Total weight must not exceed the knapsack capacity of 10"
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "take_everything",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 10000.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 320062.0,
+        "internal_variables": [
+          "__slack_capacity_0",
+          "__slack_capacity_1",
+          "__slack_capacity_2",
+          "__slack_capacity_3"
+        ],
+        "linear": {
+          "__slack_capacity_0": -6081178.0,
+          "__slack_capacity_1": -11522232.0,
+          "__slack_capacity_2": -20483968.0,
+          "__slack_capacity_3": -16323162.0,
+          "item_a": -26955218.0,
+          "item_b": -24074658.0,
+          "item_c": -20553975.0,
+          "item_d": -16393168.0
+        },
+        "num_variables": 8,
+        "objective_scale": 31.0,
+        "offset": 32166200.0,
+        "quadratic": [
+          [
+            "__slack_capacity_0",
+            "__slack_capacity_1",
+            1280248.0
+          ],
+          [
+            "__slack_capacity_0",
+            "__slack_capacity_2",
+            2560496.0
+          ],
+          [
+            "__slack_capacity_0",
+            "__slack_capacity_3",
+            1920372.0
+          ],
+          [
+            "__slack_capacity_0",
+            "item_a",
+            3840744.0
+          ],
+          [
+            "__slack_capacity_0",
+            "item_b",
+            3200620.0
+          ],
+          [
+            "__slack_capacity_0",
+            "item_c",
+            2560496.0
+          ],
+          [
+            "__slack_capacity_0",
+            "item_d",
+            1920372.0
+          ],
+          [
+            "__slack_capacity_1",
+            "__slack_capacity_2",
+            5120992.0
+          ],
+          [
+            "__slack_capacity_1",
+            "__slack_capacity_3",
+            3840744.0
+          ],
+          [
+            "__slack_capacity_1",
+            "item_a",
+            7681488.0
+          ],
+          [
+            "__slack_capacity_1",
+            "item_b",
+            6401240.0
+          ],
+          [
+            "__slack_capacity_1",
+            "item_c",
+            5120992.0
+          ],
+          [
+            "__slack_capacity_1",
+            "item_d",
+            3840744.0
+          ],
+          [
+            "__slack_capacity_2",
+            "__slack_capacity_3",
+            7681488.0
+          ],
+          [
+            "__slack_capacity_2",
+            "item_a",
+            15362976.0
+          ],
+          [
+            "__slack_capacity_2",
+            "item_b",
+            12802480.0
+          ],
+          [
+            "__slack_capacity_2",
+            "item_c",
+            10241984.0
+          ],
+          [
+            "__slack_capacity_2",
+            "item_d",
+            7681488.0
+          ],
+          [
+            "__slack_capacity_3",
+            "item_a",
+            11522232.0
+          ],
+          [
+            "__slack_capacity_3",
+            "item_b",
+            9601860.0
+          ],
+          [
+            "__slack_capacity_3",
+            "item_c",
+            7681488.0
+          ],
+          [
+            "__slack_capacity_3",
+            "item_d",
+            5761116.0
+          ],
+          [
+            "item_a",
+            "item_b",
+            19223720.0
+          ],
+          [
+            "item_a",
+            "item_c",
+            15382976.0
+          ],
+          [
+            "item_a",
+            "item_d",
+            11542232.0
+          ],
+          [
+            "item_b",
+            "item_c",
+            12822480.0
+          ],
+          [
+            "item_b",
+            "item_d",
+            9621860.0
+          ],
+          [
+            "item_c",
+            "item_d",
+            7701488.0
+          ]
+        ],
+        "variables": [
+          "item_a",
+          "item_b",
+          "item_c",
+          "item_d",
+          "__slack_capacity_0",
+          "__slack_capacity_1",
+          "__slack_capacity_2",
+          "__slack_capacity_3"
+        ]
+      },
+      "compute_penalty_scale": 160031.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "capacity",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": "<=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": "Total weight must not exceed the knapsack capacity of 10"
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "take_everything",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": 10000.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "capacity",
+            "lhs": {
+              "linear": {
+                "item_a": 6.0,
+                "item_b": 5.0,
+                "item_c": 4.0,
+                "item_d": 3.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 10.0,
+            "sense": "<=",
+            "weight": null
+          },
+          {
+            "label": "take_everything",
+            "lhs": {
+              "linear": {
+                "item_a": 1.0,
+                "item_b": 1.0,
+                "item_c": 1.0,
+                "item_d": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 4.0,
+            "sense": "==",
+            "weight": 10000.0
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 4,
+        "objective": {
+          "linear": {
+            "item_a": -10.0,
+            "item_b": -8.0,
+            "item_c": -7.0,
+            "item_d": -6.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 31.0,
+        "variables": [
+          "item_a",
+          "item_b",
+          "item_c",
+          "item_d"
+        ]
+      },
+      "estimate_compiled_variables": 8,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 4,
+        "model_type": "cqm",
+        "objective_scale": 31.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 8,
+        "model_type": "bqm",
+        "objective_scale": 31.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "SEED_IGNORED",
+            "message": "Backend exact does not support seeding; solver.seed will be ignored",
+            "path": "solver.seed",
+            "recommended_action": "This backend does not support seeding; remove solver.seed or use a backend that supports seeding if reproducibility is required.",
+            "retryable": false
+          }
+        ]
+      }
+    },
+    "scenario_soft_dominated_exact": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "at_least_one",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_at_least_one_0"
+            ],
+            "native": false,
+            "operator": ">=",
+            "penalty": 8004.0,
+            "redundant": false,
+            "slack_range": 1,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "prefer_none",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 1000.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 8004.0,
+        "internal_variables": [
+          "__slack_at_least_one_0"
+        ],
+        "linear": {
+          "__slack_at_least_one_0": 24012.0,
+          "x": -7003.0,
+          "y": -7003.0
+        },
+        "num_variables": 3,
+        "objective_scale": 2.0,
+        "offset": 8004.0,
+        "quadratic": [
+          [
+            "__slack_at_least_one_0",
+            "x",
+            -16008.0
+          ],
+          [
+            "__slack_at_least_one_0",
+            "y",
+            -16008.0
+          ],
+          [
+            "x",
+            "y",
+            18008.0
+          ]
+        ],
+        "variables": [
+          "x",
+          "y",
+          "__slack_at_least_one_0"
+        ]
+      },
+      "compute_penalty_scale": 4002.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "at_least_one",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": ">=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "prefer_none",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": 1000.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "at_least_one",
+            "lhs": {
+              "linear": {
+                "x": 1.0,
+                "y": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": ">=",
+            "weight": null
+          },
+          {
+            "label": "prefer_none",
+            "lhs": {
+              "linear": {
+                "x": 1.0,
+                "y": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 0.0,
+            "sense": "==",
+            "weight": 1000.0
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 2,
+        "objective": {
+          "linear": {
+            "x": 1.0,
+            "y": 1.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 2.0,
+        "variables": [
+          "x",
+          "y"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 2,
+        "model_type": "cqm",
+        "objective_scale": 2.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 2.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "SEED_IGNORED",
+            "message": "Backend exact does not support seeding; solver.seed will be ignored",
+            "path": "solver.seed",
+            "recommended_action": "This backend does not support seeding; remove solver.seed or use a backend that supports seeding if reproducibility is required.",
+            "retryable": false
+          }
+        ]
+      }
+    },
+    "scenario_soft_dominated_sa": {
+      "bqm": {
+        "constraint_trace": [
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "at_least_one",
+            "constraint_type": "hard",
+            "generated_variables": [
+              "__slack_at_least_one_0"
+            ],
+            "native": false,
+            "operator": ">=",
+            "penalty": 8004.0,
+            "redundant": false,
+            "slack_range": 1,
+            "source_description": null
+          },
+          {
+            "compiler": "BQMCompiler",
+            "constraint_id": "prefer_none",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": false,
+            "operator": "==",
+            "penalty": 1000.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "hard_penalty": 8004.0,
+        "internal_variables": [
+          "__slack_at_least_one_0"
+        ],
+        "linear": {
+          "__slack_at_least_one_0": 24012.0,
+          "x": -7003.0,
+          "y": -7003.0
+        },
+        "num_variables": 3,
+        "objective_scale": 2.0,
+        "offset": 8004.0,
+        "quadratic": [
+          [
+            "__slack_at_least_one_0",
+            "x",
+            -16008.0
+          ],
+          [
+            "__slack_at_least_one_0",
+            "y",
+            -16008.0
+          ],
+          [
+            "x",
+            "y",
+            18008.0
+          ]
+        ],
+        "variables": [
+          "x",
+          "y",
+          "__slack_at_least_one_0"
+        ]
+      },
+      "compute_penalty_scale": 4002.0,
+      "cqm": {
+        "constraint_trace": [
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "at_least_one",
+            "constraint_type": "hard",
+            "generated_variables": [],
+            "native": true,
+            "operator": ">=",
+            "penalty": null,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          },
+          {
+            "compiler": "CQMCompiler",
+            "constraint_id": "prefer_none",
+            "constraint_type": "soft",
+            "generated_variables": [],
+            "native": true,
+            "operator": "==",
+            "penalty": 1000.0,
+            "redundant": false,
+            "slack_range": null,
+            "source_description": null
+          }
+        ],
+        "constraints": [
+          {
+            "label": "at_least_one",
+            "lhs": {
+              "linear": {
+                "x": 1.0,
+                "y": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": null,
+            "rhs": 1.0,
+            "sense": ">=",
+            "weight": null
+          },
+          {
+            "label": "prefer_none",
+            "lhs": {
+              "linear": {
+                "x": 1.0,
+                "y": 1.0
+              },
+              "offset": 0.0,
+              "quadratic": []
+            },
+            "penalty": "quadratic",
+            "rhs": 0.0,
+            "sense": "==",
+            "weight": 1000.0
+          }
+        ],
+        "internal_variables": [],
+        "num_variables": 2,
+        "objective": {
+          "linear": {
+            "x": 1.0,
+            "y": 1.0
+          },
+          "offset": 0.0,
+          "quadratic": []
+        },
+        "objective_scale": 2.0,
+        "variables": [
+          "x",
+          "y"
+        ]
+      },
+      "estimate_compiled_variables": 3,
+      "validate_full_cqm_path": {
+        "errors": [],
+        "estimated_compiled_variables": 2,
+        "model_type": "cqm",
+        "objective_scale": 2.0,
+        "valid": true,
+        "warnings": []
+      },
+      "validate_full_exact": {
+        "errors": [],
+        "estimated_compiled_variables": 3,
+        "model_type": "bqm",
+        "objective_scale": 2.0,
+        "valid": true,
+        "warnings": [
+          {
+            "code": "SEED_IGNORED",
+            "message": "Backend exact does not support seeding; solver.seed will be ignored",
+            "path": "solver.seed",
+            "recommended_action": "This backend does not support seeding; remove solver.seed or use a backend that supports seeding if reproducibility is required.",
+            "retryable": false
+          }
+        ]
+      }
+    }
+  },
+  "recorded_from": "20ba640"
+}
