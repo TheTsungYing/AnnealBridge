@@ -502,3 +502,367 @@ class TestCQMCompilerDecode:
         assert decoded.variables == ["b", "a", "c"]
         assert decoded.samples.shape == (0, 3)
         assert decoded.num_samples == 0
+
+
+# --------------------------------------------------------------------------
+# 4. Integer variables on the BQM path (3b spec §12, §13, §14)
+# --------------------------------------------------------------------------
+#
+# The BQM compiler binary-expands an integer variable, so the backend never
+# sees ``q`` or ``n`` at all -- only ``__int_q_k`` / ``__int_n_k`` bits next
+# to the ``__slack`` bits. ``decode`` has to fold them back into signed
+# integer values, widen the matrix to ``int64``, and still hand the
+# candidate pipeline nothing but business variables in problem order.
+
+INTEGER_BITS_BQM_NAME = "fake_integer_bits_bqm"
+
+
+def integer_problem() -> OptimizationProblem:
+    """Variables declared ``q, flag, n`` -- integer, binary, integer.
+
+    ``q`` has a negative lower bound (so decode must add a negative
+    ``lower``), and the ``<=`` hard constraint is not redundant, so slack
+    bits sit alongside the encoding bits in the compiled model.
+    """
+    return OptimizationProblem(
+        version="1.1",
+        name="decode-integer",
+        variables=[
+            Variable(name="q", type="integer", lower_bound=-2, upper_bound=3),
+            Variable(name="flag"),
+            Variable(name="n", type="integer", lower_bound=0, upper_bound=5),
+        ],
+        objective=Objective(
+            direction="maximize",
+            linear_terms=[
+                LinearTerm(variable="q", coefficient=2.0),
+                LinearTerm(variable="flag", coefficient=3.0),
+                LinearTerm(variable="n", coefficient=1.0),
+            ],
+        ),
+        constraints=[
+            Constraint(
+                id="cap",
+                type="hard",
+                terms=[
+                    LinearTerm(variable="q", coefficient=1.0),
+                    LinearTerm(variable="n", coefficient=1.0),
+                ],
+                operator="<=",
+                rhs=4,
+            )
+        ],
+    )
+
+
+def bits_for_value(encoding, value: int) -> dict[str, int]:
+    """One bit pattern of ``encoding`` representing ``value``.
+
+    Found by enumeration rather than by re-deriving the expansion, so the
+    fake backend cannot accidentally agree with a wrong compiler.
+    """
+    count = len(encoding.coefficients)
+    for pattern in range(1 << count):
+        bits = [(pattern >> k) & 1 for k in range(count)]
+        total = encoding.lower + sum(
+            coefficient * bit for coefficient, bit in zip(encoding.coefficients, bits)
+        )
+        if total == value:
+            return dict(zip(encoding.bits, bits))
+    raise AssertionError(f"{value} is not representable by {encoding.variable}")
+
+
+_INTEGER_BITS_CAPABILITIES = SolverCapabilities(
+    name=INTEGER_BITS_BQM_NAME,
+    remote=False,
+    heuristic=True,
+    exhaustive=False,
+    supports_seed=False,
+    supports_num_reads=True,
+    supports_time_limit=False,
+    supported_model_types=["bqm"],
+    returns_multiple_samples=True,
+    description=(
+        "Test-only BQM backend that encodes business integer values into the "
+        "compiled model's bits and shuffles its columns (3b spec §13); "
+        "never production."
+    ),
+)
+
+
+class IntegerBitsBQMBackend:
+    """``ShufflingBQMBackend`` for a problem whose variables are encoded.
+
+    The constructor takes *business* assignments (``{"q": 3, "flag": 1,
+    "n": 1}``). ``solve`` re-encodes each of them through the compiled
+    problem's ``integer_encodings`` -- because the compiled model has no
+    column named ``q`` at all -- fills the slack bits with a value that
+    varies per row, and returns the columns shuffled.
+    """
+
+    def __init__(self, rows: list[dict[str, int]], *, shuffle_seed: int = 3) -> None:
+        self._rows = [dict(row) for row in rows]
+        self._shuffle_seed = shuffle_seed
+        self.solve_calls = 0
+        self.last_raw: RawSolverResult | None = None
+        self.last_compiled = None
+
+    @property
+    def capabilities(self) -> SolverCapabilities:
+        return _INTEGER_BITS_CAPABILITIES
+
+    def is_available(self) -> AvailabilityStatus:
+        return AvailabilityStatus(category="available")
+
+    @property
+    def name(self) -> str:
+        return _INTEGER_BITS_CAPABILITIES.name
+
+    @property
+    def is_exhaustive(self) -> bool:
+        return False
+
+    def resolve_time_limit(self, compiled_problem, preferences) -> float | None:
+        return None
+
+    def solve(self, compiled_problem, preferences) -> RawSolverResult:
+        self.solve_calls += 1
+        self.last_compiled = compiled_problem
+        bqm = compiled_problem.model
+        order = [str(variable) for variable in bqm.variables]
+        random.Random(self._shuffle_seed).shuffle(order)
+        encodings = compiled_problem.integer_encodings
+        business = [v.name for v in compiled_problem.original_problem.variables]
+
+        samples = []
+        for index, row in enumerate(self._rows):
+            encoded: dict[str, int] = {}
+            for name in business:
+                encoding = encodings.get(name)
+                if encoding is None:
+                    encoded[name] = int(row[name])
+                else:
+                    encoded.update(bits_for_value(encoding, int(row[name])))
+            # Whatever is left is slack: varied per row so two reads with
+            # the same business assignment still differ in the raw matrix.
+            samples.append({name: encoded.get(name, index % 2) for name in order})
+
+        raw = RawSolverResult.from_dicts(
+            samples,
+            [float(bqm.energy(sample)) for sample in samples],
+            backend=self.name,
+            variables=order,
+        )
+        self.last_raw = raw
+        return raw
+
+
+# Five reads over four distinct business assignments, all feasible for
+# "q + n <= 4"; rows 1 and 2 repeat one assignment at indices of different
+# parity, so their slack bits differ and only decode can collapse them.
+INTEGER_ROWS = [
+    {"q": 3, "flag": 1, "n": 1},  # 2q + 3flag + n = 10
+    {"q": 2, "flag": 1, "n": 2},  # 9
+    {"q": 2, "flag": 1, "n": 2},  # 9 -- same assignment, different slack
+    {"q": -2, "flag": 0, "n": 0},  # -4
+    {"q": 3, "flag": 0, "n": 1},  # 7
+]
+
+INTEGER_BOUNDS = {"q": (-2, 3), "flag": (0, 1), "n": (0, 5)}
+
+
+class TestServiceIntegerBQMPath:
+    @pytest.fixture
+    def backend(self) -> IntegerBitsBQMBackend:
+        return IntegerBitsBQMBackend(INTEGER_ROWS)
+
+    @pytest.fixture
+    def result(self, backend):
+        result = make_service(backend).solve(route_to(integer_problem(), backend.name))
+        assert result.status == "success", result.errors
+        return result
+
+    def test_the_backend_really_returned_encoding_bits_not_business_columns(
+        self, backend, result
+    ):
+        # Guard on the fixture: the raw result must contain no business
+        # column at all, or the assertions below would prove nothing about
+        # the integer decoding.
+        raw = backend.last_raw
+        assert raw is not None
+        assert sorted(raw.variables) == sorted(
+            [
+                "__int_q_0",
+                "__int_q_1",
+                "__int_q_2",
+                "flag",
+                "__int_n_0",
+                "__int_n_1",
+                "__int_n_2",
+                "__slack_cap_0",
+                "__slack_cap_1",
+                "__slack_cap_2",
+            ]
+        )
+        assert "q" not in raw.variables
+        assert "n" not in raw.variables
+        # Not in compiled order either, so decode cannot rely on one.
+        assert raw.variables != [
+            str(variable) for variable in backend.last_compiled.model.variables
+        ]
+
+    def test_solutions_carry_business_variables_in_problem_order(self, result):
+        for solution in result.solutions:
+            assert list(solution.variables) == ["q", "flag", "n"], solution.variables
+
+    def test_no_internal_variable_reaches_a_solution(self, result):
+        for solution in result.solutions:
+            assert not [key for key in solution.variables if key.startswith("__")]
+
+    def test_values_are_python_ints_inside_the_declared_bounds(self, result):
+        for solution in result.solutions:
+            for name, value in solution.variables.items():
+                assert type(value) is int, (name, type(value))
+                lower, upper = INTEGER_BOUNDS[name]
+                assert lower <= value <= upper, (name, value)
+
+    def test_the_ranking_is_the_business_objective_over_decoded_values(self, result):
+        problem = integer_problem()
+        assert [solution.variables for solution in result.solutions] == [
+            {"q": 3, "flag": 1, "n": 1},
+            {"q": 2, "flag": 1, "n": 2},
+            {"q": 3, "flag": 0, "n": 1},
+            {"q": -2, "flag": 0, "n": 0},
+        ]
+        best = result.solutions[0]
+        assert best.objective_value == 10.0
+        for solution in result.solutions:
+            assert solution.objective_value == evaluate_objective(
+                problem.objective, solution.variables
+            )
+
+    def test_samples_received_counts_raw_rows_and_unique_counts_assignments(
+        self, result
+    ):
+        attempt = result.attempts[0]
+        assert attempt.samples_received == len(INTEGER_ROWS) == 5
+        # Rows 1 and 2 are the same business assignment with different
+        # slack bits: unique is one less than received.
+        assert attempt.unique_samples == len(INTEGER_ROWS) - 1 == 4
+        assert attempt.feasible_samples == 4
+
+
+class TestBQMCompilerDecodeIntegers:
+    """``BQMCompiler.decode`` on a hand-built, shuffled, bit-carrying result."""
+
+    @staticmethod
+    def compiled():
+        return BQMCompiler().compile(integer_problem(), 10.0)
+
+    # q = -2 + 1*b0 + 2*b1 + 2*b2, n = 0 + 1*b0 + 2*b1 + 2*b2.
+    BITS = [
+        # q = 3, flag = 1, n = 1
+        {
+            "__int_q_0": 1, "__int_q_1": 1, "__int_q_2": 1,
+            "flag": 1,
+            "__int_n_0": 1, "__int_n_1": 0, "__int_n_2": 0,
+            "__slack_cap_0": 1, "__slack_cap_1": 0, "__slack_cap_2": 1,
+        },
+        # q = -2, flag = 0, n = 5
+        {
+            "__int_q_0": 0, "__int_q_1": 0, "__int_q_2": 0,
+            "flag": 0,
+            "__int_n_0": 1, "__int_n_1": 1, "__int_n_2": 1,
+            "__slack_cap_0": 0, "__slack_cap_1": 1, "__slack_cap_2": 0,
+        },
+        # q = 0, flag = 1, n = 3
+        {
+            "__int_q_0": 0, "__int_q_1": 1, "__int_q_2": 0,
+            "flag": 1,
+            "__int_n_0": 1, "__int_n_1": 1, "__int_n_2": 0,
+            "__slack_cap_0": 1, "__slack_cap_1": 1, "__slack_cap_2": 0,
+        },
+    ]
+    # Bits, slack and the one business column interleaved, none in model order.
+    NAMES = [
+        "__slack_cap_1",
+        "__int_n_0",
+        "flag",
+        "__int_q_2",
+        "__slack_cap_0",
+        "__int_q_0",
+        "__int_n_2",
+        "__slack_cap_2",
+        "__int_q_1",
+        "__int_n_1",
+    ]
+    ENERGIES = [-3.5, 2.0, -7.25]
+
+    def rows(self, names: list[str]) -> list[list[int]]:
+        return [[row[name] for name in names] for row in self.BITS]
+
+    def test_bits_fold_into_signed_integer_values_in_problem_order(self):
+        raw = shuffled_raw(
+            self.NAMES,
+            self.rows(self.NAMES),
+            self.ENERGIES,
+            dtype=np.int8,
+            metadata=METADATA,
+        )
+
+        decoded = BQMCompiler().decode(self.compiled(), raw)
+
+        assert decoded.variables == ["q", "flag", "n"]
+        assert decoded.samples.tolist() == [[3, 1, 1], [-2, 0, 5], [0, 1, 3]]
+        assert np.array_equal(decoded.energies, raw.energies)
+        assert decoded.backend == raw.backend
+        assert decoded.metadata is raw.metadata
+        # The input is untouched.
+        assert raw.variables == self.NAMES
+        assert raw.samples.shape == (3, 10)
+
+    def test_int8_bits_widen_to_int64_values(self):
+        raw = shuffled_raw(
+            self.NAMES, self.rows(self.NAMES), self.ENERGIES, dtype=np.int8
+        )
+        decoded = BQMCompiler().decode(self.compiled(), raw)
+
+        assert raw.samples.dtype == np.int8
+        assert decoded.samples.dtype == np.int64
+
+    def test_every_decoded_value_is_inside_the_declared_bounds(self):
+        raw = shuffled_raw(
+            self.NAMES, self.rows(self.NAMES), self.ENERGIES, dtype=np.int8
+        )
+        decoded = BQMCompiler().decode(self.compiled(), raw)
+
+        for position, name in enumerate(decoded.variables):
+            lower, upper = INTEGER_BOUNDS[name]
+            column = decoded.samples[:, position]
+            assert column.min() >= lower and column.max() <= upper, name
+
+    def test_a_missing_encoding_bit_is_a_contract_violation(self):
+        names = [name for name in self.NAMES if name != "__int_n_1"]
+        raw = shuffled_raw(
+            names, self.rows(names), self.ENERGIES, dtype=np.int8, backend="incomplete"
+        )
+        with pytest.raises(ValueError, match="encoding bit '__int_n_1'"):
+            BQMCompiler().decode(self.compiled(), raw)
+
+    def test_a_missing_binary_business_variable_is_still_reported_as_such(self):
+        names = [name for name in self.NAMES if name != "flag"]
+        raw = shuffled_raw(
+            names, self.rows(names), self.ENERGIES, dtype=np.int8, backend="incomplete"
+        )
+        with pytest.raises(ValueError, match="business variable 'flag'"):
+            BQMCompiler().decode(self.compiled(), raw)
+
+    def test_an_empty_result_decodes_to_zero_rows(self):
+        raw = RawSolverResult(
+            variables=self.NAMES, samples=[], energies=[], backend="empty"
+        )
+        decoded = BQMCompiler().decode(self.compiled(), raw)
+
+        assert decoded.variables == ["q", "flag", "n"]
+        assert decoded.samples.shape == (0, 3)
+        assert decoded.num_samples == 0

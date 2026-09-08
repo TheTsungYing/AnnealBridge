@@ -1,11 +1,18 @@
 """BQM compiler: OptimizationProblem -> dimod.BinaryQuadraticModel (spec §15)."""
 
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import dimod
+import numpy as np
 
 from annealbridge.compiler.base import select_business_columns
+from annealbridge.compiler.integer_encoding import (
+    AffineForm,
+    encode_integer_variables,
+    substitute_linear,
+)
 from annealbridge.compiler.objective import build_objective_bqm
 from annealbridge.compiler.slack import accumulate_terms, encode_slack
 from annealbridge.exceptions import CompilationError
@@ -56,6 +63,12 @@ class BQMCompiler:
     every objective coefficient including the constant, so that
     ``energy == sign * objective + sum(penalties)`` holds exactly.
     The input problem is never mutated.
+
+    Integer variables (IR 1.1) are binary-expanded into ``__int_<name>_<k>``
+    bits (3b §14): every objective and constraint expression is rewritten
+    through the variables' affine forms before it enters the model, and
+    :meth:`decode` folds the bits back into integer values. A binary-only
+    problem has identity forms and compiles exactly as before.
     """
 
     @property
@@ -80,16 +93,26 @@ class BQMCompiler:
         if hard_penalty is None:
             raise CompilationError("BQMCompiler requires a hard_penalty; got None")
         bounds = variable_bounds(problem)
+        forms, encodings = encode_integer_variables(problem)
         bqm = dimod.BinaryQuadraticModel(vartype="BINARY")
-        for variable in problem.variables:
-            bqm.add_variable(variable.name)
-
-        self._compile_objective(bqm, problem.objective)
-
         internal_variables: set[str] = set()
+        for variable in problem.variables:
+            # A binary variable is registered under its own name (the 3a
+            # order and naming, which the golden test pins); an integer
+            # variable contributes its encoding bits in ``k`` order instead.
+            encoding = encodings.get(variable.name)
+            if encoding is None:
+                bqm.add_variable(variable.name)
+                continue
+            for bit in encoding.bits:
+                bqm.add_variable(bit)
+            internal_variables.update(encoding.bits)
+
+        self._compile_objective(bqm, problem.objective, forms)
+
         constraint_trace = [
             self._compile_constraint(
-                bqm, constraint, hard_penalty, internal_variables, bounds
+                bqm, constraint, hard_penalty, internal_variables, bounds, forms
             )
             for constraint in problem.constraints
         ]
@@ -103,12 +126,15 @@ class BQMCompiler:
             hard_penalty=hard_penalty,
             objective_scale=compute_objective_scale(problem.objective, bounds),
             num_variables=bqm.num_variables,
+            integer_encodings=encodings,
         )
         logger.info(
-            "Compiled problem %s: %d variables (%d internal), hard_penalty=%s",
+            "Compiled problem %s: %d variables (%d internal, %d integer encoded), "
+            "hard_penalty=%s",
             problem.name,
             compiled.num_variables,
             len(internal_variables),
+            len(encodings),
             hard_penalty,
         )
         return compiled
@@ -116,22 +142,54 @@ class BQMCompiler:
     def decode(
         self, compiled: CompiledProblem, raw: "RawSolverResult"
     ) -> "RawSolverResult":
-        """Business-variable view of a BQM backend's bit matrix (3b §13)."""
-        # 3b step 3 adds the integer branch here: when
-        # ``compiled.integer_encodings`` is non-empty, each integer variable
-        # becomes ``lower + bits @ coefficients`` (int64) and its bit
-        # columns are dropped together with the slack ones. Without integer
-        # variables the decode is pure column selection and keeps the int8
-        # bit matrix.
-        return select_business_columns(compiled, raw)
+        """Business-variable view of a BQM backend's bit matrix (3b §13).
+
+        Without integer variables this is pure column selection and keeps
+        the backend's ``int8`` bit matrix. With integer variables the
+        result is ``int64``: each integer column is
+        ``lower + bits @ coefficients`` over its encoding bits, binary
+        columns are copied, and the bit and slack columns are dropped. The
+        encoding guarantees every value lies within the variable's bounds,
+        so nothing is clamped. ``energies``, the row order, ``backend`` and
+        ``metadata`` pass through untouched.
+        """
+        encodings = compiled.integer_encodings
+        if not encodings:
+            return select_business_columns(compiled, raw)
+
+        column = {name: index for index, name in enumerate(raw.variables)}
+
+        def column_of(name: str, kind: str) -> int:
+            try:
+                return column[name]
+            except KeyError:
+                raise ValueError(
+                    f"solver result from backend '{raw.backend}' lacks {kind} {name!r}"
+                ) from None
+
+        names = [variable.name for variable in compiled.original_problem.variables]
+        samples = np.empty((raw.num_samples, len(names)), dtype=np.int64)
+        for position, name in enumerate(names):
+            encoding = encodings.get(name)
+            if encoding is None:
+                samples[:, position] = raw.samples[:, column_of(name, "business variable")]
+                continue
+            bit_columns = [column_of(bit, "encoding bit") for bit in encoding.bits]
+            bits = raw.samples[:, bit_columns].astype(np.int64, copy=False)
+            coefficients = np.asarray(encoding.coefficients, dtype=np.int64)
+            samples[:, position] = encoding.lower + bits @ coefficients
+        return raw.model_copy(update={"variables": names, "samples": samples})
 
     def _compile_objective(
-        self, bqm: dimod.BinaryQuadraticModel, objective: Objective
+        self,
+        bqm: dimod.BinaryQuadraticModel,
+        objective: Objective,
+        forms: Mapping[str, AffineForm],
     ) -> None:
         # Shared with the CQM compiler (3a §14). ``update`` adds the other
         # model's biases into the pre-registered variables exactly like the
         # former inline ``add_*`` loop did, so the output is unchanged.
-        bqm.update(build_objective_bqm(objective))
+        bqm.update(build_objective_bqm(objective, forms))
 
     def _compile_constraint(
         self,
@@ -140,6 +198,7 @@ class BQMCompiler:
         hard_penalty: float,
         internal_variables: set[str],
         bounds: Bounds,
+        forms: Mapping[str, AffineForm],
     ) -> ConstraintTrace:
         # §10.4: hard penalty and soft weight come from different sources and
         # must never substitute for each other.
@@ -156,14 +215,22 @@ class BQMCompiler:
         slack_range: int | None = None
         redundant = False
 
+        # 3b §14.1 / §14.3: the business coefficients are rewritten through
+        # the affine forms, which turns an integer variable into its bits
+        # and moves ``sum(c * lower)`` into the penalty's constant. Identity
+        # forms (binary variables) leave both exactly as they were.
         if constraint.operator == "==":
             coefficients = {
                 variable: value
                 for variable, value in accumulate_terms(constraint.terms).items()
                 if value != 0.0
             }
-            _add_squared_penalty(bqm, coefficients, -constraint.rhs, lam)
+            bit_coefficients, shift = substitute_linear(coefficients, forms)
+            _add_squared_penalty(bqm, bit_coefficients, shift - constraint.rhs, lam)
         else:
+            # ``encode_slack`` sizes the slack from the variables' bounds via
+            # the same ``analyze_inequality`` the estimates use, so the
+            # range ``rhs - lhs_min`` already covers the integer lhs.
             encoding = encode_slack(constraint, bounds)
             redundant = encoding.redundant
             slack_range = encoding.slack_range
@@ -172,10 +239,10 @@ class BQMCompiler:
                 for name in generated_variables:
                     bqm.add_variable(name)
                 internal_variables.update(generated_variables)
-                coefficients = dict(encoding.coefficients)
+                coefficients, shift = substitute_linear(encoding.coefficients, forms)
                 for name, value in encoding.slack_coefficients.items():
                     coefficients[name] = coefficients.get(name, 0.0) + float(value)
-                _add_squared_penalty(bqm, coefficients, encoding.constant, lam)
+                _add_squared_penalty(bqm, coefficients, encoding.constant + shift, lam)
 
         return ConstraintTrace(
             constraint_id=constraint.id,

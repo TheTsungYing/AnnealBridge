@@ -1,0 +1,50 @@
+{
+  "version": "1.1",
+  "name": "integer_knapsack",
+  "description": "Bounded integer knapsack with capacity 18: each item can be taken 0..3 times; maximize total value subject to total weight <= 18, preferring at most two items of kinds B and C combined. Global optimum is {item_a: 0, item_b: 1, item_c: 1, item_d: 3} with value 34 and weight 18 (unique, confirmed by brute force).",
+  "variables": [
+    {"name": "item_a", "type": "integer", "lower_bound": 0, "upper_bound": 3, "description": "Copies of item A (weight 6, value 10)"},
+    {"name": "item_b", "type": "integer", "lower_bound": 0, "upper_bound": 3, "description": "Copies of item B (weight 5, value 9)"},
+    {"name": "item_c", "type": "integer", "lower_bound": 0, "upper_bound": 3, "description": "Copies of item C (weight 4, value 7)"},
+    {"name": "item_d", "type": "integer", "lower_bound": 0, "upper_bound": 3, "description": "Copies of item D (weight 3, value 6)"}
+  ],
+  "objective": {
+    "direction": "maximize",
+    "linear_terms": [
+      {"variable": "item_a", "coefficient": 10},
+      {"variable": "item_b", "coefficient": 9},
+      {"variable": "item_c", "coefficient": 7},
+      {"variable": "item_d", "coefficient": 6}
+    ]
+  },
+  "constraints": [
+    {
+      "id": "capacity",
+      "description": "Total weight must not exceed the knapsack capacity of 18",
+      "type": "hard",
+      "terms": [
+        {"variable": "item_a", "coefficient": 6},
+        {"variable": "item_b", "coefficient": 5},
+        {"variable": "item_c", "coefficient": 4},
+        {"variable": "item_d", "coefficient": 3}
+      ],
+      "operator": "<=",
+      "rhs": 18
+    },
+    {
+      "id": "prefer_few_mid_items",
+      "description": "Prefer taking at most two items of kinds B and C combined",
+      "type": "soft",
+      "terms": [
+        {"variable": "item_b", "coefficient": 1},
+        {"variable": "item_c", "coefficient": 1}
+      ],
+      "operator": "<=",
+      "rhs": 2,
+      "weight": 3
+    }
+  ],
+  "solver": {
+    "backend": "exact"
+  }
+}
