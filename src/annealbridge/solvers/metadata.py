@@ -11,8 +11,9 @@ both remote backends share the helpers here instead of carrying copies.
 import importlib.util
 import os
 import re
-from typing import Literal
+from typing import Callable, Literal, TypeVar
 
+from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models.capabilities import AvailabilityStatus
 from annealbridge.models.metadata import SolverExecutionMetadata
 
@@ -24,10 +25,13 @@ __all__ = [
     "classify_exception",
     "dwave_availability",
     "dwave_system_installed",
+    "guarded_call",
     "ocean_config_status",
     "redact",
     "sanitize_sampleset_info",
 ]
+
+_T = TypeVar("_T")
 
 # Spec §10: the categorical ``is_available()`` details for the D-Wave
 # backends. They never contain config values. Since Phase 3a the service
@@ -50,14 +54,29 @@ TIMING_WHITELIST = frozenset(
         "total_post_processing_time",
         "run_time",
         "charge_time",
+        # Fujitsu Digital Annealer (3b spec §21); the backend converts the
+        # vendor's millisecond strings to float microseconds before calling
+        # ``sanitize_sampleset_info``.
+        "solve_time",
+        "total_elapsed_time",
     }
 )
 
-# Spec §19: mask token-shaped substrings regardless of Ocean config state.
+# Every environment variable that holds a vendor credential (3b spec §20.5).
+# ``redact`` masks the live value of each one; the D-Wave entry is also what
+# Ocean itself honours, so it counts as "configured" for the D-Wave checks.
+_CREDENTIAL_ENV_VARS = ("DWAVE_API_TOKEN", "FUJITSU_DA_API_KEY")
+
+# Spec §19 / 3b §20.5: mask credential-shaped substrings regardless of which
+# vendor produced the text (D-Wave token / query / Authorization header;
+# Fujitsu ``X-Api-Key`` / ``X-Access-Token`` headers in plain and JSON form).
 _REDACTION_PATTERNS = [
     (re.compile(r"DEV-[A-Za-z0-9]{20,}"), "***"),
     (re.compile(r"token=[^\s&]+"), "token=***"),
     (re.compile(r"Authorization: [^\n]+"), "Authorization: ***"),
+    (re.compile(r"X-Api-Key: [^\n]+"), "X-Api-Key: ***"),
+    (re.compile(r"X-Access-Token: [^\n]+"), "X-Access-Token: ***"),
+    (re.compile(r'"X-Api-Key":\s*"[^"]*"'), '"X-Api-Key": "***"'),
 ]
 
 OceanConfigStatus = Literal["ok", "missing", "invalid"]
@@ -119,6 +138,16 @@ def _env_token() -> str | None:
     if isinstance(token, str) and token:
         return token
     return None
+
+
+def _env_credentials() -> list[str]:
+    """Non-empty values of every credential env var, read live (3b §20.5)."""
+    values: list[str] = []
+    for name in _CREDENTIAL_ENV_VARS:
+        value = os.environ.get(name)
+        if isinstance(value, str) and value:
+            values.append(value)
+    return values
 
 
 def _resolve_ocean_config() -> tuple[OceanConfigStatus, str | None]:
@@ -223,13 +252,41 @@ def redact(text: str) -> str:
     """Mask credential material in ``text`` (spec §19).
 
     Every string headed for a SolveError, log line or metadata field must
-    pass through here before leaving the solver layer. Candidate tokens
-    (Ocean config and the ``DWAVE_API_TOKEN`` env var) are resolved live on
-    every call.
+    pass through here before leaving the solver layer. Candidate secrets
+    (the Ocean config token and every credential env var in
+    :data:`_CREDENTIAL_ENV_VARS`) are resolved live on every call.
     """
-    for token in (_resolve_ocean_config()[1], _env_token()):
+    for token in (_resolve_ocean_config()[1], *_env_credentials()):
         if token:
             text = text.replace(token, "***")
     for pattern, replacement in _REDACTION_PATTERNS:
         text = pattern.sub(replacement, text)
     return text
+
+
+def guarded_call(
+    what: str,
+    classify: Callable[[Exception], str],
+    fn: Callable[[], _T],
+) -> _T:
+    """Run ``fn`` and convert any failure into a redacted SolverExecutionError.
+
+    Vendor-neutral core of the remote backends' error handling (3b spec
+    §20.8): ``classify`` maps the caught exception to a catalog code, and
+    the message is ``"<what>: <ExceptionClass>: <text>"`` passed through
+    :func:`redact`. The wrapped error is raised *after* the ``except`` block
+    has finished, so it carries neither ``__cause__`` nor ``__context__``:
+    the original exception (whose text may embed credentials) is not
+    reachable from the error that leaves the solver layer, and
+    ``traceback.format_exception`` / ``logger.exception`` cannot print it
+    (Phase 2 spec §19). The original class name is kept in the message
+    because it is categorical, not secret.
+    """
+    try:
+        return fn()
+    except Exception as exc:
+        error = SolverExecutionError(
+            redact(f"{what}: {type(exc).__name__}: {exc}"),
+            code=classify(exc),
+        )
+    raise error

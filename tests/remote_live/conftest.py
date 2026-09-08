@@ -1,8 +1,14 @@
-"""Fixtures for the opt-in live D-Wave tests (spec §28).
+"""Fixtures for the opt-in live remote tests (spec §28, 3b §20.5).
 
-These tests talk to real D-Wave hardware and consume Leap quota, so they are
-strictly opt-in: run them with ``pytest -m remote`` and a configured
-``DWAVE_API_TOKEN``.
+These tests talk to real vendor hardware and consume paid quota, so they
+are strictly opt-in: run them with ``pytest -m remote`` and the credential
+the module needs.
+
+Which credential that is comes from the test module itself: a module sets
+``REQUIRED_ENV = "FUJITSU_DA_API_KEY"`` (say) at import time and
+:func:`_require_live_opt_in` skips on *that* variable. Modules that do not
+declare one fall back to ``DWAVE_API_TOKEN``, so the three shipped D-Wave
+live files need no change.
 """
 
 import os
@@ -13,12 +19,13 @@ from annealbridge.orchestration import ExecutionPolicy
 
 
 @pytest.fixture(autouse=True)
-def _clear_dwave_api_token():
+def _clear_credential_env():
     """Override the root conftest fixture of the same name with a no-op.
 
-    The root fixture deletes ``DWAVE_API_TOKEN`` for every test so credential
-    and redaction tests are deterministic; the live tests are the one place
-    that needs the real token to reach D-Wave.
+    The root fixture deletes every vendor credential variable for every
+    test so credential and redaction tests are deterministic; the live
+    tests are the one place that needs the real credentials to reach the
+    vendor.
     """
     yield
 
@@ -26,14 +33,15 @@ def _clear_dwave_api_token():
 @pytest.fixture(autouse=True)
 def _require_live_opt_in(request):
     # This skip is the ONLY allowed skip in the whole suite (spec §28, §36):
-    # it does not hide a bug, it prevents accidental Leap-quota consumption
+    # it does not hide a bug, it prevents accidental paid-quota consumption
     # when the tests are invoked without explicit opt-in (`-m remote`) or
     # without credentials. Everything else in the suite must run for real.
     markexpr = request.config.getoption("markexpr", default="")
     if "remote" not in markexpr or "not remote" in markexpr:
-        pytest.skip("live D-Wave tests are opt-in: run with `pytest -m remote`")
-    if not os.environ.get("DWAVE_API_TOKEN"):
-        pytest.skip("DWAVE_API_TOKEN is not set; cannot reach D-Wave Leap")
+        pytest.skip("live remote tests are opt-in: run with `pytest -m remote`")
+    required = getattr(request.module, "REQUIRED_ENV", "DWAVE_API_TOKEN")
+    if not os.environ.get(required):
+        pytest.skip(f"{required} is not set; cannot reach the remote solver")
 
 
 @pytest.fixture

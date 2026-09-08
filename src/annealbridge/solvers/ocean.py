@@ -16,8 +16,7 @@ so the default registry (and this module) import cleanly without the
 import threading
 from typing import Any, Callable, TypeVar
 
-from annealbridge.exceptions import SolverExecutionError
-from annealbridge.solvers.metadata import classify_exception, redact
+from annealbridge.solvers.metadata import classify_exception, guarded_call
 
 __all__ = [
     "HYBRID_SAMPLE_EXCEPTION_CODES",
@@ -61,24 +60,16 @@ HYBRID_SAMPLE_EXCEPTION_CODES: dict[str, str] = {
 
 
 def call_ocean(what: str, codes: dict[str, str], fn: Callable[[], _T]) -> _T:
-    """Run ``fn`` and convert any failure into a redacted SolverExecutionError.
+    """Run ``fn`` and convert any Ocean failure into a redacted SolverExecutionError.
 
-    The wrapped error is raised *after* the ``except`` block has finished,
-    so it carries neither ``__cause__`` nor ``__context__``: the original
-    exception (whose text may embed credentials) is not reachable from the
-    error that leaves the solver layer, and ``traceback.format_exception``
-    / ``logger.exception`` cannot print it (Phase 2 spec §19). The original
-    class name is kept in the message because it is categorical, not
-    secret.
+    Thin wrapper over the vendor-neutral
+    :func:`~annealbridge.solvers.metadata.guarded_call` (3b spec §20.8):
+    the only Ocean-specific part is classifying the exception by class
+    name through ``codes`` (see :func:`classify_exception`). The wrapped
+    error carries neither ``__cause__`` nor ``__context__``, so credential
+    material in the original exception text cannot leak (Phase 2 §19).
     """
-    try:
-        return fn()
-    except Exception as exc:
-        error = SolverExecutionError(
-            redact(f"{what}: {type(exc).__name__}: {exc}"),
-            code=classify_exception(exc, codes),
-        )
-    raise error
+    return guarded_call(what, lambda exc: classify_exception(exc, codes), fn)
 
 
 def resolved(sampleset: Any) -> Any:

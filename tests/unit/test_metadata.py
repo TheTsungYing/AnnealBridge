@@ -8,19 +8,27 @@ import types
 
 import pytest
 
+from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import SolverExecutionMetadata
 from annealbridge.solvers.metadata import (
     _resolve_ocean_config,
+    guarded_call,
     ocean_config_status,
     redact,
     sanitize_sampleset_info,
 )
+from annealbridge.solvers.ocean import call_ocean
 
 FAKE_TOKEN = "DEV-" + "a" * 24
 # Deliberately does not match the ``DEV-[A-Za-z0-9]{20,}`` pattern, so only
 # the live env-var lookup can mask it.
 FAKE_ENV_TOKEN = "DEV-FAKE-TOKEN-1234567890abcdefghij"
 ENV_VAR = "DWAVE_API_TOKEN"
+
+# Fujitsu Digital Annealer credential (3b spec §20.5). Deliberately matches
+# no redaction pattern, so only the live env-var lookup can mask it.
+FUJITSU_ENV_VAR = "FUJITSU_DA_API_KEY"
+FAKE_FUJITSU_KEY = "fj-secret-key-987654"
 
 
 def _install_fake_ocean_config(monkeypatch, load_config) -> None:
@@ -103,6 +111,37 @@ class TestSanitizeSamplesetInfo:
 
         assert metadata.remote is False
         assert metadata.timing_us == {}
+
+    def test_fujitsu_timing_keys_are_whitelisted(self) -> None:
+        """3b §21: the DA's two timing facts survive, as floats."""
+        info = {
+            "timing": {
+                "solve_time": 5041.0,
+                "total_elapsed_time": 6123.5,
+                "cpu_time": 4900.0,  # not whitelisted
+            }
+        }
+
+        metadata = sanitize_sampleset_info(info, backend="fujitsu_da")
+
+        assert metadata.backend == "fujitsu_da"
+        assert metadata.remote is True
+        assert metadata.timing_us == {
+            "solve_time": 5041.0,
+            "total_elapsed_time": 6123.5,
+        }
+        assert all(type(v) is float for v in metadata.timing_us.values())
+
+    def test_fujitsu_string_timing_values_are_dropped(self) -> None:
+        """The vendor reports millisecond *strings*; the backend converts them.
+
+        Sanitization never parses: a value that is still a string is
+        dropped, so a backend that forgets the conversion loses the fact
+        instead of publishing a wrong unit.
+        """
+        info = {"timing": {"solve_time": "5041", "total_elapsed_time": "6123"}}
+
+        assert sanitize_sampleset_info(info, backend="fujitsu_da").timing_us == {}
 
 
 class TestRedact:
@@ -196,6 +235,150 @@ class TestRedact:
         redacted = redact(text)
         assert FAKE_ENV_TOKEN not in redacted
         assert "***" in redacted
+
+    # --- 3b §20.5: the Fujitsu credential and its header forms -------------
+
+    def test_fujitsu_env_key_is_masked(self, monkeypatch) -> None:
+        _block_ocean_config_import(monkeypatch)
+        monkeypatch.setenv(FUJITSU_ENV_VAR, FAKE_FUJITSU_KEY)
+
+        redacted = redact(f"POST /da/qubo failed with key {FAKE_FUJITSU_KEY}")
+
+        assert FAKE_FUJITSU_KEY not in redacted
+        assert "***" in redacted
+
+    def test_fujitsu_env_key_is_not_masked_without_the_variable(
+        self, monkeypatch
+    ) -> None:
+        """It matches no pattern, so only the live env lookup can mask it."""
+        _block_ocean_config_import(monkeypatch)
+        text = f"POST /da/qubo failed with key {FAKE_FUJITSU_KEY}"
+
+        assert redact(text) == text
+
+    def test_both_vendor_env_credentials_are_masked_together(
+        self, monkeypatch
+    ) -> None:
+        _block_ocean_config_import(monkeypatch)
+        monkeypatch.setenv(ENV_VAR, FAKE_ENV_TOKEN)
+        monkeypatch.setenv(FUJITSU_ENV_VAR, FAKE_FUJITSU_KEY)
+
+        redacted = redact(f"dwave={FAKE_ENV_TOKEN} fujitsu={FAKE_FUJITSU_KEY}")
+
+        assert FAKE_ENV_TOKEN not in redacted
+        assert FAKE_FUJITSU_KEY not in redacted
+        assert redacted == "dwave=*** fujitsu=***"
+
+    def test_api_key_header_is_masked(self) -> None:
+        redacted = redact("X-Api-Key: abc123secret\nHost: example.com")
+
+        assert "abc123secret" not in redacted
+        assert "X-Api-Key: ***" in redacted
+        assert "Host: example.com" in redacted
+
+    def test_access_token_header_is_masked(self) -> None:
+        redacted = redact("X-Access-Token: abc123secret\nHost: example.com")
+
+        assert "abc123secret" not in redacted
+        assert "X-Access-Token: ***" in redacted
+        assert "Host: example.com" in redacted
+
+    def test_api_key_in_json_headers_is_masked(self) -> None:
+        """Requests exceptions print the header dict as JSON, not as a header."""
+        redacted = redact('{"X-Api-Key": "abc"}')
+
+        assert redacted == '{"X-Api-Key": "***"}'
+
+    def test_api_key_in_json_headers_with_extra_spacing_is_masked(self) -> None:
+        redacted = redact('{"X-Api-Key":   "abc"}')
+
+        assert "abc" not in redacted
+        assert redacted == '{"X-Api-Key": "***"}'
+
+
+class TestGuardedCall:
+    """3b §20.8: the vendor-neutral wrapper behind every remote backend."""
+
+    def test_success_returns_the_value_unchanged(self) -> None:
+        sentinel = object()
+
+        assert guarded_call("solve", lambda exc: "X", lambda: sentinel) is sentinel
+
+    def test_failure_is_wrapped_with_the_classified_code(self) -> None:
+        def boom():
+            raise ValueError("upstream is unhappy")
+
+        with pytest.raises(SolverExecutionError) as excinfo:
+            guarded_call("submitting job", lambda exc: "REMOTE_BUSY", boom)
+
+        error = excinfo.value
+        assert error.code == "REMOTE_BUSY"
+        assert "submitting job" in str(error)
+        assert "ValueError" in str(error)
+        assert "upstream is unhappy" in str(error)
+
+    def test_classify_receives_the_original_exception(self) -> None:
+        seen: list[Exception] = []
+        original = KeyError("k")
+
+        def boom():
+            raise original
+
+        def classify(exc: Exception) -> str:
+            seen.append(exc)
+            return "REMOTE_SOLVER_ERROR"
+
+        with pytest.raises(SolverExecutionError):
+            guarded_call("solve", classify, boom)
+
+        assert seen == [original]
+
+    def test_original_exception_is_not_chained(self) -> None:
+        """§19: the raw exception text may embed credentials, so it must not
+        be reachable through ``__cause__`` / ``__context__``."""
+
+        def boom():
+            raise RuntimeError("secret in here")
+
+        with pytest.raises(SolverExecutionError) as excinfo:
+            guarded_call("solve", lambda exc: "REMOTE_SOLVER_ERROR", boom)
+
+        assert excinfo.value.__cause__ is None
+        assert excinfo.value.__context__ is None
+
+    def test_message_is_redacted(self, monkeypatch) -> None:
+        _block_ocean_config_import(monkeypatch)
+        monkeypatch.setenv(ENV_VAR, FAKE_ENV_TOKEN)
+
+        def boom():
+            raise RuntimeError(f"auth failed for {FAKE_ENV_TOKEN}")
+
+        with pytest.raises(SolverExecutionError) as excinfo:
+            guarded_call("solve", lambda exc: "REMOTE_AUTH_FAILED", boom)
+
+        message = str(excinfo.value)
+        assert FAKE_ENV_TOKEN not in message
+        assert "***" in message
+
+    def test_call_ocean_still_classifies_by_class_name(self) -> None:
+        """``call_ocean`` stays the Ocean-flavoured wrapper over guarded_call."""
+
+        class SolverAuthenticationError(Exception):
+            pass
+
+        def boom():
+            raise SolverAuthenticationError("bad token")
+
+        with pytest.raises(SolverExecutionError) as excinfo:
+            call_ocean(
+                "creating sampler",
+                {"SolverAuthenticationError": "REMOTE_AUTH_FAILED"},
+                boom,
+            )
+
+        assert excinfo.value.code == "REMOTE_AUTH_FAILED"
+        assert "creating sampler" in str(excinfo.value)
+        assert excinfo.value.__cause__ is None
 
 
 class TestOceanConfigStatus:

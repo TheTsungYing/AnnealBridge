@@ -803,8 +803,11 @@ class OptimizationService:
             # service must not rewrap them with unredacted content.
             logger.warning("Problem %s solver error: %s", problem.name, exc)
             code = getattr(exc, "code", None) or "SOLVER_ERROR"
+            # 3b §20.8: a backend may name the status (e.g. configuration_error
+            # for a request the remote side rejected as malformed).
+            status = getattr(exc, "status", None) or "solver_error"
             return self._failure(
-                "solver_error",
+                status,
                 backend.name,
                 direction,
                 [catalog_error(code, str(exc))],

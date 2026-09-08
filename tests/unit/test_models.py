@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from annealbridge.models import (
     Constraint,
     DWaveQPUOptions,
+    FujitsuDAOptions,
     LeapHybridBQMOptions,
     Objective,
     OptimizationProblem,
@@ -316,7 +317,14 @@ class TestRemoteBackendOptions:
 
     @pytest.mark.parametrize(
         "backend",
-        ["simulated_annealing", "exact", "dwave_qpu", "leap_hybrid_bqm"],
+        [
+            "simulated_annealing",
+            "exact",
+            "dwave_qpu",
+            "leap_hybrid_bqm",
+            "leap_hybrid_cqm",
+            "fujitsu_da",
+        ],
     )
     def test_backend_accepted(self, backend):
         prefs = SolverPreferences.model_validate({"backend": backend})
@@ -349,6 +357,50 @@ class TestRemoteBackendOptions:
         assert prefs.leap_hybrid_bqm is not None
         assert prefs.leap_hybrid_bqm.time_limit_seconds == 5.0
         assert prefs.dwave_qpu is None
+
+
+class TestFujitsuDAOptions:
+    """3b §20.2: the Digital Annealer option block and its vendor ranges."""
+
+    def test_all_fields_parsed(self):
+        prefs = SolverPreferences.model_validate(
+            {
+                "backend": "fujitsu_da",
+                "fujitsu_da": {
+                    "time_limit_seconds": 30,
+                    "num_run": 32,
+                    "num_group": 2,
+                    "num_output_solution": 10,
+                },
+            }
+        )
+        assert prefs.fujitsu_da is not None
+        assert prefs.fujitsu_da.time_limit_seconds == 30
+        assert prefs.fujitsu_da.num_run == 32
+        assert prefs.fujitsu_da.num_group == 2
+        assert prefs.fujitsu_da.num_output_solution == 10
+        assert prefs.dwave_qpu is None
+        assert prefs.leap_hybrid_cqm is None
+
+    def test_defaults_are_all_none(self):
+        """``None`` means "do not send the field"; the vendor default applies."""
+        options = FujitsuDAOptions()
+        assert options.time_limit_seconds is None
+        assert options.num_run is None
+        assert options.num_group is None
+        assert options.num_output_solution is None
+
+    def test_num_run_above_vendor_maximum_rejected(self):
+        with pytest.raises(ValidationError):
+            FujitsuDAOptions(num_run=2000)
+
+    def test_time_limit_seconds_zero_rejected(self):
+        with pytest.raises(ValidationError):
+            FujitsuDAOptions(time_limit_seconds=0)
+
+    def test_num_group_above_vendor_maximum_rejected(self):
+        with pytest.raises(ValidationError):
+            FujitsuDAOptions(num_group=17)
 
 
 class TestSolveError:

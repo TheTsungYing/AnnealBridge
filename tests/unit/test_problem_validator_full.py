@@ -708,6 +708,7 @@ class TestOptionBlockReflection:
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
+            "fujitsu_da",
         }
 
     def test_positive_fields_exclude_bool(self):
@@ -716,6 +717,10 @@ class TestOptionBlockReflection:
             ("dwave_qpu", "chain_strength"),
             ("leap_hybrid_bqm", "time_limit_seconds"),
             ("leap_hybrid_cqm", "time_limit_seconds"),
+            ("fujitsu_da", "time_limit_seconds"),
+            ("fujitsu_da", "num_run"),
+            ("fujitsu_da", "num_group"),
+            ("fujitsu_da", "num_output_solution"),
         }
 
     def test_seed_is_not_a_block(self):

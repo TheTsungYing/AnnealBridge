@@ -74,6 +74,14 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "Automatic retries are disabled for remote backends to protect "
         "quota; resubmit the request explicitly if a retry is intended."
     ),
+    "REMOTE_QUOTA_EXCEEDED": (
+        "The remote solver's usage quota for this billing period is "
+        "exhausted; wait for the next period or use a local backend."
+    ),
+    "REMOTE_BUSY": (
+        "The remote solver has too many pending jobs for this account; retry "
+        "later, or delete finished job results on the vendor portal."
+    ),
     "SOLVER_ERROR": (
         "The solver failed while executing; check the error message, adjust "
         "the problem or solver options, or try another backend."
@@ -201,6 +209,7 @@ RETRYABLE_CODES: frozenset[str] = frozenset(
         "CONCURRENCY_LIMIT",
         "REMOTE_TIMEOUT",
         "REMOTE_SOLVER_ERROR",
+        "REMOTE_BUSY",
     }
 )
 

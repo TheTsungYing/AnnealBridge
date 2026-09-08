@@ -57,6 +57,16 @@ class TestPhase1ExamplesStillParse:
         assert problem.version == "1.0"
         assert problem.solver.leap_hybrid_cqm is None
 
+    @pytest.mark.parametrize(
+        "filename",
+        ["knapsack.json", "assignment.json", "tsp.json", "integer_knapsack.json"],
+    )
+    def test_fujitsu_da_options_default_to_none(self, examples_dir, filename):
+        """3b §20.2: the ``fujitsu_da`` block is additive and defaults to None."""
+        path = examples_dir / filename
+        problem = OptimizationProblem.model_validate_json(path.read_text())
+        assert problem.solver.fujitsu_da is None
+
     @pytest.mark.parametrize("name", ["knapsack", "assignment", "tsp"])
     def test_phase1_examples_compile_bit_identical_to_golden(
         self, examples_dir, golden, name

@@ -25,6 +25,9 @@ EXPECTED_CODES = [
     "REMOTE_TIMEOUT",
     "REMOTE_SOLVER_ERROR",
     "REMOTE_RETRIES_DISABLED",
+    # Phase 3b spec §19 (Fujitsu Digital Annealer remote codes)
+    "REMOTE_QUOTA_EXCEEDED",
+    "REMOTE_BUSY",
     "SOLVER_ERROR",
     "DWAVE_CONFIG_INVALID",
     "BACKEND_UNAVAILABLE",
@@ -70,6 +73,7 @@ EXPECTED_RETRYABLE_CODES = {
     "CONCURRENCY_LIMIT",
     "REMOTE_TIMEOUT",
     "REMOTE_SOLVER_ERROR",
+    "REMOTE_BUSY",
 }
 
 
@@ -85,7 +89,7 @@ class TestRecommendedActions:
         assert set(RECOMMENDED_ACTIONS) == set(EXPECTED_CODES)
 
     def test_expected_codes_are_unique(self):
-        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 39
+        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 41
 
 
 class TestRetryableCodes:
@@ -262,8 +266,8 @@ def declared_error_codes() -> dict[str, list[str]]:
         ("SAMPLER_INIT_EXCEPTION_CODES", SAMPLER_INIT_EXCEPTION_CODES),
         ("HYBRID_SAMPLE_EXCEPTION_CODES", HYBRID_SAMPLE_EXCEPTION_CODES),
     ):
-        for exception_name, code in table.items():
-            found.setdefault(code, []).append(f"{table_name}[{exception_name!r}]")
+        for key, code in table.items():
+            found.setdefault(code, []).append(f"{table_name}[{key!r}]")
     found.setdefault(REMOTE_ERROR_FALLBACK_CODE, []).append("REMOTE_ERROR_FALLBACK_CODE")
     return found
 

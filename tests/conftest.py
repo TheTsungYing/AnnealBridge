@@ -32,13 +32,23 @@ def load_example():
     return _load
 
 
-@pytest.fixture(autouse=True)
-def _clear_dwave_api_token(monkeypatch):
-    """Remove ``DWAVE_API_TOKEN`` from the environment for every test.
+# Every vendor credential variable the runtime honours (3b spec §20.5).
+# ``FUJITSU_DA_URL`` is not a secret, but it is part of the same "is this
+# backend configured?" answer, so it is cleared with the keys.
+_CREDENTIAL_ENV_VARS = ("DWAVE_API_TOKEN", "FUJITSU_DA_API_KEY", "FUJITSU_DA_URL")
 
-    Ocean honours this variable, so a developer machine that has it set
-    would otherwise change the outcome of credential and redaction tests.
-    Tests that need the variable set it themselves after this fixture has
-    run, and are unaffected.
+
+@pytest.fixture(autouse=True)
+def _clear_credential_env(monkeypatch):
+    """Remove every vendor credential variable from the environment.
+
+    Ocean honours ``DWAVE_API_TOKEN`` and the Fujitsu Digital Annealer
+    backend honours ``FUJITSU_DA_API_KEY`` / ``FUJITSU_DA_URL``, so a
+    developer machine that has any of them set would otherwise change what
+    ``is_available()`` reports — and with it the capabilities view, the
+    recommend ranking, the CLI's backend table and every credential and
+    redaction test. Tests that need a variable set it themselves after this
+    fixture has run, and are unaffected.
     """
-    monkeypatch.delenv("DWAVE_API_TOKEN", raising=False)
+    for name in _CREDENTIAL_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)

@@ -22,6 +22,7 @@ from annealbridge.models.metadata import SolverExecutionMetadata
 from annealbridge.models.objective import LinearTerm, Objective, QuadraticTerm
 from annealbridge.models.problem import (
     DWaveQPUOptions,
+    FujitsuDAOptions,
     LeapHybridBQMOptions,
     LeapHybridCQMOptions,
     OptimizationProblem,
@@ -47,6 +48,7 @@ __all__ = [
     "ConstraintEvaluation",
     "ConstraintTrace",
     "DWaveQPUOptions",
+    "FujitsuDAOptions",
     "IntegerEncoding",
     "LeapHybridBQMOptions",
     "LeapHybridCQMOptions",

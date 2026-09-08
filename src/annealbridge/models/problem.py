@@ -42,6 +42,19 @@ class LeapHybridCQMOptions(BaseModel):
     time_limit_seconds: float | None = _FINITE  # None → sampler 最小值
 
 
+class FujitsuDAOptions(BaseModel):
+    """Options specific to the Fujitsu Digital Annealer backend (Phase 3b spec §20.2).
+
+    ``None`` means "do not send the field" so the vendor default applies
+    (time_limit_sec 10, num_run 16, num_group 1, num_output_solution 5).
+    The ranges are the vendor's documented ranges for QUBO API V4."""
+
+    time_limit_seconds: int | None = Field(default=None, ge=1, le=3600)
+    num_run: int | None = Field(default=None, ge=1, le=1024)
+    num_group: int | None = Field(default=None, ge=1, le=16)
+    num_output_solution: int | None = Field(default=None, ge=1, le=1024)
+
+
 class SolverPreferences(BaseModel):
     """Caller preferences for solver backend and search parameters.
 
@@ -58,6 +71,7 @@ class SolverPreferences(BaseModel):
         "dwave_qpu",
         "leap_hybrid_bqm",
         "leap_hybrid_cqm",
+        "fujitsu_da",
     ] = "simulated_annealing"
     num_reads: int = 100
     num_sweeps: int = 1000
@@ -68,6 +82,7 @@ class SolverPreferences(BaseModel):
     dwave_qpu: DWaveQPUOptions | None = None
     leap_hybrid_bqm: LeapHybridBQMOptions | None = None
     leap_hybrid_cqm: LeapHybridCQMOptions | None = None
+    fujitsu_da: FujitsuDAOptions | None = None
 
 
 class OptimizationProblem(BaseModel):
