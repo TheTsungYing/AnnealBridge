@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from annealbridge.exceptions import CompilationError
 from annealbridge.models import Constraint
 from annealbridge.validation.estimates import (
+    Bounds,
     accumulate_terms,
     analyze_inequality,
     compute_slack_coefficients,
@@ -53,8 +54,14 @@ class InequalityEncoding:
     redundant: bool
 
 
-def encode_slack(constraint: Constraint) -> InequalityEncoding:
+def encode_slack(
+    constraint: Constraint, bounds: Bounds | None = None
+) -> InequalityEncoding:
     """Encode a ``<=`` or ``>=`` constraint with binary slack variables.
+
+    ``bounds`` (``variable_bounds(problem)``) sizes the slack range from the
+    variables' real ranges (3b §8); ``None`` treats every variable as binary,
+    which is the Phase 1 behaviour. Production callers always pass it.
 
     Raises :class:`CompilationError` for a hard constraint that can never be
     satisfied. The validator judges trivial infeasibility on the same
@@ -70,7 +77,7 @@ def encode_slack(constraint: Constraint) -> InequalityEncoding:
             f"for constraint {constraint.id}"
         )
 
-    analysis = analyze_inequality(constraint)
+    analysis = analyze_inequality(constraint, bounds)
     if analysis.redundant:
         return InequalityEncoding(
             coefficients=analysis.coefficients,

@@ -32,7 +32,7 @@ from annealbridge.models import (
     OptimizationProblem,
 )
 from annealbridge.penalty.strategy import compute_objective_scale
-from annealbridge.validation.estimates import accumulate_terms
+from annealbridge.validation.estimates import accumulate_terms, variable_bounds
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +77,7 @@ class CQMCompiler:
             raise CompilationError(
                 f"CQMCompiler does not use a hard_penalty; got {hard_penalty!r}"
             )
+        bounds = variable_bounds(problem)
         cqm = dimod.ConstrainedQuadraticModel()
         for variable in problem.variables:
             cqm.add_variable("BINARY", variable.name)
@@ -94,7 +95,7 @@ class CQMCompiler:
             internal_variables=set(),
             constraint_trace=constraint_trace,
             hard_penalty=None,
-            objective_scale=compute_objective_scale(problem.objective),
+            objective_scale=compute_objective_scale(problem.objective, bounds),
             # dimod 0.12.22: ``ConstrainedQuadraticModel.num_variables`` is a
             # method, not a property.
             num_variables=len(cqm.variables),

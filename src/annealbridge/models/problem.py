@@ -1,4 +1,10 @@
-"""Optimization problem schema — the public JSON API (version 1.0)."""
+"""Optimization problem schema — the public JSON API (versions 1.0 and 1.1).
+
+``"1.0"`` problems only have binary variables; ``"1.1"`` (3b spec §7) is a
+superset that also allows bounded integer variables. A 1.0 problem carrying
+an integer variable is rejected by the problem validator, never silently
+upgraded.
+"""
 
 from typing import Literal
 
@@ -67,7 +73,7 @@ class SolverPreferences(BaseModel):
 class OptimizationProblem(BaseModel):
     """A structured combinatorial optimization problem."""
 
-    version: Literal["1.0"] = "1.0"
+    version: Literal["1.0", "1.1"] = "1.0"
     name: str
     description: str | None = None
     variables: list[Variable]

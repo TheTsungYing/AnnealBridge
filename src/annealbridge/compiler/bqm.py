@@ -16,6 +16,7 @@ from annealbridge.models import (
     OptimizationProblem,
 )
 from annealbridge.penalty.strategy import compute_objective_scale
+from annealbridge.validation.estimates import Bounds, variable_bounds
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ class BQMCompiler:
         """
         if hard_penalty is None:
             raise CompilationError("BQMCompiler requires a hard_penalty; got None")
+        bounds = variable_bounds(problem)
         bqm = dimod.BinaryQuadraticModel(vartype="BINARY")
         for variable in problem.variables:
             bqm.add_variable(variable.name)
@@ -81,7 +83,9 @@ class BQMCompiler:
 
         internal_variables: set[str] = set()
         constraint_trace = [
-            self._compile_constraint(bqm, constraint, hard_penalty, internal_variables)
+            self._compile_constraint(
+                bqm, constraint, hard_penalty, internal_variables, bounds
+            )
             for constraint in problem.constraints
         ]
 
@@ -92,7 +96,7 @@ class BQMCompiler:
             internal_variables=internal_variables,
             constraint_trace=constraint_trace,
             hard_penalty=hard_penalty,
-            objective_scale=compute_objective_scale(problem.objective),
+            objective_scale=compute_objective_scale(problem.objective, bounds),
             num_variables=bqm.num_variables,
         )
         logger.info(
@@ -118,6 +122,7 @@ class BQMCompiler:
         constraint: Constraint,
         hard_penalty: float,
         internal_variables: set[str],
+        bounds: Bounds,
     ) -> ConstraintTrace:
         # §10.4: hard penalty and soft weight come from different sources and
         # must never substitute for each other.
@@ -142,7 +147,7 @@ class BQMCompiler:
             }
             _add_squared_penalty(bqm, coefficients, -constraint.rhs, lam)
         else:
-            encoding = encode_slack(constraint)
+            encoding = encode_slack(constraint, bounds)
             redundant = encoding.redundant
             slack_range = encoding.slack_range
             if not redundant:

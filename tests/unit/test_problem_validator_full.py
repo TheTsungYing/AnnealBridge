@@ -66,10 +66,15 @@ def make_problem(
     constraints: list[dict] | None = None,
     solver: dict | None = None,
 ) -> OptimizationProblem:
-    """Build a legal OptimizationProblem with sensible defaults."""
+    """Build a legal OptimizationProblem with sensible defaults.
+
+    ``variables`` entries are names (binary) or full variable dicts (see
+    :func:`integer`); a problem with any integer variable is version 1.1.
+    """
+    declared = [entry if isinstance(entry, dict) else {"name": entry} for entry in variables]
     payload: dict = {
         "name": "full validator test problem",
-        "variables": [{"name": name} for name in variables],
+        "variables": declared,
         "objective": {
             "direction": direction,
             "linear_terms": linear if linear is not None else [lin("x1", 10)],
@@ -80,7 +85,13 @@ def make_problem(
     }
     if solver is not None:
         payload["solver"] = solver
+    if any(entry.get("type") == "integer" for entry in declared):
+        payload["version"] = "1.1"
     return OptimizationProblem.model_validate(payload)
+
+
+def integer(name: str, lower: int, upper: int) -> dict:
+    return {"name": name, "type": "integer", "lower_bound": lower, "upper_bound": upper}
 
 
 def warning_codes(result) -> set[str]:
@@ -784,6 +795,15 @@ class TestWarningPayload:
                 capabilities=caps(supports_seed=False, supports_num_reads=False),
             ),
             validate_problem_full(make_problem(linear=[lin("x1", 2), lin("x1", 3)])),
+            validate_problem_full(  # 3b: 21 encoding bits on the BQM path
+                make_problem(variables=(integer("n", 0, 2**20), "x1"))
+            ),
+            validate_problem_full(  # 3b: two 31-bit integers coupled by a constraint
+                make_problem(
+                    variables=(integer("n", 0, 2**31 - 1), integer("m", 0, 2**31 - 1), "x1"),
+                    constraints=[hard("cap", "<=", 1000, [lin("n", 1), lin("m", 1)])],
+                )
+            ),
         ]
 
     def test_every_warning_code_is_covered(self):
@@ -800,6 +820,8 @@ class TestWarningPayload:
             "SEED_IGNORED",
             "PARAMETER_IGNORED",
             "DUPLICATE_TERM_MERGED",
+            "LARGE_INTEGER_RANGE",
+            "INTEGER_QUADRATIC_BLOWUP",
         }
 
     def test_warnings_are_not_retryable_and_carry_an_action(self):
@@ -889,3 +911,161 @@ class TestCountSlackBitsNeverClampsHard:
         assert count_slack_bits(problem.constraints[0]) == 0
         compiled = BQMCompiler().compile(problem, hard_penalty=2.0)
         assert compiled.num_variables == estimate_compiled_variables(problem)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3b: integer variables (spec §9.3, §9.4)
+# ---------------------------------------------------------------------------
+
+
+class TestLargeIntegerRange:
+    """§9.3 row LARGE_INTEGER_RANGE: more than the bit threshold, BQM path only."""
+
+    def make(self, upper: int) -> OptimizationProblem:
+        return make_problem(variables=(integer("n", 0, upper), "x1"))
+
+    def test_eleven_bits_warns(self):
+        result = validate_problem_full(self.make(1024))  # 11 bits
+        warnings = warnings_with(result, "LARGE_INTEGER_RANGE")
+        assert len(warnings) == 1
+        assert warnings[0].path == "variables[0]"
+        assert "11 encoding bits" in warnings[0].message
+
+    def test_ten_bits_does_not_warn(self):
+        result = validate_problem_full(self.make(1023))  # 10 bits
+        assert "LARGE_INTEGER_RANGE" not in warning_codes(result)
+
+    def test_cqm_path_does_not_warn(self):
+        result = validate_problem_full(self.make(1024), model_type="cqm")
+        assert "LARGE_INTEGER_RANGE" not in warning_codes(result)
+
+    def test_negative_lower_bound_counts_the_span(self):
+        problem = make_problem(variables=(integer("n", -1024, 1023), "x1"))  # span 2047
+        assert "LARGE_INTEGER_RANGE" in warning_codes(validate_problem_full(problem))
+
+
+class TestIntegerQuadraticBlowup:
+    """§9.3 row INTEGER_QUADRATIC_BLOWUP: estimated interactions above the threshold."""
+
+    def coupled(self, upper: int) -> OptimizationProblem:
+        return make_problem(
+            variables=(integer("n", 0, upper), integer("m", 0, upper), "x1"),
+            constraints=[hard("cap", "<=", 1000, [lin("n", 1), lin("m", 1)])],
+        )
+
+    def test_wide_integers_in_one_constraint_warn(self):
+        # 31 + 31 bits plus 10 slack bits: 72 * 71 / 2 = 2556 interactions.
+        result = validate_problem_full(self.coupled(2**31 - 1))
+        warnings = warnings_with(result, "INTEGER_QUADRATIC_BLOWUP")
+        assert len(warnings) == 1
+        assert warnings[0].path == "variables"
+        assert "2556" in warnings[0].message
+
+    def test_small_integers_do_not_warn(self):
+        result = validate_problem_full(self.coupled(7))
+        assert "INTEGER_QUADRATIC_BLOWUP" not in warning_codes(result)
+
+    def test_cqm_path_does_not_warn(self):
+        result = validate_problem_full(self.coupled(2**31 - 1), model_type="cqm")
+        assert "INTEGER_QUADRATIC_BLOWUP" not in warning_codes(result)
+
+    def test_all_binary_problem_never_warns_however_dense(self):
+        names = tuple(f"x{index}" for index in range(1, 101))
+        problem = make_problem(
+            variables=names,
+            constraints=[hard("one", "==", 1, [lin(name, 1) for name in names])],
+        )
+        result = validate_problem_full(problem)
+        assert "INTEGER_QUADRATIC_BLOWUP" not in warning_codes(result)
+
+    def test_integer_warning_texts_name_no_backend_and_no_number(self):
+        for code in ("LARGE_INTEGER_RANGE", "INTEGER_QUADRATIC_BLOWUP"):
+            action = problem_validator._WARNING_RECOMMENDED_ACTIONS[code]
+            assert not any(char.isdigit() for char in action)
+
+
+class TestIntegerEstimates:
+    """§9.4: the estimate follows the model type."""
+
+    def make(self, *constraints: dict) -> OptimizationProblem:
+        return make_problem(
+            variables=(integer("x", 0, 7), integer("y", 0, 3), "b"),
+            linear=[lin("x", 1)],
+            constraints=list(constraints),
+        )
+
+    def test_bqm_estimate_counts_encoding_and_slack_bits(self):
+        # 3 + 2 + 1 encoding bits, plus 3 slack bits for x + y <= 5.
+        result = validate_problem_full(
+            self.make(hard("cap", "<=", 5, [lin("x", 1), lin("y", 1)]))
+        )
+        assert result.model_type == "bqm"
+        assert result.estimated_compiled_variables == 9
+
+    @pytest.mark.parametrize(
+        "constraint, extra",
+        [
+            # soft inequality on an integer with a positive slack range: +1
+            (soft("cap", "<=", 5, [lin("x", 1), lin("y", 1)], 2.0), 1),
+            (soft("cover", ">=", 2, [lin("x", 1)], 2.0), 1),
+            # hard constraints are native, no slack
+            (hard("cap", "<=", 5, [lin("x", 1), lin("y", 1)]), 0),
+            # soft equality: objective form without a slack
+            (soft("eq", "==", 5, [lin("x", 1)], 2.0), 0),
+            # soft inequality over binary variables only: native dimod form
+            (soft("bin", "<=", 0, [lin("b", 1)], 2.0), 0),
+            # redundant: nothing is added
+            (soft("loose", "<=", 100, [lin("x", 1)], 2.0), 0),
+            # trivially infeasible soft (clamped): no slack variable
+            (soft("never", ">=", 100, [lin("x", 1)], 2.0), 0),
+            # slack range exactly zero: no slack variable
+            (soft("tight", "<=", 0, [lin("x", 1)], 2.0), 0),
+        ],
+    )
+    def test_cqm_estimate_adds_integer_soft_slacks(self, constraint, extra):
+        result = validate_problem_full(self.make(constraint), model_type="cqm")
+        assert result.model_type == "cqm"
+        assert result.estimated_compiled_variables == 3 + extra
+
+    def test_cqm_estimate_for_all_binary_is_the_variable_count(self):
+        problem = make_problem(
+            constraints=[soft("cap", "<=", 1, [lin("x1", 1), lin("x2", 1)], 2.0)]
+        )
+        assert validate_problem_full(problem, model_type="cqm").estimated_compiled_variables == 3
+
+
+class TestDenseForQPUCountsBits:
+    """§9.3: the constraint-width condition counts compiled bits, not variables."""
+
+    def test_one_wide_integer_in_a_constraint_warns(self):
+        # 31 encoding bits + 3 slack bits for n <= 5: 34 bits > 30 in one
+        # constraint (the estimate also counts the untouched binary x1).
+        problem = make_problem(
+            variables=(integer("n", 0, 2**31 - 1), "x1"),
+            constraints=[hard("cap", "<=", 5, [lin("n", 1)])],
+        )
+        result = validate_problem_full(problem, capabilities=caps(requires_embedding=True))
+        assert result.estimated_compiled_variables == 35
+        (warning,) = warnings_with(result, "DENSE_FOR_QPU")
+        assert "34 compiled bits" in warning.message
+
+    def test_narrow_integer_does_not_warn(self):
+        problem = make_problem(
+            variables=(integer("n", 0, 7), "x1"),
+            constraints=[hard("cap", "<=", 5, [lin("n", 1)])],
+        )
+        result = validate_problem_full(problem, capabilities=caps(requires_embedding=True))
+        assert "DENSE_FOR_QPU" not in warning_codes(result)
+
+
+class TestBoundsAwareObjectiveScale:
+    def test_objective_scale_uses_the_integer_magnitudes(self):
+        problem = make_problem(
+            variables=(integer("n", -5, 3), "x1"),
+            linear=[lin("n", 2), lin("x1", 1)],
+            quadratic=[quad("n", "x1", 1)],
+        )
+        result = validate_problem_full(problem)
+        # 2 * 5 + 1 * 1 + 1 * 5 * 1
+        assert result.objective_scale == 16.0
+        assert compute_objective_scale(problem.objective) == 4.0  # binary reading

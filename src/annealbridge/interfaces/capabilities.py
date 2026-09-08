@@ -36,7 +36,10 @@ class BackendCapability(BaseModel):
 class OptimizationCapabilities(BaseModel):
     """Everything an agent needs before formulating and submitting a problem."""
 
+    # The newest problem schema version this server accepts; every version
+    # in ``schema_versions`` is accepted (3b §10: 1.1 is a superset of 1.0).
     schema_version: str
+    schema_versions: list[str]
     supported_variable_types: list[str]
     supported_constraint_operators: list[str]
     supported_objective_terms: list[str]
@@ -85,10 +88,12 @@ def build_capabilities(
                 description=caps.description,
             )
         )
+    schema_versions = list(
+        get_args(OptimizationProblem.model_fields["version"].annotation)
+    )
     return OptimizationCapabilities(
-        schema_version=get_args(
-            OptimizationProblem.model_fields["version"].annotation
-        )[0],
+        schema_version=schema_versions[-1],
+        schema_versions=schema_versions,
         supported_variable_types=list(
             get_args(Variable.model_fields["type"].annotation)
         ),

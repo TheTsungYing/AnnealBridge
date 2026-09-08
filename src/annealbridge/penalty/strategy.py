@@ -14,6 +14,7 @@ from annealbridge.models import OptimizationProblem
 from annealbridge.validation.estimates import (
     compute_objective_scale,
     compute_penalty_scale,
+    variable_bounds,
 )
 
 __all__ = [
@@ -52,11 +53,17 @@ class ScaledPenaltyStrategy:
     every retry doubles the previous penalty. Without soft constraints
     ``penalty_scale == objective_scale``. Not claimed to be mathematically
     optimal; the multiplier is overridable for debugging.
+
+    With integer variables (3b §8) the reading of the Phase 1 formula is
+    unchanged: ``objective_scale`` is still an upper bound on the largest
+    absolute value the objective can take, now over the declared bounds
+    instead of over ``{0, 1}``, and the soft bound is taken over the same
+    ranges. For an all-binary problem every number is identical to 3a.
     """
 
     def objective_scale(self, problem: OptimizationProblem) -> float:
         """Return the §18 objective-only scale for ``problem``."""
-        return compute_objective_scale(problem.objective)
+        return compute_objective_scale(problem.objective, variable_bounds(problem))
 
     def penalty_scale(self, problem: OptimizationProblem) -> float:
         """Return the §18 penalty scale (objective scale + soft bound)."""

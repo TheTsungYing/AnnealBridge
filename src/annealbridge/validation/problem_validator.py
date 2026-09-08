@@ -32,15 +32,22 @@ from annealbridge.models import (
     SolveError,
     SolverCapabilities,
     SolverPreferences,
+    Variable,
     catalog_error,
 )
 from annealbridge.validation.estimates import (
+    Bounds,
     accumulate_terms,
     analyze_inequality,
     compute_objective_scale,
+    constraint_bit_count,
     count_slack_bits,
     estimate_compiled_variables,
+    estimate_cqm_variables,
+    estimate_encoded_interactions,
+    integer_encoding_bits,
     lhs_bounds,
+    variable_bounds,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,19 +58,31 @@ LARGE_SLACK_BITS_THRESHOLD = 10
 EXACT_NEAR_LIMIT_RATIO = 0.8
 QPU_DENSE_VARIABLE_THRESHOLD = 150
 QPU_DENSE_CONSTRAINT_VARIABLE_THRESHOLD = 30
+# 3b §9.3 integer-encoding thresholds (BQM path only).
+LARGE_INTEGER_BITS_THRESHOLD = 10
+INTEGER_QUADRATIC_BLOWUP_THRESHOLD = 2000
+# 3b §7: integer bounds must lie within ±(2^31-1) so every encoded value,
+# every product of two values and every float64 evaluation stays exact.
+INTEGER_BOUND_LIMIT = 2**31 - 1
 
 # Defaults are read off the model so they can never drift from the schema.
 _DEFAULT_SOLVER_PREFERENCES = SolverPreferences()
 
 # Every error code this validator can emit (Phase 1 spec §12 plus
-# NO_VARIABLES). Each must have a fixed recommended_action in the error
-# catalog; tests/unit/test_error_catalog.py enforces the coverage.
+# NO_VARIABLES, plus the 3b §9.1 integer rules). Each must have a fixed
+# recommended_action in the error catalog; tests/unit/test_error_catalog.py
+# enforces the coverage.
 VALIDATOR_ERROR_CODES: frozenset[str] = frozenset(
     {
+        "BOUNDS_ON_BINARY",
         "DUPLICATE_CONSTRAINT_ID",
         "DUPLICATE_VARIABLE",
         "EMPTY_CONSTRAINT",
         "HARD_CONSTRAINT_HAS_WEIGHT",
+        "INTEGER_BOUNDS_INVALID",
+        "INTEGER_BOUNDS_MISSING",
+        "INTEGER_RANGE_TOO_LARGE",
+        "INTEGER_REQUIRES_VERSION_1_1",
         "INVALID_SOLVER_PREFERENCE",
         "NON_FINITE_COEFFICIENT",
         "NON_INTEGER_INEQUALITY",
@@ -180,6 +199,18 @@ _WARNING_RECOMMENDED_ACTIONS: dict[str, str] = {
         "This inequality is always satisfied and adds nothing to the model; "
         "remove it, or fix its bound if it was meant to restrict solutions."
     ),
+    # 3b §9.3 / §19 (the bit threshold is LARGE_INTEGER_BITS_THRESHOLD and
+    # is reported in the message, never in this fixed guidance).
+    "LARGE_INTEGER_RANGE": (
+        "An integer variable needs more encoding bits on a BQM backend than "
+        "is comfortable; tighten its bounds, rescale its unit, or use a "
+        "backend that accepts integer variables natively."
+    ),
+    "INTEGER_QUADRATIC_BLOWUP": (
+        "Binary-encoding the integer variables produces many quadratic "
+        "interactions on a BQM backend; prefer a backend that accepts "
+        "integer variables natively (model type cqm), or reduce the ranges."
+    ),
 }
 
 
@@ -220,12 +251,21 @@ def _collect(
     """
     errors: list[SolveError] = []
     known_variables = {variable.name for variable in problem.variables}
+    # Error-pass views of the variables: a type per name and a bounds tuple
+    # per name that is None when the declared bounds are illegal (3b §9.2).
+    # ``Variable.bounds()`` is never called here — it raises on exactly the
+    # variables this pass is about to report.
+    variable_types = {variable.name: variable.type for variable in problem.variables}
+    safe_bounds = {
+        variable.name: _declared_bounds(variable) for variable in problem.variables
+    }
 
     _check_variables(problem, errors)
+    _check_version(problem, errors)
     _check_constraint_ids(problem, errors)
-    _check_objective(problem, known_variables, errors)
+    _check_objective(problem, known_variables, variable_types, errors)
     for index, constraint in enumerate(problem.constraints):
-        _check_constraint(constraint, index, known_variables, errors)
+        _check_constraint(constraint, index, known_variables, safe_bounds, errors)
     _check_solver_preferences(problem, errors)
 
     duplicate_warnings: list[SolveError] = []
@@ -258,8 +298,9 @@ def validate_problem_full(
 
     ``model_type`` is the compiler path the caller will actually take; it
     falls back to ``capabilities.preferred_model_type`` (``"bqm"`` without
-    capabilities). A CQM path has no slack, so its estimate is the plain
-    variable count (§9.2).
+    capabilities). The BQM estimate counts encoding and slack bits; the CQM
+    estimate is the variable count plus the integer slacks of 3b §15.3
+    (§9.4).
     """
     errors, duplicate_warnings = _collect(problem)
     if errors:
@@ -268,19 +309,22 @@ def validate_problem_full(
     if model_type is None:
         model_type = capabilities.preferred_model_type if capabilities else "bqm"
 
-    objective_scale = compute_objective_scale(problem.objective)
+    # Safe from here on: the error pass guarantees every bound is legal.
+    bounds = variable_bounds(problem)
+    objective_scale = compute_objective_scale(problem.objective, bounds)
     estimated = (
         estimate_compiled_variables(problem)
         if model_type == "bqm"
-        else len(problem.variables)
+        else estimate_cqm_variables(problem)
     )
 
     warnings: list[SolveError] = []
     _warn_soft_weights(problem, objective_scale, warnings)
-    _warn_inequalities(problem, warnings)
+    _warn_inequalities(problem, bounds, warnings)
+    _warn_integer_encoding(problem, bounds, model_type, warnings)
     if capabilities is not None:
         _warn_backend_fit(
-            problem, estimated, capabilities, max_compiled_variables, warnings
+            problem, estimated, bounds, capabilities, max_compiled_variables, warnings
         )
         _warn_ignored_parameters(problem, capabilities, model_type, warnings)
     warnings.extend(duplicate_warnings)
@@ -333,12 +377,12 @@ def _warn_soft_weights(
 
 
 def _warn_inequalities(
-    problem: OptimizationProblem, warnings: list[SolveError]
+    problem: OptimizationProblem, bounds: Bounds, warnings: list[SolveError]
 ) -> None:
     for index, constraint in enumerate(problem.constraints):
         if constraint.operator not in ("<=", ">="):
             continue
-        analysis = analyze_inequality(constraint)
+        analysis = analyze_inequality(constraint, bounds)
         if analysis.redundant:
             warnings.append(
                 _warning(
@@ -352,7 +396,7 @@ def _warn_inequalities(
                 )
             )
             continue
-        slack_bits = count_slack_bits(constraint)
+        slack_bits = count_slack_bits(constraint, bounds)
         if slack_bits > LARGE_SLACK_BITS_THRESHOLD:
             warnings.append(
                 _warning(
@@ -368,9 +412,60 @@ def _warn_inequalities(
             )
 
 
+def _warn_integer_encoding(
+    problem: OptimizationProblem,
+    bounds: Bounds,
+    model_type: ModelType,
+    warnings: list[SolveError],
+) -> None:
+    """3b §9.3: cost of binary-encoding integer variables on the BQM path.
+
+    A CQM path takes integer variables natively, so neither warning applies
+    there.
+    """
+    if model_type != "bqm":
+        return
+    has_integer = False
+    for index, variable in enumerate(problem.variables):
+        if variable.type != "integer":
+            continue
+        has_integer = True
+        bits = integer_encoding_bits(*bounds[variable.name])
+        if bits > LARGE_INTEGER_BITS_THRESHOLD:
+            warnings.append(
+                _warning(
+                    "LARGE_INTEGER_RANGE",
+                    f"variables[{index}]",
+                    (
+                        f"Integer variable {variable.name} with bounds "
+                        f"{list(bounds[variable.name])} needs {bits} encoding bits "
+                        f"on a BQM backend (more than "
+                        f"{LARGE_INTEGER_BITS_THRESHOLD}); the compiled model "
+                        "grows accordingly"
+                    ),
+                )
+            )
+    if not has_integer:
+        return
+    interactions = estimate_encoded_interactions(problem)
+    if interactions > INTEGER_QUADRATIC_BLOWUP_THRESHOLD:
+        warnings.append(
+            _warning(
+                "INTEGER_QUADRATIC_BLOWUP",
+                "variables",
+                (
+                    f"Binary-encoding the integer variables yields up to "
+                    f"{interactions} quadratic interactions on a BQM backend "
+                    f"(more than {INTEGER_QUADRATIC_BLOWUP_THRESHOLD})"
+                ),
+            )
+        )
+
+
 def _warn_backend_fit(
     problem: OptimizationProblem,
     estimated: int,
+    bounds: Bounds,
     caps: SolverCapabilities,
     max_compiled_variables: int | None,
     warnings: list[SolveError],
@@ -404,9 +499,12 @@ def _warn_backend_fit(
             )
 
     if caps.requires_embedding:
+        # A squared penalty forms its clique over compiled *bits* (3b §9.3):
+        # one per binary variable, the encoding bits of an integer one, plus
+        # the constraint's slack bits.
         max_constraint_variables = max(
             (
-                len({term.variable for term in constraint.terms})
+                constraint_bit_count(constraint, bounds)
                 for constraint in problem.constraints
             ),
             default=0,
@@ -419,8 +517,8 @@ def _warn_backend_fit(
             )
         if max_constraint_variables > QPU_DENSE_CONSTRAINT_VARIABLE_THRESHOLD:
             reasons.append(
-                f"largest constraint involves {max_constraint_variables} "
-                f"variables (more than "
+                f"largest constraint spans {max_constraint_variables} "
+                f"compiled bits (more than "
                 f"{QPU_DENSE_CONSTRAINT_VARIABLE_THRESHOLD})"
             )
         if reasons:
@@ -576,6 +674,97 @@ def _check_variables(problem: OptimizationProblem, errors: list[SolveError]) -> 
                     ),
                 )
             )
+        _check_variable_bounds(variable, f"variables[{index}]", errors)
+
+
+def _check_variable_bounds(variable: Variable, path: str, errors: list[SolveError]) -> None:
+    """3b §9.1: integer variables need legal bounds, binary ones take none."""
+    lower, upper = variable.lower_bound, variable.upper_bound
+    if variable.type == "binary":
+        if lower is not None or upper is not None:
+            errors.append(
+                _error(
+                    code="BOUNDS_ON_BINARY",
+                    path=path,
+                    message=(
+                        f"Binary variable {variable.name} declares bounds "
+                        f"[{lower}, {upper}]; binary variables are always 0/1"
+                    ),
+                )
+            )
+        return
+
+    if lower is None or upper is None:
+        errors.append(
+            _error(
+                code="INTEGER_BOUNDS_MISSING",
+                path=path,
+                message=(
+                    f"Integer variable {variable.name} needs both lower_bound and "
+                    f"upper_bound, got lower_bound={lower}, upper_bound={upper}"
+                ),
+            )
+        )
+        return
+    if upper <= lower:
+        errors.append(
+            _error(
+                code="INTEGER_BOUNDS_INVALID",
+                path=path,
+                message=(
+                    f"Integer variable {variable.name} has upper_bound {upper} "
+                    f"<= lower_bound {lower}; a variable needs at least two values"
+                ),
+            )
+        )
+    if abs(lower) > INTEGER_BOUND_LIMIT or abs(upper) > INTEGER_BOUND_LIMIT:
+        errors.append(
+            _error(
+                code="INTEGER_RANGE_TOO_LARGE",
+                path=path,
+                message=(
+                    f"Integer variable {variable.name} has bounds [{lower}, {upper}] "
+                    f"outside the supported range of ±{INTEGER_BOUND_LIMIT}"
+                ),
+            )
+        )
+
+
+def _declared_bounds(variable: Variable) -> tuple[int, int] | None:
+    """The variable's range if its declaration is legal, else ``None``.
+
+    Mirrors :func:`_check_variable_bounds` without raising: the error pass
+    uses it to skip range-based checks on variables it has already reported.
+    """
+    if variable.type == "binary":
+        if variable.lower_bound is None and variable.upper_bound is None:
+            return (0, 1)
+        return None
+    lower, upper = variable.lower_bound, variable.upper_bound
+    if lower is None or upper is None or upper <= lower:
+        return None
+    if abs(lower) > INTEGER_BOUND_LIMIT or abs(upper) > INTEGER_BOUND_LIMIT:
+        return None
+    return (lower, upper)
+
+
+def _check_version(problem: OptimizationProblem, errors: list[SolveError]) -> None:
+    """3b §7: integer variables exist only from schema version 1.1 on."""
+    if problem.version != "1.0":
+        return
+    integer_names = [v.name for v in problem.variables if v.type == "integer"]
+    if integer_names:
+        errors.append(
+            _error(
+                code="INTEGER_REQUIRES_VERSION_1_1",
+                path="version",
+                message=(
+                    f"Problem declares integer variables ({', '.join(integer_names)}) "
+                    f"but version is {problem.version!r}; integer variables require "
+                    'version "1.1"'
+                ),
+            )
+        )
 
 
 def _check_constraint_ids(
@@ -597,6 +786,7 @@ def _check_constraint_ids(
 def _check_objective(
     problem: OptimizationProblem,
     known_variables: set[str],
+    variable_types: dict[str, str],
     errors: list[SolveError],
 ) -> None:
     objective = problem.objective
@@ -613,7 +803,13 @@ def _check_objective(
         for variable in (term.variable1, term.variable2):
             if variable not in known_variables:
                 errors.append(_unknown_variable(variable, path))
-        if term.variable1 == term.variable2:
+        # x*x collapses to x only for a binary variable; an integer's square
+        # is a legitimate quadratic term (3b §9.2). Unknown names keep the
+        # Phase 1 verdict (they are reported as UNKNOWN_VARIABLE as well).
+        if (
+            term.variable1 == term.variable2
+            and variable_types.get(term.variable1, "binary") == "binary"
+        ):
             errors.append(
                 _error(
                     code="SELF_QUADRATIC_TERM",
@@ -654,6 +850,7 @@ def _check_constraint(
     constraint: Constraint,
     index: int,
     known_variables: set[str],
+    safe_bounds: dict[str, tuple[int, int] | None],
     errors: list[SolveError],
 ) -> None:
     base = f"constraints[{index}]"
@@ -711,18 +908,24 @@ def _check_constraint(
                 _non_finite(f"weight {constraint.weight}", f"{base}.weight")
             )
 
-    _check_trivially_infeasible(constraint, base, errors)
+    _check_trivially_infeasible(constraint, base, safe_bounds, errors)
 
 
 def _check_trivially_infeasible(
-    constraint: Constraint, base: str, errors: list[SolveError]
+    constraint: Constraint,
+    base: str,
+    safe_bounds: dict[str, tuple[int, int] | None],
+    errors: list[SolveError],
 ) -> None:
-    """Reject a hard constraint no binary assignment can satisfy.
+    """Reject a hard constraint no assignment within the bounds can satisfy.
 
     The lhs range is taken over the *accumulated* coefficients (one per
-    variable), exactly as the compiler sums them, so a constraint accepted
-    here can never fail slack encoding later. The message reports the
-    user's own operator and rhs, never the compiler's normalized form.
+    variable) and the variables' declared ranges, exactly as the compiler
+    sums them, so a constraint accepted here can never fail slack encoding
+    later. A constraint mentioning a variable whose bounds are illegal is
+    skipped: that variable already carries its own error (3b §9.2). The
+    message reports the user's own operator and rhs, never the compiler's
+    normalized form.
     """
     if constraint.type != "hard" or not constraint.terms:
         return
@@ -730,8 +933,13 @@ def _check_trivially_infeasible(
         return
     if not math.isfinite(constraint.rhs):
         return
+    if any(safe_bounds.get(term.variable, (0, 1)) is None for term in constraint.terms):
+        return
 
-    lhs_min, lhs_max = lhs_bounds(accumulate_terms(constraint.terms))
+    bounds: Bounds = {
+        name: declared for name, declared in safe_bounds.items() if declared is not None
+    }
+    lhs_min, lhs_max = lhs_bounds(accumulate_terms(constraint.terms), bounds)
     rhs = constraint.rhs
 
     if constraint.operator == "<=":

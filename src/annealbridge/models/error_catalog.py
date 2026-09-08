@@ -162,6 +162,28 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "The problem declares no variables, so there is nothing to optimize; "
         "declare at least one binary variable."
     ),
+    # Problem validator codes for integer variables (Phase 3b spec §9.1)
+    "INTEGER_BOUNDS_MISSING": (
+        "An integer variable needs both lower_bound and upper_bound; add "
+        "them, or make the variable binary."
+    ),
+    "INTEGER_BOUNDS_INVALID": (
+        "upper_bound must be greater than lower_bound; a variable with equal "
+        "bounds is a constant—fold it into the objective and constraints "
+        "instead."
+    ),
+    "BOUNDS_ON_BINARY": (
+        "Binary variables are 0/1 and take no bounds; remove "
+        "lower_bound/upper_bound, or set type to integer."
+    ),
+    "INTEGER_RANGE_TOO_LARGE": (
+        "Integer bounds must lie within ±(2^31-1); tighten the bounds or "
+        "rescale the variable's unit."
+    ),
+    "INTEGER_REQUIRES_VERSION_1_1": (
+        "Integer variables require schema version 1.1; set version to "
+        '"1.1".'
+    ),
     # Compilation
     "COMPILATION_FAILED": (
         "The problem passed validation but could not be compiled into a "

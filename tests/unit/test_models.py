@@ -112,7 +112,13 @@ class TestVersion:
         del data["version"]
         assert OptimizationProblem.model_validate(data).version == "1.0"
 
-    @pytest.mark.parametrize("bad", ["2.0", "1.1", "1", ""])
+    def test_version_1_1_accepted(self):
+        """3b §7: 1.1 is the integer-variable schema version."""
+        data = make_problem_dict()
+        data["version"] = "1.1"
+        assert OptimizationProblem.model_validate(data).version == "1.1"
+
+    @pytest.mark.parametrize("bad", ["2.0", "1.2", "1", ""])
     def test_other_versions_rejected(self, bad):
         data = make_problem_dict()
         data["version"] = bad
@@ -142,7 +148,7 @@ class TestIllegalLiterals:
         with pytest.raises(ValidationError):
             OptimizationProblem.model_validate(data)
 
-    @pytest.mark.parametrize("bad_vartype", ["integer", "real", "spin"])
+    @pytest.mark.parametrize("bad_vartype", ["int", "real", "spin"])
     def test_invalid_variable_type_rejected(self, bad_vartype):
         with pytest.raises(ValidationError):
             Variable.model_validate({"name": "x", "type": bad_vartype})
@@ -163,6 +169,77 @@ class TestIllegalLiterals:
                     "attempts": [],
                 }
             )
+
+
+class TestVariableBounds:
+    """3b §7: bounded integer variables at the *schema* level.
+
+    Only what the model itself enforces is tested here. The semantic rules
+    (bounds required on integer, absent on binary, upper > lower, within
+    ±(2^31-1), version 1.1) belong to the Problem Validator so they surface
+    as ``invalid_problem`` errors, and are tested with it.
+    """
+
+    def test_integer_variable_with_bounds_parses(self):
+        var = Variable.model_validate(
+            {"name": "x", "type": "integer", "lower_bound": -2, "upper_bound": 5}
+        )
+        assert var.type == "integer"
+        assert var.lower_bound == -2
+        assert var.upper_bound == 5
+        assert var.bounds() == (-2, 5)
+
+    def test_binary_bounds_are_zero_one(self):
+        assert Variable(name="x").bounds() == (0, 1)
+
+    def test_integer_without_bounds_bounds_raises(self):
+        with pytest.raises(ValueError):
+            Variable(name="x", type="integer").bounds()
+        with pytest.raises(ValueError):
+            Variable(name="x", type="integer", lower_bound=0).bounds()
+
+    @pytest.mark.parametrize("bad", [1.5, "abc", [1], {"a": 1}])
+    def test_non_integer_bound_rejected(self, bad):
+        with pytest.raises(ValidationError):
+            Variable.model_validate(
+                {"name": "x", "type": "integer", "lower_bound": bad, "upper_bound": 5}
+            )
+
+    @pytest.mark.parametrize("field", ["lower_bound", "upper_bound"])
+    @pytest.mark.parametrize("bad", [True, False])
+    def test_boolean_bound_rejected(self, field, bad):
+        """A bound is a quantity, not a flag: lax mode must not coerce it."""
+        with pytest.raises(ValidationError) as excinfo:
+            Variable.model_validate({"name": "x", "type": "integer", field: bad})
+        assert "boolean" in str(excinfo.value)
+
+    def test_lax_integer_strings_are_accepted(self):
+        """Bounds follow pydantic's lax mode, like every other numeric field."""
+        assert (
+            Variable.model_validate(
+                {"name": "x", "type": "integer", "upper_bound": "3"}
+            ).upper_bound
+            == 3
+        )
+        assert (
+            Variable.model_validate(
+                {"name": "x", "type": "integer", "upper_bound": 2.0}
+            ).upper_bound
+            == 2
+        )
+
+    def test_bounds_are_schema_legal_on_binary(self):
+        """Bounds on a binary variable are a *validator* error, not a type error."""
+        var = Variable.model_validate({"name": "x", "lower_bound": 0, "upper_bound": 1})
+        assert var.type == "binary"
+        assert var.lower_bound == 0
+
+    def test_problem_json_schema_lists_bounds(self):
+        """Agents discover the new fields through the published schema."""
+        variable_schema = OptimizationProblem.model_json_schema()["$defs"]["Variable"]
+        assert "lower_bound" in variable_schema["properties"]
+        assert "upper_bound" in variable_schema["properties"]
+        assert "integer" in variable_schema["properties"]["type"]["enum"]
 
 
 class TestDefaults:
@@ -191,6 +268,8 @@ class TestDefaults:
     def test_variable_defaults(self):
         var = Variable(name="x")
         assert var.type == "binary"
+        assert var.lower_bound is None
+        assert var.upper_bound is None
         assert var.description is None
 
     def test_constraint_weight_defaults_to_none(self):

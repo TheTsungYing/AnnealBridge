@@ -45,9 +45,25 @@ EXPECTED_CODES = [
     "INVALID_SOLVER_PREFERENCE",
     "TRIVIALLY_INFEASIBLE",
     "NO_VARIABLES",
+    # Problem validator codes for integer variables (Phase 3b spec §9.1)
+    "INTEGER_BOUNDS_MISSING",
+    "INTEGER_BOUNDS_INVALID",
+    "BOUNDS_ON_BINARY",
+    "INTEGER_RANGE_TOO_LARGE",
+    "INTEGER_REQUIRES_VERSION_1_1",
     # Compilation
     "COMPILATION_FAILED",
 ]
+
+# Codes whose guidance quotes an IR *contract constant* verbatim, as 3b spec
+# §9.1 words them: the ±(2^31-1) integer range the IR itself fixes, the schema
+# version string "1.1", and the 0/1 domain that *defines* a binary variable.
+# None is a configurable threshold an operator can retune, so quoting one
+# cannot leak a deployment's settings — which is what the no-numbers rule
+# below exists to prevent. Everything else stays categorical.
+CONTRACT_CONSTANT_CODES = frozenset(
+    {"INTEGER_RANGE_TOO_LARGE", "INTEGER_REQUIRES_VERSION_1_1", "BOUNDS_ON_BINARY"}
+)
 
 # Codes whose failure is transient: the same request may succeed later.
 EXPECTED_RETRYABLE_CODES = {
@@ -69,7 +85,7 @@ class TestRecommendedActions:
         assert set(RECOMMENDED_ACTIONS) == set(EXPECTED_CODES)
 
     def test_expected_codes_are_unique(self):
-        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 34
+        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 39
 
 
 class TestRetryableCodes:
@@ -97,6 +113,12 @@ EXPECTED_VALIDATOR_CODES = {
     "INVALID_SOLVER_PREFERENCE",
     "TRIVIALLY_INFEASIBLE",
     "NO_VARIABLES",
+    # Phase 3b spec §9.1: integer variables.
+    "INTEGER_BOUNDS_MISSING",
+    "INTEGER_BOUNDS_INVALID",
+    "BOUNDS_ON_BINARY",
+    "INTEGER_RANGE_TOO_LARGE",
+    "INTEGER_REQUIRES_VERSION_1_1",
 }
 
 
@@ -313,9 +335,17 @@ class TestEmittedWarningCodesAreCatalogued:
 class TestGuidanceTextCarriesNoConfigValues:
     """§20 / Phase 2 §13.2: guidance is categorical and never embeds a limit."""
 
-    @pytest.mark.parametrize("code", EXPECTED_CODES)
+    @pytest.mark.parametrize(
+        "code", [c for c in EXPECTED_CODES if c not in CONTRACT_CONSTANT_CODES]
+    )
     def test_recommended_action_has_no_numbers(self, code):
         assert not re.search(r"\d", RECOMMENDED_ACTIONS[code]), code
+
+    def test_contract_constant_texts_match_the_spec_wording(self):
+        """The exempted texts quote the contract constant, and only that."""
+        assert "±(2^31-1)" in RECOMMENDED_ACTIONS["INTEGER_RANGE_TOO_LARGE"]
+        assert '"1.1"' in RECOMMENDED_ACTIONS["INTEGER_REQUIRES_VERSION_1_1"]
+        assert "0/1" in RECOMMENDED_ACTIONS["BOUNDS_ON_BINARY"]
 
     def test_warning_guidance_has_no_numbers(self):
         from annealbridge.validation.problem_validator import (

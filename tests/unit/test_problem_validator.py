@@ -534,3 +534,207 @@ class TestRecommendedAction:
             assert isinstance(error.recommended_action, str)
             assert error.recommended_action.strip()
             assert error.retryable is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 3b: integer variables (spec §7, §9.1, §9.2)
+# ---------------------------------------------------------------------------
+
+
+def integer_problem_dict(version: str = "1.1", **overrides) -> dict:
+    """The legal payload with ``x1`` turned into an integer in ``[0, 3]``."""
+    data = make_problem_dict()
+    data["version"] = version
+    data["variables"][0] = {
+        "name": "x1",
+        "type": "integer",
+        "lower_bound": 0,
+        "upper_bound": 3,
+        **overrides,
+    }
+    return data
+
+
+class TestIntegerBoundsErrors:
+    def test_legal_integer_problem_passes(self):
+        assert validate_dict(integer_problem_dict()) == []
+
+    def test_version_1_1_with_only_binary_variables_is_legal(self):
+        data = make_problem_dict()
+        data["version"] = "1.1"
+        assert validate_dict(data) == []
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"upper_bound": None},
+            {"lower_bound": None},
+            {"lower_bound": None, "upper_bound": None},
+        ],
+    )
+    def test_integer_bounds_missing(self, overrides):
+        errors = validate_dict(integer_problem_dict(**overrides))
+        assert codes(errors) == ["INTEGER_BOUNDS_MISSING"]
+        assert errors[0].path == "variables[0]"
+        assert errors[0].recommended_action == (
+            "An integer variable needs both lower_bound and upper_bound; add "
+            "them, or make the variable binary."
+        )
+
+    @pytest.mark.parametrize("lower, upper", [(3, 3), (4, 3), (-1, -5)])
+    def test_integer_bounds_invalid(self, lower, upper):
+        errors = validate_dict(integer_problem_dict(lower_bound=lower, upper_bound=upper))
+        assert codes(errors) == ["INTEGER_BOUNDS_INVALID"]
+        assert errors[0].path == "variables[0]"
+        assert errors[0].recommended_action.startswith(
+            "upper_bound must be greater than lower_bound"
+        )
+
+    @pytest.mark.parametrize(
+        "bounds",
+        [
+            {"lower_bound": 0},
+            {"upper_bound": 1},
+            {"lower_bound": 0, "upper_bound": 1},
+        ],
+    )
+    def test_bounds_on_binary(self, bounds):
+        data = make_problem_dict()
+        data["version"] = "1.1"
+        data["variables"][1] = {"name": "x2", **bounds}
+        errors = validate_dict(data)
+        assert codes(errors) == ["BOUNDS_ON_BINARY"]
+        assert errors[0].path == "variables[1]"
+        assert errors[0].recommended_action.startswith(
+            "Binary variables are 0/1 and take no bounds"
+        )
+
+    @pytest.mark.parametrize(
+        "lower, upper",
+        [(0, 2**31), (-(2**31), 0), (-(2**40), 2**40)],
+    )
+    def test_integer_range_too_large(self, lower, upper):
+        errors = validate_dict(integer_problem_dict(lower_bound=lower, upper_bound=upper))
+        assert codes(errors) == ["INTEGER_RANGE_TOO_LARGE"]
+        assert errors[0].path == "variables[0]"
+        assert errors[0].recommended_action == (
+            "Integer bounds must lie within ±(2^31-1); tighten the bounds or "
+            "rescale the variable's unit."
+        )
+
+    def test_bounds_exactly_at_the_limit_are_legal(self):
+        limit = 2**31 - 1
+        assert validate_dict(integer_problem_dict(lower_bound=-limit, upper_bound=limit)) == []
+
+    def test_invalid_and_too_large_are_reported_together(self):
+        errors = validate_dict(integer_problem_dict(lower_bound=0, upper_bound=-(2**31)))
+        assert sorted(codes(errors)) == ["INTEGER_BOUNDS_INVALID", "INTEGER_RANGE_TOO_LARGE"]
+
+    def test_integer_requires_version_1_1(self):
+        errors = validate_dict(integer_problem_dict(version="1.0"))
+        assert codes(errors) == ["INTEGER_REQUIRES_VERSION_1_1"]
+        assert errors[0].path == "version"
+        assert errors[0].recommended_action == (
+            'Integer variables require schema version 1.1; set version to "1.1".'
+        )
+
+    def test_version_error_is_collected_with_bounds_errors(self):
+        errors = validate_dict(integer_problem_dict(version="1.0", upper_bound=None))
+        assert sorted(codes(errors)) == [
+            "INTEGER_BOUNDS_MISSING",
+            "INTEGER_REQUIRES_VERSION_1_1",
+        ]
+
+
+class TestSelfQuadraticTermByType:
+    def test_binary_square_is_rejected(self):
+        data = make_problem_dict()
+        data["objective"]["quadratic_terms"] = [
+            {"variable1": "x2", "variable2": "x2", "coefficient": 1}
+        ]
+        assert codes(validate_dict(data)) == ["SELF_QUADRATIC_TERM"]
+
+    def test_integer_square_is_legal(self):
+        data = integer_problem_dict()
+        data["objective"]["quadratic_terms"] = [
+            {"variable1": "x1", "variable2": "x1", "coefficient": 1}
+        ]
+        assert validate_dict(data) == []
+
+    def test_unknown_variable_square_keeps_the_binary_verdict(self):
+        data = make_problem_dict()
+        data["objective"]["quadratic_terms"] = [
+            {"variable1": "ghost", "variable2": "ghost", "coefficient": 1}
+        ]
+        assert sorted(codes(validate_dict(data))) == [
+            "SELF_QUADRATIC_TERM",
+            "UNKNOWN_VARIABLE",
+            "UNKNOWN_VARIABLE",
+        ]
+
+
+class TestTriviallyInfeasibleWithBounds:
+    def _with_constraint(self, operator: str, rhs: float, coefficient: float = 2, **bounds):
+        data = integer_problem_dict(**bounds)
+        data["constraints"][0] = {
+            "id": "range",
+            "type": "hard",
+            "terms": [{"variable": "x1", "coefficient": coefficient}],
+            "operator": operator,
+            "rhs": rhs,
+        }
+        return data
+
+    def test_le_reachable_within_integer_range(self):
+        # x1 in [0, 3]: 2 * x1 <= 7 holds for x1 <= 3.
+        assert validate_dict(self._with_constraint("<=", 7)) == []
+
+    def test_ge_beyond_integer_range_is_infeasible(self):
+        # 2 * x1 >= 7 needs x1 >= 3.5, above the upper bound 3.
+        errors = validate_dict(self._with_constraint(">=", 7))
+        assert codes(errors) == ["TRIVIALLY_INFEASIBLE"]
+        assert errors[0].path == "constraints[0]"
+        assert "[0.0, 6.0]" in errors[0].message
+        assert ">= 7" in errors[0].message
+
+    def test_ge_reachable_when_binary_would_not_be(self):
+        # For a binary x1 "2 * x1 >= 4" is impossible; for x1 in [0, 3] it holds.
+        assert validate_dict(self._with_constraint(">=", 4)) == []
+
+    def test_negative_lower_bound_extends_the_range_downwards(self):
+        assert validate_dict(
+            self._with_constraint("<=", -3, lower_bound=-2, upper_bound=3)
+        ) == []
+        errors = validate_dict(
+            self._with_constraint("<=", -5, lower_bound=-2, upper_bound=3)
+        )
+        assert codes(errors) == ["TRIVIALLY_INFEASIBLE"]
+        assert "[-4.0, 6.0]" in errors[0].message
+
+    def test_equality_uses_the_integer_range(self):
+        assert validate_dict(self._with_constraint("==", 6)) == []
+        assert codes(validate_dict(self._with_constraint("==", 8))) == [
+            "TRIVIALLY_INFEASIBLE"
+        ]
+
+    def test_constraint_on_a_variable_with_illegal_bounds_is_skipped(self):
+        # x1 has no bounds: it is reported once, and no range judgement is
+        # made on a constraint that mentions it (3b §9.2).
+        data = self._with_constraint("<=", -1, upper_bound=None)
+        assert codes(validate_dict(data)) == ["INTEGER_BOUNDS_MISSING"]
+
+    def test_other_constraints_are_still_judged(self):
+        data = self._with_constraint("<=", -1, upper_bound=None)
+        data["constraints"].append(
+            {
+                "id": "impossible",
+                "type": "hard",
+                "terms": [{"variable": "x2", "coefficient": 1}],
+                "operator": ">=",
+                "rhs": 2,
+            }
+        )
+        assert sorted(codes(validate_dict(data))) == [
+            "INTEGER_BOUNDS_MISSING",
+            "TRIVIALLY_INFEASIBLE",
+        ]
