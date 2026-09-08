@@ -7,10 +7,15 @@ from annealbridge.compiler.integer_encoding import (
     AffineForm,
     encode_integer_variables,
     expand_product,
+    expand_square_qm,
     substitute_linear,
     substitute_quadratic,
 )
-from annealbridge.compiler.objective import build_objective_bqm
+from annealbridge.compiler.objective import (
+    add_model_variable,
+    build_objective_bqm,
+    build_objective_qm,
+)
 from annealbridge.compiler.slack import (
     InequalityEncoding,
     compute_slack_coefficients,
@@ -23,11 +28,14 @@ __all__ = [
     "CQMCompiler",
     "InequalityEncoding",
     "ModelCompiler",
+    "add_model_variable",
     "build_objective_bqm",
+    "build_objective_qm",
     "compute_slack_coefficients",
     "encode_integer_variables",
     "encode_slack",
     "expand_product",
+    "expand_square_qm",
     "substitute_linear",
     "substitute_quadratic",
 ]

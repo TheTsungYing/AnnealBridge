@@ -16,8 +16,8 @@ business variable gets an :class:`AffineForm` over compiled variables:
 The substitution helpers rewrite linear and quadratic expressions over
 business variables into expressions over compiled variables. The
 expansion core, :func:`expand_product`, is shared with the CQM path's
-``expand_square_qm`` (3b step 4): the only difference between the two is
-whether a self-product ``v * v`` folds into a linear term (a bit, since
+:func:`expand_square_qm` (3b §15.3): the only difference between the two
+is whether a self-product ``v * v`` folds into a linear term (a bit, since
 ``b * b == b``) or stays quadratic (an INTEGER model variable).
 
 Only binary expansion is implemented; there is no encoding option
@@ -28,6 +28,8 @@ Only binary expansion is implemented; there is no encoding option
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
+import dimod
+
 from annealbridge.models import IntegerEncoding, OptimizationProblem, QuadraticTerm
 from annealbridge.validation.estimates import compute_slack_coefficients
 
@@ -35,6 +37,7 @@ __all__ = [
     "AffineForm",
     "encode_integer_variables",
     "expand_product",
+    "expand_square_qm",
     "substitute_linear",
     "substitute_quadratic",
 ]
@@ -191,3 +194,38 @@ def substitute_quadratic(
         for (u, v), value in term_quadratic.items():
             _add_pair(quadratic, u, v, value)
     return linear, quadratic, constant
+
+
+def expand_square_qm(
+    qm: dimod.QuadraticModel,
+    coefficients: Mapping[str, float],
+    constant: float,
+    weight: float,
+) -> None:
+    """Add ``weight * (sum(coefficients[v] * v) + constant)**2`` to ``qm`` (3b §15.3).
+
+    The CQM path's squared soft penalty in objective form. The square is
+    :func:`expand_product` of the affine form with itself, so the expansion
+    is the very same code the BQM path uses; here a self-product stays the
+    quadratic entry ``(v, v)`` for an ``INTEGER`` model variable and folds
+    into the linear part for a ``BINARY`` one (``b * b == b``; a QM rejects
+    a binary self-interaction). Cross terms ``2 * a_u * a_v`` and the
+    ``2 * constant * a_v`` linear parts fall out of the product; the offset
+    gains ``weight * constant**2``. Contributions accumulate with dimod
+    ``add_*`` semantics.
+
+    Every variable in ``coefficients`` must already be declared in ``qm``
+    (with its vartype and bounds); ``qm.vartype`` raises for an unknown one.
+    """
+    form = AffineForm(constant=constant, coefficients=dict(coefficients))
+    linear, quadratic, offset = expand_product(
+        form,
+        form,
+        fold_square=lambda name: qm.vartype(name) is dimod.BINARY,
+        scale=weight,
+    )
+    for variable, value in linear.items():
+        qm.add_linear(variable, value)
+    for (u, v), value in quadratic.items():
+        qm.add_quadratic(u, v, value)
+    qm.offset += offset

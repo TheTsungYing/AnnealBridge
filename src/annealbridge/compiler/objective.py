@@ -1,11 +1,14 @@
-"""Objective → BQM translation shared by the compilers (3a spec §14, §15).
+"""Objective → model translation shared by the compilers (3a spec §14, §15; 3b §15.1).
 
 Both the BQM compiler (which then adds penalty terms) and the CQM compiler
 (which sets this as the CQM objective) need the same energy form of the
-objective, so it lives in one place and the two cannot drift apart.
+objective, so it lives in one place and the two cannot drift apart:
+:func:`build_objective_bqm` for the bit-level BQM path and
+:func:`build_objective_qm` for the CQM path, where integer variables stay
+INTEGER model variables with their bounds.
 """
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 import dimod
 
@@ -14,7 +17,27 @@ from annealbridge.compiler.integer_encoding import (
     expand_product,
     substitute_linear,
 )
-from annealbridge.models import Objective
+from annealbridge.models import Objective, Variable
+
+__all__ = ["add_model_variable", "build_objective_bqm", "build_objective_qm"]
+
+
+def add_model_variable(
+    model: dimod.QuadraticModel | dimod.ConstrainedQuadraticModel, variable: Variable
+) -> None:
+    """Declare ``variable`` in a quadratic or constrained quadratic model.
+
+    A binary variable becomes a ``BINARY`` model variable, an integer one an
+    ``INTEGER`` model variable carrying its declared bounds. The CQM itself,
+    its objective and every constraint lhs must agree on vartype and bounds
+    (dimod rejects a conflict), so all three declare through this one
+    function. Declaring an already present variable is a no-op for dimod.
+    """
+    if variable.type == "binary":
+        model.add_variable("BINARY", variable.name)
+        return
+    lower, upper = variable.bounds()
+    model.add_variable("INTEGER", variable.name, lower_bound=lower, upper_bound=upper)
 
 
 def build_objective_bqm(
@@ -67,3 +90,59 @@ def build_objective_bqm(
         bqm.offset += constant
     bqm.offset += sign * objective.constant
     return bqm
+
+
+def build_objective_qm(
+    objective: Objective, variables: Iterable[Variable]
+) -> dimod.QuadraticModel:
+    """Return ``objective`` as a quadratic model to be *minimised* (3b §15.1).
+
+    The CQM-path twin of :func:`build_objective_bqm`: the same ``sign``
+    rule (maximize negates every coefficient and the constant), the same
+    accumulating ``add_*`` semantics and the same first-appearance order,
+    but every variable is declared with its own vartype and bounds through
+    :func:`add_model_variable`, so an integer variable is an ``INTEGER``
+    model variable rather than a set of bits. ``variables`` is the
+    problem's declaration list (bounds alone cannot tell an integer
+    variable in ``[0, 1]`` from a binary one, and the QM must agree with
+    the CQM's vartype); only the variables the objective mentions are
+    present in the result (as in the BQM version) and the caller adds the
+    rest to the CQM, which is what keeps an all-binary objective identical
+    to 3a.
+
+    A quadratic term goes through :func:`expand_product` with identity
+    forms: ``x * x`` of an integer variable stays a quadratic ``(x, x)``
+    entry (allowed for INTEGER), while a binary self-product folds into the
+    linear part (a QM rejects ``b * b``). The validator rejects the latter
+    anyway; folding keeps the rule identical to the BQM path.
+    """
+    declared = {variable.name: variable for variable in variables}
+    qm = dimod.QuadraticModel()
+    sign = -1.0 if objective.direction == "maximize" else 1.0
+
+    def declare(name: str) -> None:
+        if name not in qm.variables:
+            add_model_variable(qm, declared[name])
+
+    def is_binary(name: str) -> bool:
+        return declared[name].type == "binary"
+
+    for term in objective.linear_terms:
+        declare(term.variable)
+        qm.add_linear(term.variable, sign * term.coefficient)
+    for term in objective.quadratic_terms:
+        declare(term.variable1)
+        declare(term.variable2)
+        linear, quadratic, constant = expand_product(
+            AffineForm(constant=0.0, coefficients={term.variable1: 1.0}),
+            AffineForm(constant=0.0, coefficients={term.variable2: 1.0}),
+            fold_square=is_binary,
+            scale=sign * term.coefficient,
+        )
+        for variable, value in linear.items():
+            qm.add_linear(variable, value)
+        for (u, v), value in quadratic.items():
+            qm.add_quadratic(u, v, value)
+        qm.offset += constant
+    qm.offset += sign * objective.constant
+    return qm
