@@ -28,7 +28,7 @@ from annealbridge.orchestration import (
     evaluate_objective_batch,
     process_candidates,
 )
-from annealbridge.orchestration.optimizer import _lexsort, _pack_rows, _words
+from annealbridge.orchestration.optimizer import _lexsort, _pack_rows, _row_keys, _words
 from annealbridge.solvers import RawSolverResult
 from annealbridge.validation import validate_batch, validate_solution
 
@@ -171,6 +171,78 @@ class TestRawSolverResult:
             RawSolverResult.from_dicts([{"a": 1}, {"b": 1}], [0.0, 0.0], "b")
 
 
+class TestRawSolverResultDtypes:
+    """3b §11: any numpy integer dtype is kept as given, non-integer ones
+    are rejected rather than silently cast."""
+
+    @pytest.mark.parametrize("dtype", [np.int8, np.int32, np.int64])
+    def test_ndarray_dtype_is_preserved(self, dtype):
+        samples = np.array([[0, 3], [-2, 1]], dtype=dtype)
+        raw = RawSolverResult(
+            variables=["x", "y"], samples=samples, energies=[0.0, 1.0], backend="b"
+        )
+        assert raw.samples.dtype == dtype
+        assert raw.as_dicts() == [{"x": 0, "y": 3}, {"x": -2, "y": 1}]
+
+    def test_from_dicts_dtype_keyword_round_trips_integer_values(self):
+        samples = [{"a": -3, "b": 0, "__s": 7}, {"a": 5, "b": 2, "__s": -1}]
+        raw = RawSolverResult.from_dicts(samples, [1.5, -2.0], "cqm", dtype=np.int64)
+
+        assert raw.samples.dtype == np.int64
+        assert raw.variables == ["a", "b", "__s"]
+        assert raw.as_dicts() == samples
+
+    def test_from_dicts_defaults_to_int8(self):
+        raw = RawSolverResult.from_dicts([{"a": 1, "b": 0}], [0.0], "exact")
+        assert raw.samples.dtype == np.int8
+
+    def test_list_wider_than_int8_stays_int64(self):
+        raw = RawSolverResult(
+            variables=["x", "y"],
+            samples=[[1000, 0], [-1000, 1]],
+            energies=[0.0, 1.0],
+            backend="b",
+        )
+        assert raw.samples.dtype == np.int64
+        assert raw.as_dicts() == [{"x": 1000, "y": 0}, {"x": -1000, "y": 1}]
+
+    def test_list_within_int8_range_is_narrowed(self):
+        raw = RawSolverResult(
+            variables=["x", "y"], samples=[[-5, 7]], energies=[0.0], backend="b"
+        )
+        assert raw.samples.dtype == np.int8
+        assert raw.as_dicts() == [{"x": -5, "y": 7}]
+
+    @pytest.mark.parametrize(
+        "samples",
+        [
+            np.array([[0.0, 1.0]]),
+            np.array([[0.5, 1.0]], dtype=np.float32),
+            np.array([[True, False]]),
+            np.array([[0, 1]], dtype=object),
+            [[0.5, 1.0]],
+        ],
+    )
+    def test_non_integer_dtypes_are_rejected(self, samples):
+        with pytest.raises(ValueError):
+            RawSolverResult(
+                variables=["x", "y"], samples=samples, energies=[0.0], backend="b"
+            )
+
+    @pytest.mark.parametrize(
+        "samples",
+        [[], np.empty((0, 2), dtype=np.int64), np.array([])],
+    )
+    def test_empty_input_is_an_int8_matrix_with_the_variable_count(self, samples):
+        raw = RawSolverResult(
+            variables=["x", "y"], samples=samples, energies=[], backend="b"
+        )
+        assert raw.samples.dtype == np.int8
+        assert raw.samples.shape == (0, 2)
+        assert raw.num_samples == 0
+        assert raw.as_dicts() == []
+
+
 # --------------------------------------------------------------------------
 # deduplication
 # --------------------------------------------------------------------------
@@ -260,6 +332,55 @@ class TestPackRows:
             assert [tuple(matrix[r].tolist()) for r in got] == [
                 tuple(matrix[r].tolist()) for r in expected
             ]
+
+
+class TestRowKeys:
+    """3b §11: 0/1 int8 keeps the packed bit keys of 3a; anything else gets
+    one int64 key per column. Both order rows lexicographically."""
+
+    @pytest.mark.parametrize("columns", [1, 7, 64, 65, 130])
+    def test_binary_int8_still_takes_the_packbits_path(self, columns):
+        rng = random.Random(11 + columns)
+        matrix = np.array(
+            [[rng.randint(0, 1) for _ in range(columns)] for _ in range(40)],
+            dtype=np.int8,
+        )
+        keys = _row_keys(matrix)
+        expected = _words(_pack_rows(matrix))
+
+        assert len(keys) == len(expected)
+        for key, word in zip(keys, expected):
+            assert key.dtype == word.dtype
+            assert np.array_equal(key, word)
+
+    @pytest.mark.parametrize("dtype", [np.int8, np.int64])
+    def test_non_binary_values_get_one_int64_key_per_column(self, dtype):
+        rng = random.Random(29)
+        columns = 5
+        rows = 40
+        matrix = np.array(
+            [[rng.randint(-1, 2) for _ in range(columns)] for _ in range(rows)],
+            dtype=dtype,
+        )
+        # Make sure the values that packbits would flatten are present.
+        matrix[0] = 2
+        matrix[1] = -1
+        if dtype == np.int64:
+            matrix[2] = 300
+
+        keys = _row_keys(matrix)
+        assert len(keys) == columns
+        assert all(key.dtype == np.int64 for key in keys)
+
+        got = _lexsort(keys)
+        expected = sorted(range(rows), key=lambda r: tuple(matrix[r].tolist()))
+        assert [tuple(matrix[r].tolist()) for r in got] == [
+            tuple(matrix[r].tolist()) for r in expected
+        ]
+
+    def test_empty_matrix_is_accepted(self):
+        keys = _row_keys(np.zeros((0, 5), dtype=np.int8))
+        assert all(len(key) == 0 for key in keys)
 
 
 # --------------------------------------------------------------------------
@@ -442,3 +563,248 @@ class TestProcessCandidatesMatchesRowByRow:
         assert len(solutions) <= 2
         for solution in solutions:
             assert len(solution.constraint_evaluations) == len(problem.constraints)
+
+
+# --------------------------------------------------------------------------
+# integer-valued rows (IR 1.1 / CQM backends, 3b spec §11)
+# --------------------------------------------------------------------------
+
+
+def random_integer_problem(rng: random.Random, n_variables: int) -> OptimizationProblem:
+    """An IR 1.1 problem mixing binary and bounded-integer variables.
+
+    Same awkward coefficients as :func:`random_problem` -- the point is
+    still last-bit agreement -- but the variables now carry bounds that
+    include negative values, so the candidate rows are genuine integers
+    rather than bits. Enumerating every assignment is no longer cheap, so a
+    constraint's rhs is taken from the lhs of one random assignment
+    (accumulated in the validator's term order) to keep "==" reachable.
+    """
+    names = [f"v{index}" for index in range(n_variables)]
+    coefficient_pool = [0.1, 0.2, 0.3, 0.7, 1.0, 1.5, 2.25, -0.1, -0.3, -1.0, 3.0, 7.0]
+
+    variables: list[Variable] = []
+    for name in names:
+        if rng.random() < 0.6:
+            lower = rng.randint(-4, 1)
+            variables.append(
+                Variable(
+                    name=name,
+                    type="integer",
+                    lower_bound=lower,
+                    upper_bound=lower + rng.randint(1, 6),
+                )
+            )
+        else:
+            variables.append(Variable(name=name))
+    bounds = {variable.name: variable.bounds() for variable in variables}
+
+    def terms(count: int) -> list[LinearTerm]:
+        chosen = rng.sample(names, k=count)
+        return [
+            LinearTerm(variable=name, coefficient=rng.choice(coefficient_pool))
+            for name in chosen
+        ]
+
+    def random_assignment() -> dict[str, int]:
+        return {name: rng.randint(*bounds[name]) for name in names}
+
+    constraints: list[Constraint] = []
+    for index in range(rng.randint(1, 4)):
+        operator = rng.choice(["<=", ">=", "<=", ">=", "=="])
+        kind = rng.choice(["hard", "soft", "soft"])
+        constraint_terms = terms(rng.randint(1, n_variables))
+        if rng.random() < 0.7:
+            assignment = random_assignment()
+            rhs = 0.0
+            for term in constraint_terms:
+                rhs += term.coefficient * assignment[term.variable]
+        else:
+            rhs = rng.choice(coefficient_pool)
+        constraints.append(
+            Constraint(
+                id=f"c{index}",
+                type=kind,
+                terms=constraint_terms,
+                operator=operator,
+                rhs=rhs,
+                weight=rng.choice([0.5, 1.0, 1.3, 2.0]) if kind == "soft" else None,
+            )
+        )
+
+    quadratic: list[QuadraticTerm] = []
+    if n_variables >= 2 and rng.random() < 0.6:
+        for _ in range(rng.randint(1, 3)):
+            first, second = rng.sample(names, k=2)
+            quadratic.append(
+                QuadraticTerm(
+                    variable1=first,
+                    variable2=second,
+                    coefficient=rng.choice(coefficient_pool),
+                )
+            )
+    return OptimizationProblem(
+        version="1.1",
+        name="random_integer",
+        variables=variables,
+        objective=Objective(
+            direction=rng.choice(["minimize", "maximize"]),
+            linear_terms=terms(rng.randint(1, n_variables)),
+            quadratic_terms=quadratic,
+            constant=rng.choice([0.0, 0.1, -2.5, 4.0]),
+        ),
+        constraints=constraints,
+    )
+
+
+class TestIntegerRowsMatchReference:
+    """Deduplication of integer-valued rows: minimum energy, first-seen
+    order and grouping must equal the row-by-row oracle on either key path.
+    """
+
+    @pytest.mark.parametrize("seed", range(25))
+    def test_int64_rows_match_the_row_by_row_reference(self, seed):
+        rng = random.Random(2000 + seed)
+        n_business = rng.randint(1, 6)
+        n_internal = rng.randint(0, 3)
+        variables = [f"x{i}" for i in range(n_business)] + [
+            f"__slack_{i}" for i in range(n_internal)
+        ]
+        rng.shuffle(variables)
+        internal = {name for name in variables if name.startswith("__")}
+        rows = rng.randint(1, 80)
+        # Few variables, many rows and only a handful of energies: plenty of
+        # duplicates and plenty of ties, exactly as in the binary case.
+        samples = [
+            {name: rng.randint(-5, 7) for name in variables} for _ in range(rows)
+        ]
+        energies = [float(rng.choice([-3, -2, -1, 0, 1, 2])) for _ in range(rows)]
+        raw = RawSolverResult.from_dicts(samples, energies, "cqm", dtype=np.int64)
+
+        expected = reference_deduplicate(raw, internal)
+        candidates = deduplicate_samples(raw, internal)
+
+        assert candidates.variables == [v for v in variables if v not in internal]
+        assert candidates.samples.dtype == np.int64
+        assert candidates.as_pairs() == expected
+
+    @pytest.mark.parametrize("seed", range(25))
+    def test_heavily_duplicated_int64_rows_keep_min_energy_and_first_seen(self, seed):
+        # The wide-range case above rarely repeats an assignment; here the
+        # value range is tiny on purpose so nearly every row is a duplicate
+        # and the "minimum energy, earliest read wins ties" rule is what the
+        # comparison is actually about.
+        rng = random.Random(3000 + seed)
+        variables = [f"x{i}" for i in range(rng.randint(1, 3))] + ["__slack_0"]
+        rng.shuffle(variables)
+        internal = {"__slack_0"}
+        rows = rng.randint(2, 80)
+        samples = [
+            {name: rng.randint(-1, 1) for name in variables} for _ in range(rows)
+        ]
+        energies = [float(rng.choice([-1, 0, 1])) for _ in range(rows)]
+        raw = RawSolverResult.from_dicts(samples, energies, "cqm", dtype=np.int64)
+
+        candidates = deduplicate_samples(raw, internal)
+
+        assert candidates.samples.dtype == np.int64
+        assert candidates.as_pairs() == reference_deduplicate(raw, internal)
+
+    def test_int8_rows_holding_2_and_minus_1_do_not_take_the_bit_path(self):
+        # np.packbits would flatten 2 and -1 to 1; _row_keys must notice the
+        # values are not 0/1 even though the dtype is the bit path's int8.
+        rng = random.Random(4242)
+        variables = ["a", "b", "__s"]
+        rows = 60
+        samples = [
+            {name: rng.choice([-1, 0, 1, 2]) for name in variables}
+            for _ in range(rows)
+        ]
+        energies = [float(rng.choice([-1, 0, 1])) for _ in range(rows)]
+        raw = RawSolverResult.from_dicts(samples, energies, "exact")
+
+        assert raw.samples.dtype == np.int8
+        candidates = deduplicate_samples(raw, {"__s"})
+
+        assert candidates.samples.dtype == np.int8
+        assert sorted(np.unique(candidates.samples).tolist()) == [-1, 0, 1, 2]
+        assert candidates.as_pairs() == reference_deduplicate(raw, {"__s"})
+
+    def test_more_than_64_integer_columns(self):
+        # One int64 lexsort key per column, well past the single 64-bit word
+        # the bit path would have packed these rows into.
+        rng = random.Random(99)
+        n = 70
+        variables = [f"v{i:03d}" for i in range(n)]
+        base = [rng.randint(0, 3) for _ in range(n)]
+        rows = 50
+        samples = []
+        for row in range(rows):
+            assignment = dict(zip(variables, base))
+            if row % 3:  # every third row repeats the base assignment
+                for name in rng.sample(variables, k=rng.randint(1, 5)):
+                    assignment[name] = rng.randint(0, 3)
+            samples.append(assignment)
+        energies = [float(rng.choice([-2, -1, 0, 1])) for _ in range(rows)]
+        raw = RawSolverResult.from_dicts(samples, energies, "cqm", dtype=np.int64)
+
+        candidates = deduplicate_samples(raw, set())
+
+        assert candidates.samples.shape[1] == n
+        assert candidates.samples.dtype == np.int64
+        assert len(candidates) < rows
+        assert candidates.as_pairs() == reference_deduplicate(raw, set())
+
+
+class TestIntegerProcessCandidatesMatchesRowByRow:
+    """The array pipeline on integer rows must rank exactly like the
+    row-by-row reference -- same solutions, same order, same numbers."""
+
+    @pytest.mark.parametrize("seed", range(40))
+    def test_same_solutions_same_order_same_numbers(self, seed):
+        rng = random.Random(5000 + seed)
+        n_variables = rng.randint(1, 6)
+        problem = random_integer_problem(rng, n_variables)
+        bounds = {variable.name: variable.bounds() for variable in problem.variables}
+        business = [variable.name for variable in problem.variables]
+        internal = {f"__slack_{i}" for i in range(rng.randint(0, 2))}
+        variables = business + sorted(internal)
+        rng.shuffle(variables)
+        rows = rng.randint(1, 60)
+        samples = [
+            {
+                name: (
+                    rng.randint(*bounds[name]) if name in bounds else rng.randint(0, 1)
+                )
+                for name in variables
+            }
+            for _ in range(rows)
+        ]
+        energies = [rng.choice([-2.0, -1.0, 0.0, 0.5]) for _ in range(rows)]
+        raw = RawSolverResult.from_dicts(samples, energies, "cqm", dtype=np.int64)
+        top_k = rng.randint(1, 8)
+
+        assert raw.samples.dtype == np.int64
+
+        solutions, unique, feasible = process_candidates(problem, raw, internal, top_k)
+        expected, expected_unique, expected_feasible = (
+            TestProcessCandidatesMatchesRowByRow.reference(
+                problem, raw, internal, top_k
+            )
+        )
+
+        assert unique == expected_unique
+        assert feasible == expected_feasible
+        assert len(solutions) == len(expected)
+        for solution, (sample, energy, validation, objective_value, score) in zip(
+            solutions, expected
+        ):
+            assert solution.variables == sample
+            assert list(solution.variables) == [v for v in variables if v in business]
+            assert solution.energy == energy
+            assert solution.objective_value == objective_value
+            assert solution.ranking_score == score
+            assert solution.soft_violation_score == validation.soft_violation_score
+            assert solution.hard_constraints_satisfied is True
+            assert solution.constraint_evaluations == validation.evaluations
+        assert [s.rank for s in solutions] == list(range(1, len(solutions) + 1))

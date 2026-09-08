@@ -29,6 +29,7 @@ from annealbridge.solvers.base import (
     AvailabilityStatus,
     RawSolverResult,
     SolverCapabilities,
+    assert_samples_within_bounds,
     sampleset_to_arrays,
 )
 from annealbridge.solvers.metadata import sanitize_sampleset_info
@@ -128,12 +129,23 @@ class FakeLocalCQMBackend:
             sampleset = self._override
         else:
             sampleset = dimod.ExactCQMSolver().sample_cqm(model)
+        # Same bounds assertion as the real CQM backend (3b §11): every
+        # value must be an integer inside its variable's own range before
+        # the int64 conversion casts it.
+        bounds = {
+            str(variable): (
+                int(model.lower_bound(variable)),
+                int(model.upper_bound(variable)),
+            )
+            for variable in model.variables
+        }
+        assert_samples_within_bounds(sampleset, bounds, code="SOLVER_ERROR")
         return self._to_raw(sampleset)
 
     def _to_raw(self, sampleset: dimod.SampleSet) -> RawSolverResult:
         # Every read, sampler order, no filtering (§16.5): feasibility is
         # decided downstream against the original problem, never here.
-        variables, samples, energies = sampleset_to_arrays(sampleset)
+        variables, samples, energies = sampleset_to_arrays(sampleset, dtype=np.int64)
         reported = int(np.count_nonzero(sampleset.record.is_feasible))
         metadata = sanitize_sampleset_info(
             dict(sampleset.info), self.name, remote=False

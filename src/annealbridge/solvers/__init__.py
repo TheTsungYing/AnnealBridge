@@ -7,6 +7,8 @@ from annealbridge.solvers.base import (
     RawSolverResult,
     SolverBackend,
     SolverCapabilities,
+    assert_samples_within_bounds,
+    sampleset_to_arrays,
 )
 from annealbridge.solvers.dwave_qpu import DWaveQPUBackend
 from annealbridge.solvers.exact import ExactSolverBackend
@@ -36,6 +38,8 @@ __all__ = [
     "SolverBackend",
     "SolverCapabilities",
     "SolverRegistry",
+    "assert_samples_within_bounds",
     "redact",
+    "sampleset_to_arrays",
     "sanitize_sampleset_info",
 ]

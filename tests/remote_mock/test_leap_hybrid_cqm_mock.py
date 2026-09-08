@@ -321,7 +321,7 @@ class TestSampleSetConversion:
 
         assert result.backend == BACKEND
         assert result.as_dicts() == [VIOLATOR, BEST, {"a": 0, "b": 0}]
-        assert result.samples.dtype == np.int8
+        assert result.samples.dtype == np.int64
         assert result.num_samples == 3
 
     def test_energies_are_the_cqm_energies(self):
@@ -389,7 +389,7 @@ class TestSampleSetConversion:
         _, _, result = solve_with_fake(make_preferences(None), fake=fake)
 
         assert result.as_dicts() == [BEST]
-        assert result.samples.dtype == np.int8
+        assert result.samples.dtype == np.int64
 
     @pytest.mark.parametrize(
         "bad_row",
@@ -397,9 +397,10 @@ class TestSampleSetConversion:
         ids=["two", "half", "minus-one"],
     )
     def test_non_binary_value_is_a_remote_solver_error(self, bad_row):
-        # §17.3: asserted in the backend before the shared conversion
-        # (which would otherwise cast silently to int8). from_samples_cqm
-        # keeps the values as given (int8 for 2 / -1, float64 for 0.5).
+        # §17.3 / 3b §11: the bounds assertion runs in the backend before
+        # the shared conversion (whose int64 cast would otherwise truncate
+        # silently). from_samples_cqm keeps the values as given (int8 for
+        # 2 / -1, float64 for 0.5).
         fake = FakeCQMSampler(assignments=[BEST, bad_row])
         backend = LeapHybridCQMBackend(sampler_factory=lambda: fake)
 
@@ -407,7 +408,7 @@ class TestSampleSetConversion:
             backend.solve(make_compiled_problem(), make_preferences(None))
 
         assert exc_info.value.code == "REMOTE_SOLVER_ERROR"
-        assert "outside {0, 1}" in str(exc_info.value)
+        assert "outside its bounds" in str(exc_info.value)
         assert fake.sample_calls == 1
 
 

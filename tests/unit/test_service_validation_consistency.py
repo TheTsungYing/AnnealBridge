@@ -186,6 +186,9 @@ class FakeFailingCompiler:
     def compile(self, problem, hard_penalty):
         raise CompilationError("boom")
 
+    def decode(self, compiled, raw):  # pragma: no cover - never reached
+        raise AssertionError("decode must not be reached: compile always fails")
+
 
 class TestCompilationErrorFallback:
     def test_compilation_error_is_reported_as_invalid_problem(self):

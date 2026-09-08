@@ -27,6 +27,21 @@ class ConstraintTrace(BaseModel):
     compiler: str
 
 
+class IntegerEncoding(BaseModel):
+    """Binary encoding of one integer variable on the BQM path (3b spec §12).
+
+    ``value = lower + sum(coefficients[k] * bits[k])`` where ``bits`` are
+    internal (``__int_<name>_<k>``) variable names and ``coefficients`` come
+    from ``compute_slack_coefficients(upper - lower)``. Produced by the BQM
+    compiler and consumed only by its ``decode``; the CQM path has none.
+    """
+
+    variable: str
+    lower: int
+    bits: list[str]
+    coefficients: list[int]
+
+
 class CompiledProblem(BaseModel):
     """A compiled solver model plus provenance back to the original problem.
 
@@ -46,3 +61,7 @@ class CompiledProblem(BaseModel):
     hard_penalty: float | None
     objective_scale: float
     num_variables: int
+    # 3b spec §12: filled by the BQM compiler for integer variables (one
+    # entry per variable, keyed by its name); empty on the CQM path and for
+    # binary-only problems.
+    integer_encodings: dict[str, IntegerEncoding] = {}

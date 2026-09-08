@@ -20,13 +20,13 @@ from typing import Any, Callable
 
 import numpy as np
 
-from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers.base import (
     AvailabilityStatus,
     ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
+    assert_samples_within_bounds,
     sampleset_to_arrays,
 )
 from annealbridge.solvers.metadata import dwave_availability, sanitize_sampleset_info
@@ -88,23 +88,6 @@ def _sampler_reported_feasible(sampleset: Any) -> int | None:
     if "is_feasible" not in (record.dtype.names or ()):
         return None
     return int(record.is_feasible.sum())
-
-
-def _assert_binary_samples(sampleset: Any) -> None:
-    """§17.3: every sample value must be 0 or 1 before the shared conversion.
-
-    ``sampleset_to_arrays`` casts to ``int8`` without checking; a CQM
-    sampler's ``record.sample`` dtype depends on the sampler (Leap may
-    return float), and a value outside {0, 1} would otherwise be silently
-    kept as a bogus assignment. The check is local to this backend so the
-    four BQM backends (and the shared helper) are untouched.
-    """
-    if not np.all(np.isin(sampleset.record.sample, (0, 1))):
-        raise SolverExecutionError(
-            "Leap hybrid CQM solve returned a sample value outside {0, 1} "
-            "for a binary problem",
-            code="REMOTE_SOLVER_ERROR",
-        )
 
 
 class LeapHybridCQMBackend:
@@ -192,6 +175,14 @@ class LeapHybridCQMBackend:
         Samples are returned in the sampler's own order, feasible-flagged
         or not (§17.3); the flag is only counted into
         ``sampler_reported_feasible``.
+
+        Before the conversion every value is asserted to be an integer
+        inside its CQM variable's own ``[lower_bound, upper_bound]`` range
+        (3b §11) — the sampler's ``record.sample`` dtype is the sampler's
+        choice (Leap may return floats), so an out-of-range or fractional
+        value would otherwise be silently truncated by the cast. The
+        matrix is then built as ``int64``, which holds integer variables
+        as well as bits.
         """
         cqm = compiled_problem.model
         effective_time_limit = self.resolve_time_limit(compiled_problem, preferences)
@@ -206,8 +197,15 @@ class LeapHybridCQMBackend:
             lambda: resolved(sampler.sample_cqm(cqm, time_limit=effective_time_limit)),
         )
 
-        _assert_binary_samples(sampleset)
-        variables, samples, energies = sampleset_to_arrays(sampleset)
+        bounds = {
+            str(variable): (
+                int(cqm.lower_bound(variable)),
+                int(cqm.upper_bound(variable)),
+            )
+            for variable in cqm.variables
+        }
+        assert_samples_within_bounds(sampleset, bounds, code="REMOTE_SOLVER_ERROR")
+        variables, samples, energies = sampleset_to_arrays(sampleset, dtype=np.int64)
         metadata = sanitize_sampleset_info(sampleset.info, backend=self.name)
         metadata.effective_time_limit_seconds = effective_time_limit
         metadata.sampler_reported_feasible = _sampler_reported_feasible(sampleset)

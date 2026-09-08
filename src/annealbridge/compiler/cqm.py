@@ -19,9 +19,11 @@ cross-check, never production code) and the compiler takes no options
 """
 
 import logging
+from typing import TYPE_CHECKING
 
 import dimod
 
+from annealbridge.compiler.base import select_business_columns
 from annealbridge.compiler.objective import build_objective_bqm
 from annealbridge.exceptions import CompilationError
 from annealbridge.models import (
@@ -33,6 +35,9 @@ from annealbridge.models import (
 )
 from annealbridge.penalty.strategy import compute_objective_scale
 from annealbridge.validation.estimates import accumulate_terms, variable_bounds
+
+if TYPE_CHECKING:
+    from annealbridge.solvers.base import RawSolverResult
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +113,17 @@ class CQMCompiler:
             sum(1 for constraint in problem.constraints if constraint.type == "soft"),
         )
         return compiled
+
+    def decode(
+        self, compiled: CompiledProblem, raw: "RawSolverResult"
+    ) -> "RawSolverResult":
+        """Business-variable view of a CQM backend's result (3b §13).
+
+        CQM backends already return integer values (int64); the decode drops
+        the internal columns and restores the problem's variable order,
+        which ``ExactCQMSolver`` does not preserve.
+        """
+        return select_business_columns(compiled, raw)
 
     def _compile_constraint(
         self, cqm: dimod.ConstrainedQuadraticModel, constraint: Constraint

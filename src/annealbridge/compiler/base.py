@@ -1,8 +1,15 @@
-"""Compiler interface (spec §13; 3a spec §14)."""
+"""Compiler interface (spec §13; 3a spec §14; 3b spec §13)."""
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+import numpy as np
 
 from annealbridge.models import CompiledProblem, ModelType, OptimizationProblem
+
+if TYPE_CHECKING:
+    # Type-only: ``solvers`` sits above ``compiler`` in the §4 dependency
+    # direction, so the runtime never imports it from here.
+    from annealbridge.solvers.base import RawSolverResult
 
 
 class ModelCompiler(Protocol):
@@ -12,7 +19,8 @@ class ModelCompiler(Protocol):
     ``supported_model_types``; ``uses_hard_penalty`` tells the service
     whether to compute a hard-constraint penalty (and retry with a larger
     one) or to pass ``None`` because the model expresses hard constraints
-    natively.
+    natively. ``decode`` is the inverse direction: it turns the backend's
+    model-variable samples back into business variables.
     """
 
     @property
@@ -36,3 +44,46 @@ class ModelCompiler(Protocol):
         ``None`` as a caller error; the others require ``None``.
         """
         ...
+
+    def decode(
+        self,
+        compiled: CompiledProblem,
+        raw: "RawSolverResult",
+    ) -> "RawSolverResult":
+        """Turn the backend's model-variable matrix into business variables.
+
+        Drops the internal columns (slack, encoding bits) and combines
+        encoding bits into integer values; ``energies`` and the row order
+        are unchanged and ``metadata`` is carried over as is. The returned
+        ``variables`` follow ``compiled.original_problem.variables`` on
+        every path (a backend's own order is not reused: ``ExactCQMSolver``
+        puts binary variables before integer ones, for instance). dtype:
+        a problem without integer variables keeps the input dtype (the BQM
+        backends' ``int8`` bit path is untouched); with integer variables
+        the output is ``int64``. Every value of the result is an integer
+        within the business variable's bounds.
+        """
+        ...
+
+
+def select_business_columns(
+    compiled: CompiledProblem, raw: "RawSolverResult"
+) -> "RawSolverResult":
+    """The bit-for-bit part of ``decode`` shared by the compilers.
+
+    Keeps the columns of ``raw`` that are business variables, in
+    ``compiled.original_problem.variables`` order, preserving dtype, row
+    order, energies and metadata. A backend result that lacks a business
+    variable violates the backend contract and raises ``ValueError``.
+    """
+    names = [variable.name for variable in compiled.original_problem.variables]
+    column = {name: index for index, name in enumerate(raw.variables)}
+    try:
+        columns = [column[name] for name in names]
+    except KeyError as exc:
+        raise ValueError(
+            f"solver result from backend '{raw.backend}' lacks business "
+            f"variable {exc.args[0]!r}"
+        ) from None
+    samples = np.ascontiguousarray(raw.samples[:, columns])
+    return raw.model_copy(update={"variables": names, "samples": samples})

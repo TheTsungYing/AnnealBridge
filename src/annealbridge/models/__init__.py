@@ -7,7 +7,11 @@ from annealbridge.models.capabilities import (
     ParameterLimit,
     SolverCapabilities,
 )
-from annealbridge.models.compiled import CompiledProblem, ConstraintTrace
+from annealbridge.models.compiled import (
+    CompiledProblem,
+    ConstraintTrace,
+    IntegerEncoding,
+)
 from annealbridge.models.constraint import Constraint
 from annealbridge.models.error_catalog import (
     RECOMMENDED_ACTIONS,
@@ -43,6 +47,7 @@ __all__ = [
     "ConstraintEvaluation",
     "ConstraintTrace",
     "DWaveQPUOptions",
+    "IntegerEncoding",
     "LeapHybridBQMOptions",
     "LeapHybridCQMOptions",
     "LinearTerm",

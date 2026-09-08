@@ -22,6 +22,7 @@ exists (steps 6–7 of the 3a plan add those):
 import pytest
 
 from annealbridge.compiler import BQMCompiler, build_objective_bqm
+from annealbridge.compiler.base import select_business_columns
 from annealbridge.exceptions import CompilationError
 from annealbridge.models import (
     CompiledProblem,
@@ -121,6 +122,9 @@ class FakeNativeCompiler:
             num_variables=bqm.num_variables,
         )
 
+    def decode(self, compiled, raw):
+        return select_business_columns(compiled, raw)
+
 
 class FakeBQMOnlyCompiler:
     """Second compiler claiming the BQM slot, for the duplicate check."""
@@ -130,6 +134,9 @@ class FakeBQMOnlyCompiler:
 
     def compile(self, problem, hard_penalty):  # pragma: no cover - never reached
         raise AssertionError("not meant to compile")
+
+    def decode(self, compiled, raw):  # pragma: no cover - never reached
+        raise AssertionError("not meant to decode")
 
 
 def _cqm_only_capabilities(remote: bool) -> SolverCapabilities:

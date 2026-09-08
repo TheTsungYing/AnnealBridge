@@ -9,7 +9,7 @@ never on the concrete compiled model type (spec §17).
 
 import logging
 import threading
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 
 import numpy as np
@@ -75,7 +75,7 @@ def evaluate_objective_batch(
 ) -> np.ndarray:
     """Vectorised :func:`evaluate_objective` over the rows of ``samples``.
 
-    Column ``j`` of ``samples`` is the 0/1 value of ``variables[j]``. Terms
+    Column ``j`` of ``samples`` is the integer value of ``variables[j]``. Terms
     are accumulated in the same order and association as the scalar
     version (constant first, then linear, then quadratic), so the two agree
     bit for bit; the unit tests assert that equality.
@@ -130,19 +130,41 @@ def _words(packed: np.ndarray) -> list[np.ndarray]:
     return [packed[:, word] for word in range(packed.shape[1])]
 
 
+def _row_keys(matrix: np.ndarray) -> list[np.ndarray]:
+    """Sort keys (priority order) that compare rows of ``matrix`` as tuples.
+
+    A 0/1 ``int8`` matrix -- the BQM backends' bit path -- packs into the
+    :func:`_pack_rows` words, exactly as before 3b. Anything else (integer
+    values from a CQM backend or a decoded integer problem) uses one
+    ``int64`` key per column. Both orderings equal the lexicographic order
+    of the rows, so deduplication and tie-breaking behave identically on
+    either path (3b spec §11). The 0/1 check is a min/max scan, not
+    ``np.isin`` (two orders of magnitude slower on 16M rows), and it is
+    mandatory: ``np.packbits`` would silently treat 2 or -1 as 1.
+    """
+    if matrix.dtype == np.int8 and (
+        matrix.size == 0 or (matrix.min() >= 0 and matrix.max() <= 1)
+    ):
+        return _words(_pack_rows(matrix))
+    return [
+        matrix[:, column].astype(np.int64, copy=False)
+        for column in range(matrix.shape[1])
+    ]
+
+
 @dataclass(frozen=True)
 class CandidateSet:
     """Deduplicated business candidates, aligned row by row.
 
-    ``samples`` holds one 0/1 row per distinct business assignment (column
-    ``j`` is ``variables[j]``, in the solver's variable order minus the
-    internal ones); ``energies`` is the minimum energy the solver reported
-    for that assignment — kept for reporting and debugging only, never
-    used for feasibility or ranking (overview principle 2).
+    ``samples`` is an integer matrix with one row per distinct business
+    assignment (column ``j`` is ``variables[j]``, in the input's variable
+    order minus the internal ones); ``energies`` is the minimum energy the
+    solver reported for that assignment — kept for reporting and debugging
+    only, never used for feasibility or ranking (overview principle 2).
     """
 
     variables: list[str]
-    samples: np.ndarray  # int8, shape (candidates, len(variables))
+    samples: np.ndarray  # integer matrix, shape (candidates, len(variables))
     energies: np.ndarray  # float64, shape (candidates,)
 
     def __len__(self) -> int:
@@ -160,7 +182,7 @@ class CandidateSet:
 
 
 def deduplicate_samples(
-    raw: RawSolverResult, internal_variables: set[str]
+    raw: RawSolverResult, internal_variables: Collection[str] = frozenset()
 ) -> CandidateSet:
     """Strip internal variables and deduplicate by business assignment.
 
@@ -169,6 +191,9 @@ def deduplicate_samples(
     in order of first appearance, so the result is fully deterministic and
     identical to a row-by-row pass — it is just computed on the arrays.
     Energy is used here only to pick which duplicate's energy to report.
+
+    ``internal_variables`` is optional since 3b: the service hands over a
+    result the compiler has already decoded, so nothing is left to strip.
     """
     business_columns = [
         index
@@ -185,15 +210,17 @@ def deduplicate_samples(
             energies=np.asarray(raw.energies, dtype=np.float64),
         )
 
-    keys = _pack_rows(business)
+    keys = _row_keys(business)
     energies = np.asarray(raw.energies, dtype=np.float64)
     # Sort by assignment, then energy; the sort is stable, so within one
     # assignment equal energies stay in read order.
-    order = _lexsort([*_words(keys), energies])
-    sorted_keys = keys[order]
-    group_start = np.empty(count, dtype=bool)
+    order = _lexsort([*keys, energies])
+    # A new group starts wherever any key differs from the previous row.
+    group_start = np.zeros(count, dtype=bool)
     group_start[0] = True
-    np.any(sorted_keys[1:] != sorted_keys[:-1], axis=1, out=group_start[1:])
+    for key in keys:
+        sorted_key = key[order]
+        group_start[1:] |= sorted_key[1:] != sorted_key[:-1]
     starts = np.flatnonzero(group_start)
     representatives = order[starts]  # min-energy read of each assignment
     first_seen = np.minimum.reduceat(order, starts)  # earliest read of each
@@ -208,8 +235,8 @@ def deduplicate_samples(
 def process_candidates(
     problem: OptimizationProblem,
     raw: RawSolverResult,
-    internal_variables: set[str],
-    top_k: int,
+    internal_variables: Collection[str] = frozenset(),
+    top_k: int = 5,
 ) -> tuple[list[Solution], int, int]:
     """Run the §25 candidate pipeline on raw solver output.
 
@@ -252,10 +279,8 @@ def process_candidates(
     name_order = sorted(
         range(len(candidates.variables)), key=lambda j: candidates.variables[j]
     )
-    tie_break = _pack_rows(feasible_samples[:, name_order])
-    order = _lexsort(
-        [sign * ranking_score, sign * objective_value, *_words(tie_break)]
-    )
+    tie_break = _row_keys(feasible_samples[:, name_order])
+    order = _lexsort([sign * ranking_score, sign * objective_value, *tie_break])
 
     solutions: list[Solution] = []
     for rank, position in enumerate(order[:top_k].tolist(), start=1):
@@ -653,8 +678,12 @@ class OptimizationService:
                     raw.metadata = raw.metadata.model_copy(
                         update={"model_type": compiled.model_type}
                     )
+                # 3b §16 step 12a: the compiler strips internal columns and
+                # decodes integer variables; the candidate pipeline only
+                # ever sees business variables in problem order.
+                decoded = compiler.decode(compiled, raw)
                 solutions, unique_samples, feasible_samples = process_candidates(
-                    problem, raw, compiled.internal_variables, problem.solver.top_k
+                    problem, decoded, frozenset(), problem.solver.top_k
                 )
                 attempts.append(
                     SolveAttempt(

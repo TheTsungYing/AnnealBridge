@@ -1,9 +1,11 @@
 """BQM compiler: OptimizationProblem -> dimod.BinaryQuadraticModel (spec §15)."""
 
 import logging
+from typing import TYPE_CHECKING
 
 import dimod
 
+from annealbridge.compiler.base import select_business_columns
 from annealbridge.compiler.objective import build_objective_bqm
 from annealbridge.compiler.slack import accumulate_terms, encode_slack
 from annealbridge.exceptions import CompilationError
@@ -17,6 +19,9 @@ from annealbridge.models import (
 )
 from annealbridge.penalty.strategy import compute_objective_scale
 from annealbridge.validation.estimates import Bounds, variable_bounds
+
+if TYPE_CHECKING:
+    from annealbridge.solvers.base import RawSolverResult
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +112,18 @@ class BQMCompiler:
             hard_penalty,
         )
         return compiled
+
+    def decode(
+        self, compiled: CompiledProblem, raw: "RawSolverResult"
+    ) -> "RawSolverResult":
+        """Business-variable view of a BQM backend's bit matrix (3b §13)."""
+        # 3b step 3 adds the integer branch here: when
+        # ``compiled.integer_encodings`` is non-empty, each integer variable
+        # becomes ``lower + bits @ coefficients`` (int64) and its bit
+        # columns are dropped together with the slack ones. Without integer
+        # variables the decode is pure column selection and keeps the int8
+        # bit matrix.
+        return select_business_columns(compiled, raw)
 
     def _compile_objective(
         self, bqm: dimod.BinaryQuadraticModel, objective: Objective
