@@ -10,9 +10,14 @@ from annealbridge.solvers import (
     REASON_NOT_INSTALLED,
     DWaveQPUBackend,
     ExactSolverBackend,
+    FujitsuDABackend,
     LeapHybridBQMBackend,
     LeapHybridCQMBackend,
     SimulatedAnnealingBackend,
+)
+from annealbridge.solvers.fujitsu_da import (
+    REASON_API_KEY_MISSING,
+    REASON_URL_NOT_HTTPS,
 )
 
 pytestmark = pytest.mark.anyio
@@ -23,16 +28,24 @@ BACKEND_CLASSES = (
     DWaveQPUBackend,
     LeapHybridBQMBackend,
     LeapHybridCQMBackend,
+    FujitsuDABackend,
 )
 
-REMOTE_BACKEND_NAMES = ("dwave_qpu", "leap_hybrid_bqm", "leap_hybrid_cqm")
+REMOTE_BACKEND_NAMES = (
+    "dwave_qpu",
+    "leap_hybrid_bqm",
+    "leap_hybrid_cqm",
+    "fujitsu_da",
+)
 
-# The categorical strings is_available() may return for the D-Wave backends;
-# they must never contain configuration values (spec §10).
-DWAVE_UNAVAILABLE_REASONS = {
+# The categorical strings is_available() may return for the remote backends;
+# they must never contain configuration values (spec §10, 3b §20.5).
+UNAVAILABLE_REASONS = {
     REASON_NOT_INSTALLED,
     REASON_CREDENTIALS_MISSING,
     REASON_CONFIG_INVALID,
+    REASON_API_KEY_MISSING,
+    REASON_URL_NOT_HTTPS,
 }
 
 
@@ -48,12 +61,13 @@ async def test_structured_content_is_dict():
     assert isinstance(result.structured_content, dict)
 
 
-async def test_all_five_backends_listed():
+async def test_all_backends_listed():
     content = (await _get_capabilities()).structured_content
     names = [backend["name"] for backend in content["backends"]]
     assert sorted(names) == [
         "dwave_qpu",
         "exact",
+        "fujitsu_da",
         "leap_hybrid_bqm",
         "leap_hybrid_cqm",
         "simulated_annealing",
@@ -69,12 +83,12 @@ async def test_local_backends_available_and_enabled():
         assert by_name[name]["unavailable_reason"] is None
 
 
-async def test_dwave_backends_unavailable_with_categorical_reason():
+async def test_remote_backends_unavailable_with_categorical_reason():
     content = (await _get_capabilities()).structured_content
     by_name = {backend["name"]: backend for backend in content["backends"]}
     for name in REMOTE_BACKEND_NAMES:
         assert by_name[name]["available"] is False
-        assert by_name[name]["unavailable_reason"] in DWAVE_UNAVAILABLE_REASONS
+        assert by_name[name]["unavailable_reason"] in UNAVAILABLE_REASONS
         # Default policy has allow_remote=False, so remote backends are disabled.
         assert by_name[name]["enabled"] is False
 
@@ -101,6 +115,7 @@ async def test_limits_come_from_policy():
     }
     assert by_name["leap_hybrid_bqm"]["limits"] == {"max_time_seconds": 300}
     assert by_name["leap_hybrid_cqm"]["limits"] == {"max_time_seconds": 300}
+    assert by_name["fujitsu_da"]["limits"] == {"max_time_seconds": 300}
     assert by_name["simulated_annealing"]["limits"] == {}
 
 

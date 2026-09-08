@@ -3,6 +3,7 @@
 from annealbridge.solvers.base import SolverBackend
 from annealbridge.solvers.dwave_qpu import DWaveQPUBackend
 from annealbridge.solvers.exact import ExactSolverBackend
+from annealbridge.solvers.fujitsu_da import FujitsuDABackend
 from annealbridge.solvers.leap_hybrid_bqm import LeapHybridBQMBackend
 from annealbridge.solvers.leap_hybrid_cqm import LeapHybridCQMBackend
 from annealbridge.solvers.simulated_annealing import SimulatedAnnealingBackend
@@ -30,14 +31,15 @@ class SolverRegistry:
     def default(cls) -> "SolverRegistry":
         """Build the default registry.
 
-        Registration order is fixed (3a §17.7): ``exact``,
+        Registration order is fixed (3a §17.7, 3b §20.9): ``exact``,
         ``simulated_annealing``, ``dwave_qpu``, ``leap_hybrid_bqm``,
-        ``leap_hybrid_cqm``. The capabilities list, the CLI table and the
-        routing tie-break all follow it.
+        ``leap_hybrid_cqm``, ``fujitsu_da``. The capabilities list, the CLI
+        table and the routing tie-break all follow it.
 
         Registering the remote backends never imports any D-Wave cloud
-        package: each backend lazy-imports ``dwave.system`` inside its
-        sampler factory only (spec §4).
+        package: each D-Wave backend lazy-imports ``dwave.system`` inside
+        its sampler factory only (spec §4), and the Fujitsu backend uses
+        the standard library for HTTP (3b §20.4).
         """
         backends = (
             ExactSolverBackend(),
@@ -45,5 +47,6 @@ class SolverRegistry:
             DWaveQPUBackend(),
             LeapHybridBQMBackend(),
             LeapHybridCQMBackend(),
+            FujitsuDABackend(),
         )
         return cls({backend.name: backend for backend in backends})

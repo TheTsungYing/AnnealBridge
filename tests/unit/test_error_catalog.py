@@ -242,11 +242,15 @@ def declared_error_codes() -> dict[str, list[str]]:
 
     ``limit_error`` uses each backend's declared ``ParameterLimit.error_code``;
     the availability gate uses ``AVAILABILITY_MAP``'s defaults; solver
-    exceptions are classified through the Ocean code tables and the
-    fallback code.
+    exceptions are classified through the Ocean code tables, the Fujitsu DA
+    HTTP tables (3b §20.8) and the fallback code.
     """
     from annealbridge.orchestration.limits import AVAILABILITY_MAP
     from annealbridge.solvers import SolverRegistry
+    from annealbridge.solvers.fujitsu_da import (
+        _BAD_REQUEST_MESSAGE_CODES,
+        _HTTP_STATUS_CODES,
+    )
     from annealbridge.solvers.metadata import REMOTE_ERROR_FALLBACK_CODE
     from annealbridge.solvers.ocean import (
         HYBRID_SAMPLE_EXCEPTION_CODES,
@@ -265,6 +269,8 @@ def declared_error_codes() -> dict[str, list[str]]:
     for table_name, table in (
         ("SAMPLER_INIT_EXCEPTION_CODES", SAMPLER_INIT_EXCEPTION_CODES),
         ("HYBRID_SAMPLE_EXCEPTION_CODES", HYBRID_SAMPLE_EXCEPTION_CODES),
+        ("fujitsu_da._HTTP_STATUS_CODES", _HTTP_STATUS_CODES),
+        ("fujitsu_da._BAD_REQUEST_MESSAGE_CODES", _BAD_REQUEST_MESSAGE_CODES),
     ):
         for key, code in table.items():
             found.setdefault(code, []).append(f"{table_name}[{key!r}]")
@@ -285,6 +291,13 @@ class TestEmittedErrorCodesAreCatalogued:
         assert "BACKEND_CONFIG_INVALID" in declared
         assert "REMOTE_TIME_LIMIT" in declared
         assert "REMOTE_SOLVER_ERROR" in declared
+
+    def test_collector_sees_the_fujitsu_da_http_codes(self):
+        """3b §20.8: the DA status / message tables feed the coverage check."""
+        declared = declared_error_codes()
+        assert "REMOTE_QUOTA_EXCEEDED" in declared
+        assert "REMOTE_BUSY" in declared
+        assert "REMOTE_AUTH_FAILED" in declared
 
     def test_every_literal_code_has_a_recommended_action(self):
         missing = {

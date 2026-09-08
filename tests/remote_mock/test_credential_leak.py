@@ -1,13 +1,15 @@
 """Credential-leak tests for the remote solve path (Phase 2 spec §19, §27;
 3a spec §26.5, §28).
 
-A fake D-Wave token is placed in ``DWAVE_API_TOKEN`` and a fake sampler
-raises an exception whose text embeds it. Nothing that leaves the service —
-the ``SolveResult`` JSON, its errors/warnings, or any ``annealbridge`` log
-record — may contain the token. The service-level tests run once per
-remote backend kind (``dwave_qpu`` on the BQM path, ``leap_hybrid_cqm`` on
-the CQM path) so the new backend is proven to share the same redaction
-route.
+A fake credential is placed in the backend's environment variable
+(``DWAVE_API_TOKEN`` for the D-Wave kinds, ``FUJITSU_DA_API_KEY`` for the
+Fujitsu kind) and a fake sampler / transport raises an exception whose text
+embeds it. Nothing that leaves the service — the ``SolveResult`` JSON, its
+errors/warnings, or any ``annealbridge`` log record — may contain the
+credential. The service-level tests run once per remote backend kind
+(``dwave_qpu`` on the BQM path, ``leap_hybrid_cqm`` on the CQM path,
+``fujitsu_da`` on the HTTP path; 3b spec §22) so every backend is proven to
+share the same redaction route.
 
 The token deliberately contains hyphens, so it does *not* match the
 ``DEV-[A-Za-z0-9]{20,}`` redaction pattern: masking has to come from the
@@ -20,6 +22,9 @@ source), which is exactly the path under test — only
 
 import logging
 import traceback
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
@@ -29,11 +34,13 @@ from annealbridge.orchestration import OptimizationService
 from annealbridge.orchestration.policy import ExecutionPolicy
 from annealbridge.solvers import (
     DWaveQPUBackend,
+    FujitsuDABackend,
     LeapHybridBQMBackend,
     LeapHybridCQMBackend,
     SolverRegistry,
 )
 import annealbridge.solvers.metadata as metadata_module
+from tests.fakes import FakeDATransport, json_response
 from tests.remote_mock.conftest import (
     FAKE_UNPATTERNED_TOKEN,
     FakeCQMSampler,
@@ -47,11 +54,49 @@ from tests.remote_mock.conftest import (
 FAKE_TOKEN = FAKE_UNPATTERNED_TOKEN
 
 
-# (backend name, fake sampler class, backend class): one BQM-path backend
-# and the CQM-path backend, so both compile paths are proven to redact.
-REMOTE_KINDS = {
-    "dwave_qpu": (FakeQPUSampler, DWaveQPUBackend),
-    "leap_hybrid_cqm": (FakeCQMSampler, LeapHybridCQMBackend),
+@dataclass(frozen=True)
+class RemoteKind:
+    """How to drive one remote backend kind into a credential-bearing failure.
+
+    ``env_var`` is where the backend reads its credential; ``build`` returns
+    ``(fake, backend)`` whose first remote call raises an exception with the
+    given message (``lazy`` only matters for the Ocean fakes); ``calls``
+    counts how many times the fake was asked to solve.
+    """
+
+    env_var: str
+    build: Callable[[str, bool], tuple[Any, Any]]
+    calls: Callable[[Any], int]
+
+
+def _build_qpu(message: str, lazy: bool):
+    fake = FakeQPUSampler(raise_on_sample=RuntimeError(message), lazy=lazy)
+    return fake, DWaveQPUBackend(sampler_factory=lambda: fake)
+
+
+def _build_cqm(message: str, lazy: bool):
+    fake = FakeCQMSampler(raise_on_sample=RuntimeError(message), lazy=lazy)
+    return fake, LeapHybridCQMBackend(sampler_factory=lambda: fake)
+
+
+def _build_da(message: str, lazy: bool):
+    # The transport raises on the very first request (job submission); the
+    # DA flow has no lazy resolve step, so ``lazy`` is irrelevant here.
+    fake = FakeDATransport(submit_response=RuntimeError(message))
+    return fake, FujitsuDABackend(transport=fake, sleep=lambda _seconds: None)
+
+
+# One BQM-path D-Wave backend, the CQM-path D-Wave backend and the HTTP-path
+# Fujitsu backend, so every compile path and every credential kind is proven
+# to redact.
+REMOTE_KINDS: dict[str, RemoteKind] = {
+    "dwave_qpu": RemoteKind("DWAVE_API_TOKEN", _build_qpu, lambda fake: fake.sample_calls),
+    "leap_hybrid_cqm": RemoteKind(
+        "DWAVE_API_TOKEN", _build_cqm, lambda fake: fake.sample_calls
+    ),
+    "fujitsu_da": RemoteKind(
+        "FUJITSU_DA_API_KEY", _build_da, lambda fake: fake.submit_calls
+    ),
 }
 
 
@@ -64,21 +109,22 @@ def solve_with_leaky_sampler(
     monkeypatch, caplog, message: str, *, kind: str, lazy: bool = False
 ):
     """Run a full remote solve on ``kind`` whose sampler raises ``message``."""
-    monkeypatch.setenv("DWAVE_API_TOKEN", FAKE_TOKEN)
-    monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
-    # The env token alone makes ocean_config_status() report "ok"; that path
-    # is under test, so it is deliberately not patched.
-    assert metadata_module.ocean_config_status() == "ok"
+    remote = REMOTE_KINDS[kind]
+    monkeypatch.setenv(remote.env_var, FAKE_TOKEN)
+    if remote.env_var == "DWAVE_API_TOKEN":
+        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
+        # The env token alone makes ocean_config_status() report "ok"; that
+        # path is under test, so it is deliberately not patched.
+        assert metadata_module.ocean_config_status() == "ok"
 
-    fake_class, backend_class = REMOTE_KINDS[kind]
-    fake = fake_class(raise_on_sample=RuntimeError(message), lazy=lazy)
+    fake, backend = remote.build(message, lazy)
     service = OptimizationService(
-        registry=SolverRegistry({kind: backend_class(lambda: fake)}),
+        registry=SolverRegistry({kind: backend}),
         policy=ExecutionPolicy(allow_remote=True),
     )
     caplog.set_level(logging.DEBUG, logger="annealbridge")
     result = service.solve(make_problem(backend=kind))
-    assert fake.sample_calls == 1
+    assert remote.calls(fake) == 1
     return result
 
 
@@ -204,6 +250,71 @@ def cqm_preferences():
     return make_problem(backend="leap_hybrid_cqm").solver
 
 
+def da_preferences():
+    return make_problem(backend="fujitsu_da").solver
+
+
+def da_backend(fake: FakeDATransport) -> FujitsuDABackend:
+    return FujitsuDABackend(transport=fake, sleep=lambda _seconds: None)
+
+
+class TestFujitsuResponseBodyEchoingTheKeyIsMasked:
+    """3b §22: the key may come back in an HTTP error *body* (not only in an
+    exception); the 400 classification runs on the raw body while the
+    message that leaves the backend is redacted."""
+
+    @pytest.fixture(autouse=True)
+    def _key_in_env(self, monkeypatch):
+        monkeypatch.setenv("FUJITSU_DA_API_KEY", FAKE_TOKEN)
+
+    def solve(self, caplog, body: bytes):
+        fake = FakeDATransport(submit_response=(400, body))
+        service = OptimizationService(
+            registry=SolverRegistry({"fujitsu_da": da_backend(fake)}),
+            policy=ExecutionPolicy(allow_remote=True),
+        )
+        caplog.set_level(logging.DEBUG, logger="annealbridge")
+        return service.solve(make_problem(backend="fujitsu_da"))
+
+    def test_problem_level_rejection_echoing_the_key(self, caplog):
+        body = ('{"message": "rejected request from ' + FAKE_TOKEN + '"}').encode()
+        result = self.solve(caplog, body)
+
+        assert result.status == "solver_error"
+        assert result.errors[0].code == "REMOTE_SOLVER_ERROR"
+        assert FAKE_TOKEN not in result.model_dump_json()
+        assert "***" in result.errors[0].message
+        assert caplog.records
+        for record in caplog.records:
+            assert FAKE_TOKEN not in record.getMessage()
+
+    def test_header_rejection_echoing_the_key(self, caplog):
+        body = (
+            '{"message": "Invalid request header:X-Api-Key ' + FAKE_TOKEN + '"}'
+        ).encode()
+        result = self.solve(caplog, body)
+
+        assert result.status == "configuration_error"
+        assert result.errors[0].code == "BACKEND_CONFIG_INVALID"
+        assert FAKE_TOKEN not in result.model_dump_json()
+        assert "***" in result.errors[0].message
+        for record in caplog.records:
+            assert FAKE_TOKEN not in record.getMessage()
+
+    def test_header_line_pattern_masks_even_without_the_env_value(
+        self, caplog, monkeypatch
+    ):
+        # A key that is *not* the configured one (so the env candidate cannot
+        # mask it) is still hidden by the ``X-Api-Key: …`` line pattern.
+        monkeypatch.setenv("FUJITSU_DA_API_KEY", "some-other-configured-key")
+        body = b'{"message": "Invalid request header:\\nX-Api-Key: leaked-value-123\\n"}'
+        result = self.solve(caplog, body)
+
+        assert result.status == "configuration_error"
+        assert "leaked-value-123" not in result.model_dump_json()
+        assert "X-Api-Key: ***" in result.errors[0].message
+
+
 class TestExceptionChainCarriesNoToken:
     """The raw Ocean exception must not hang off the wrapped error: anything
     formatting the chain (``logger.exception``, traceback tooling) would
@@ -212,6 +323,7 @@ class TestExceptionChainCarriesNoToken:
     @pytest.fixture(autouse=True)
     def _token_in_env(self, monkeypatch):
         monkeypatch.setenv("DWAVE_API_TOKEN", FAKE_TOKEN)
+        monkeypatch.setenv("FUJITSU_DA_API_KEY", FAKE_TOKEN)
 
     def assert_chain_is_clean(self, exc: BaseException) -> None:
         assert exc.__cause__ is None
@@ -302,6 +414,53 @@ class TestExceptionChainCarriesNoToken:
 
         with pytest.raises(SolverExecutionError) as exc_info:
             backend.resolve_time_limit(compile_cqm_problem(), cqm_preferences())
+
+        assert exc_info.value.code == "REMOTE_SOLVER_ERROR"
+        self.assert_chain_is_clean(exc_info.value)
+
+    def test_da_transport_failure(self):
+        fake = FakeDATransport(
+            submit_response=OSError(f"connection refused for X-Api-Key {FAKE_TOKEN}")
+        )
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            da_backend(fake).solve(compile_problem(), da_preferences())
+
+        assert fake.submit_calls == 1
+        assert exc_info.value.code == "REMOTE_SOLVER_ERROR"
+        self.assert_chain_is_clean(exc_info.value)
+
+    def test_da_poll_failure_after_submission(self):
+        fake = FakeDATransport(
+            poll_responses={0: RuntimeError(f"lost connection, key={FAKE_TOKEN}")}
+        )
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            da_backend(fake).solve(compile_problem(), da_preferences())
+
+        assert fake.poll_calls == 1
+        self.assert_chain_is_clean(exc_info.value)
+
+    def test_da_error_body_echoing_the_key(self):
+        fake = FakeDATransport(
+            submit_response=json_response(
+                500, {"title": "Internal Server Error", "message": f"key {FAKE_TOKEN}"}
+            )
+        )
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            da_backend(fake).solve(compile_problem(), da_preferences())
+
+        assert exc_info.value.code == "REMOTE_SOLVER_ERROR"
+        self.assert_chain_is_clean(exc_info.value)
+
+    def test_da_invalid_json_body_echoing_the_key(self):
+        fake = FakeDATransport(
+            submit_response=(200, f"<html>{FAKE_TOKEN}</html>".encode())
+        )
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            da_backend(fake).solve(compile_problem(), da_preferences())
 
         assert exc_info.value.code == "REMOTE_SOLVER_ERROR"
         self.assert_chain_is_clean(exc_info.value)

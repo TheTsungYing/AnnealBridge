@@ -143,6 +143,7 @@ CONCRETE_BACKEND_MODULES = [
     "annealbridge.solvers.dwave_qpu",
     "annealbridge.solvers.leap_hybrid_bqm",
     "annealbridge.solvers.leap_hybrid_cqm",
+    "annealbridge.solvers.fujitsu_da",
 ]
 
 CONCRETE_COMPILER_MODULES = ["annealbridge.compiler.bqm", "annealbridge.compiler.cqm"]
@@ -213,6 +214,42 @@ def test_concrete_compilers_only_imported_by_optimizer() -> None:
     assert not violations, (
         f"concrete compilers may only be imported by {COMPILER_IMPORT_ALLOWED_IN} "
         "(everything else uses the ModelCompiler protocol):\n" + "\n".join(violations)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3b §4 / §26.2: the Fujitsu DA backend speaks HTTPS through the
+# standard library, so no new HTTP dependency may enter the package.
+# ---------------------------------------------------------------------------
+
+BANNED_HTTP_PACKAGES = {"requests", "httpx", "aiohttp"}
+
+
+def test_no_third_party_http_package_is_imported_anywhere() -> None:
+    """No module of ``annealbridge`` imports a third-party HTTP package.
+
+    Checked over the whole package (not just ``solvers/fujitsu_da.py``) so a
+    later remote backend cannot quietly add the dependency either; both
+    module-level and function-scoped imports count.
+    """
+    scanned_files = 0
+    violations: list[str] = []
+
+    for py_file in sorted(SRC_ROOT.rglob("*.py")):
+        scanned_files += 1
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        for lineno, module, _in_function in _imported_modules(tree):
+            if module.split(".")[0] in BANNED_HTTP_PACKAGES:
+                relative = py_file.relative_to(SRC_ROOT.parent.parent)
+                violations.append(f"{relative}:{lineno} -> {module}")
+
+    assert scanned_files > 0, "no .py files scanned — check SRC_ROOT resolution"
+    assert (SRC_ROOT / "solvers" / "fujitsu_da.py").is_file(), (
+        "the Fujitsu DA backend module is missing; this rule would pass vacuously"
+    )
+    assert not violations, (
+        "third-party HTTP packages are banned (use urllib.request behind the "
+        "HttpTransport seam):\n" + "\n".join(violations)
     )
 
 

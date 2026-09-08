@@ -36,6 +36,7 @@ class TestCapabilities:
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
+            "fujitsu_da",
         }
         # 3a §17.7: rows follow the fixed registry order.
         assert [line.split()[0] for line in lines[1:]] == [
@@ -44,6 +45,7 @@ class TestCapabilities:
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
+            "fujitsu_da",
         ]
         # Local backends: available, enabled, not remote.
         assert rows["exact"].split()[1:4] == ["yes", "yes", "no"]
@@ -53,11 +55,13 @@ class TestCapabilities:
         assert rows["dwave_qpu"].split()[2] == "no"
         assert rows["leap_hybrid_bqm"].split()[2] == "no"
         assert rows["leap_hybrid_cqm"].split()[2] == "no"
+        assert rows["fujitsu_da"].split()[2] == "no"
         # Limits come from the policy, same source as MCP capabilities.
         assert "max_reads=1000" in rows["dwave_qpu"]
         assert "max_annealing_time_us=2000" in rows["dwave_qpu"]
         assert "max_time=300s" in rows["leap_hybrid_bqm"]
         assert "max_time=300s" in rows["leap_hybrid_cqm"]
+        assert "max_time=300s" in rows["fujitsu_da"]
 
     def test_remote_backends_enabled_when_policy_allows(self, monkeypatch):
         monkeypatch.setenv("ANNEALBRIDGE_ALLOW_REMOTE", "true")
@@ -69,16 +73,22 @@ class TestCapabilities:
         assert rows["dwave_qpu"].split()[2] == "yes"
         assert rows["leap_hybrid_bqm"].split()[2] == "yes"
         assert rows["leap_hybrid_cqm"].split()[2] == "yes"
+        assert rows["fujitsu_da"].split()[2] == "yes"
 
     def test_unavailable_reason_shown_in_parentheses(self):
-        # In an environment without configured D-Wave access the remote rows
-        # must carry a parenthesised reason; either classified reason is valid
-        # depending on whether dwave-system is installed.
+        # In an environment without configured D-Wave or Fujitsu access the
+        # remote rows must carry a parenthesised reason; either classified
+        # reason is valid depending on whether dwave-system is installed.
         result = runner.invoke(app, ["capabilities"])
         rows = {
             line.split()[0]: line for line in result.output.splitlines()[1:]
         }
-        for name in ("dwave_qpu", "leap_hybrid_bqm", "leap_hybrid_cqm"):
+        for name in (
+            "dwave_qpu",
+            "leap_hybrid_bqm",
+            "leap_hybrid_cqm",
+            "fujitsu_da",
+        ):
             if rows[name].split()[1] == "no":
                 assert "(" in rows[name] and rows[name].endswith(")")
 
@@ -115,6 +125,7 @@ class TestSolveErrors:
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
+            "fujitsu_da",
         ):
             assert name in text
 
@@ -248,23 +259,25 @@ class TestRecommend:
         )
         assert lines[2] == ""
         assert lines[3].split() == ["Rank", "Backend", "Usable", "Model", "Reasons"]
-        rows = [line.split() for line in lines[4:9]]
+        rows = [line.split() for line in lines[4:10]]
         assert [row[1] for row in rows] == [
             "exact",
             "simulated_annealing",
             "leap_hybrid_cqm",
             "dwave_qpu",
             "leap_hybrid_bqm",
+            "fujitsu_da",
         ]
-        assert [row[0] for row in rows] == ["1", "2", "3", "4", "5"]
-        assert [row[2] for row in rows] == ["yes", "yes", "no", "no", "no"]
-        assert [row[3] for row in rows] == ["bqm", "bqm", "cqm", "bqm", "bqm"]
+        assert [row[0] for row in rows] == ["1", "2", "3", "4", "5", "6"]
+        assert [row[2] for row in rows] == ["yes", "yes", "no", "no", "no", "no"]
+        assert [row[3] for row in rows] == ["bqm", "bqm", "cqm", "bqm", "bqm", "bqm"]
         assert lines[4].endswith("R_EXACT_FITS")
         assert lines[5].endswith("R_LOCAL_HEURISTIC")
         assert "R_UNUSABLE, R_NATIVE_CONSTRAINTS   [REMOTE_DISABLED]" in lines[6]
         assert "R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]" in lines[7]
         assert "R_UNUSABLE, R_REMOTE, R_SINGLE_SAMPLE   [REMOTE_DISABLED]" in lines[8]
-        assert len(lines) == 9
+        assert "R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]" in lines[9]
+        assert len(lines) == 10
 
     def test_json_output_is_a_recommendation_result(self):
         from annealbridge.validation import BackendRecommendationResult
@@ -277,7 +290,7 @@ class TestRecommend:
         parsed = BackendRecommendationResult.model_validate_json(result.output)
         assert parsed.valid is True
         assert parsed.recommendations[0].backend == "exact"
-        assert [e.rank for e in parsed.recommendations] == [1, 2, 3, 4, 5]
+        assert [e.rank for e in parsed.recommendations] == [1, 2, 3, 4, 5, 6]
 
     def test_invalid_problem_exits_1_with_errors(self, tmp_path):
         problem = json.loads((EXAMPLES_DIR / "knapsack.json").read_text())

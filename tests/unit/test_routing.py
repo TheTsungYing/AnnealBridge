@@ -174,8 +174,9 @@ class TestDefaultPolicy:
             "leap_hybrid_cqm",
             "dwave_qpu",
             "leap_hybrid_bqm",
+            "fujitsu_da",
         ]
-        assert [e.rank for e in result.recommendations] == [1, 2, 3, 4, 5]
+        assert [e.rank for e in result.recommendations] == [1, 2, 3, 4, 5, 6]
         assert by_name(result, "exact").usable is True
         assert by_name(result, "simulated_annealing").usable is True
         for name in remote_names(registry):
@@ -246,7 +247,12 @@ class TestRemoteAllowed:
         assert order.index("leap_hybrid_bqm") < order.index("leap_hybrid_cqm")
         assert by_name(result, "leap_hybrid_cqm").reasons == ["R_REMOTE"]
         # Same tier (4): registry order decides.
-        assert order[2:] == ["dwave_qpu", "leap_hybrid_bqm", "leap_hybrid_cqm"]
+        assert order[2:] == [
+            "dwave_qpu",
+            "leap_hybrid_bqm",
+            "leap_hybrid_cqm",
+            "fujitsu_da",
+        ]
 
     def test_fake_declared_remote_is_listed_and_usable(self, monkeypatch, policy):
         defaults = SolverRegistry.default()
@@ -387,7 +393,13 @@ class TestIntegerReasons:
     INTEGER_QUADRATIC_BLOWUP warning sorts a backend with DENSE_FOR_QPU. No
     tier rule: a free local heuristic still ranks ahead of a remote CQM."""
 
-    BQM_BACKENDS = ["exact", "simulated_annealing", "dwave_qpu", "leap_hybrid_bqm"]
+    BQM_BACKENDS = [
+        "exact",
+        "simulated_annealing",
+        "dwave_qpu",
+        "leap_hybrid_bqm",
+        "fujitsu_da",
+    ]
 
     def test_bqm_backends_report_encoded(self, registry):
         result = recommend(integer_knapsack(), registry, ExecutionPolicy(), compilers())
@@ -430,6 +442,7 @@ class TestIntegerReasons:
             "leap_hybrid_cqm",
             "dwave_qpu",
             "leap_hybrid_bqm",
+            "fujitsu_da",
         ]
 
     def test_blowup_reason_and_warning(self, monkeypatch, registry):
@@ -464,8 +477,9 @@ class TestIntegerReasons:
             "simulated_annealing",
             "dwave_qpu",
             "leap_hybrid_bqm",
+            "fujitsu_da",
         ]
-        assert [e.rank for e in result.recommendations] == [1, 2, 3, 4, 5]
+        assert [e.rank for e in result.recommendations] == [1, 2, 3, 4, 5, 6]
 
     def test_blowup_still_sorts_after_usability(self, registry):
         # Under the default policy the remote CQM backend is unusable, so the

@@ -216,6 +216,7 @@ class TestLimitsFor:
             "dwave_qpu": {"max_reads": 1000, "max_annealing_time_us": 2000.0},
             "leap_hybrid_bqm": {"max_time_seconds": 300},
             "leap_hybrid_cqm": {"max_time_seconds": 300},
+            "fujitsu_da": {"max_time_seconds": 300},
         }
         # Key order feeds the CLI table, so it is pinned too.
         assert list(limits["dwave_qpu"]) == ["max_reads", "max_annealing_time_us"]

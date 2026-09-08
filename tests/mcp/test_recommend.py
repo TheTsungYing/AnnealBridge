@@ -38,7 +38,7 @@ async def test_remote_backends_are_unusable_under_the_default_policy(load_exampl
     registry = server.get_state().registry
 
     remote = [n for n in registry.names() if registry.get(n).capabilities.remote]
-    assert len(remote) == 3
+    assert len(remote) == 4
     entries = {e["backend"]: e for e in content["recommendations"]}
     for name in remote:
         assert entries[name]["usable"] is False
@@ -48,7 +48,7 @@ async def test_remote_backends_are_unusable_under_the_default_policy(load_exampl
 async def test_structured_content_parses_as_the_result_model(load_example):
     content = await recommend(load_example("knapsack.json"))
     parsed = BackendRecommendationResult.model_validate(content)
-    assert [e.rank for e in parsed.recommendations] == [1, 2, 3, 4, 5]
+    assert [e.rank for e in parsed.recommendations] == [1, 2, 3, 4, 5, 6]
     assert parsed.advisory.startswith("Advisory only")
 
 

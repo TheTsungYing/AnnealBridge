@@ -80,6 +80,7 @@ class TestDefaultRegistry:
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
+            "fujitsu_da",
         ]
 
     def test_default_backends_report_their_own_names(self):
@@ -95,6 +96,15 @@ class TestDefaultRegistry:
         SolverRegistry.default()
 
         assert "dwave.system" not in sys.modules
+
+    def test_default_registry_needs_no_third_party_http_package(self):
+        # 3b §4 / §26.2: the Fujitsu DA backend talks HTTPS through the
+        # standard library only, so building the default registry must not
+        # drag in a new HTTP dependency.
+        SolverRegistry.default()
+
+        for module in ("requests", "httpx", "aiohttp"):
+            assert module not in sys.modules
 
 
 def make_service_without_dwave_qpu() -> OptimizationService:

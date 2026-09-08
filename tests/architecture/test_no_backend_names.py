@@ -26,6 +26,7 @@ BACKEND_NAMES = frozenset(
         "dwave_qpu",
         "leap_hybrid_bqm",
         "leap_hybrid_cqm",
+        "fujitsu_da",
     }
 )
 
