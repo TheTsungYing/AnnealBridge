@@ -26,8 +26,8 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "enable remote backends, or use simulated_annealing or exact."
     ),
     "REMOTE_CREDENTIALS_MISSING": (
-        "D-Wave credentials are not configured on the server; configure them "
-        "via the standard D-Wave config mechanism, or use a local backend."
+        "The remote solver's credentials are not configured on the server; ask "
+        "the operator to configure them, or use a local backend."
     ),
     "BACKEND_DISABLED_BY_POLICY": (
         "This backend is not in the server's enabled_backends list; choose "
@@ -60,7 +60,7 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
     ),
     "REMOTE_AUTH_FAILED": (
         "The remote solver rejected the configured credentials; verify the "
-        "D-Wave credentials on the server, or use a local backend."
+        "remote solver's credentials on the server, or use a local backend."
     ),
     "REMOTE_TIMEOUT": (
         "The remote solve timed out; retry later, reduce the problem size, "

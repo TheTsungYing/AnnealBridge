@@ -2,7 +2,7 @@
 #
 # 普通 push / PR 跑：unit、scenarios、architecture、mcp、remote_mock。
 # remote_live 測試由 pytest addopts (-m "not remote") 預設排除，
-# 因此本 workflow 不會消耗任何 D-Wave Leap quota，也不需要 DWAVE_API_TOKEN。
+# 因此本 workflow 不會消耗任何廠商 quota，也不需要 DWAVE_API_TOKEN / FUJITSU_DA_API_KEY。
 #
 # 本檔案刻意不包含任何 printenv / env dump / echo secrets / debug 環境變數步驟。
 
@@ -59,7 +59,7 @@ jobs:
 
       # Phase 3a smoke (spec §30 step 10): validate / recommend are one-line
       # delegations to the service and must work without any extra installed;
-      # recommend lists all five backends and never touches the network.
+      # recommend lists all six backends and never touches the network.
       - name: CLI validate and recommend work without optional dependencies
         run: |
           annealbridge validate examples/knapsack.json

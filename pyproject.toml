@@ -33,9 +33,10 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Deselect the opt-in live D-Wave tests by default so a plain `pytest` never
-# consumes Leap quota (spec §28). Run them explicitly with `pytest -m remote`.
+# Deselect the opt-in live remote tests by default so a plain `pytest` never
+# consumes vendor quota (spec §28). Run them explicitly with `pytest -m remote`;
+# each live test skips unless its own vendor credential is set.
 addopts = '-m "not remote"'
 markers = [
-    "remote: live D-Wave tests (opt-in; consume Leap quota; require DWAVE_API_TOKEN)",
+    "remote: live remote tests (opt-in; consume vendor quota; each needs its vendor credential: DWAVE_API_TOKEN or FUJITSU_DA_API_KEY)",
 ]

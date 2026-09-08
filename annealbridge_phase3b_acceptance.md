@@ -1,7 +1,7 @@
 # AnnealBridge Phase 3b 驗收報告
 
 > 對照 `annealbridge_phase3b_spec_v1.md` §27 Acceptance Criteria 逐條核對，並核對 §28 接點對照與 §29 偏離清單。
-> 核對日期：2026-09-08。commit 範圍：`02d821d..c0de356`（步驟 0–6b，共 8 個 commit），加上本步驟（步驟 7）的文件 commit。
+> 核對日期：2026-09-08。commit 範圍：`02d821d..7eda283`（步驟 0–6b，共 8 個 commit），加上本步驟（步驟 7）的文件 commit `3b47bbc`。（步驟 6a / 6b / 7 的 hash 於核對後因 filter-branch 修正步驟 6a 標題而改變，現為 `1d640ff` / `7eda283` / `3b47bbc`，樹內容不變；本報告一律寫新 hash。）
 > 執行環境：Windows 11、`.venv\Scripts\python.exe`（**未安裝** `dwave-system`；**沒有** Fujitsu DA 帳號，`FUJITSU_DA_API_KEY` 未設）。
 > 本報告所有數字與指令輸出皆於核對日重跑取得，非引用 spec 或步驟回報。
 
@@ -205,15 +205,18 @@
 
 ## 5. 已知限制、發現的不一致與 §30 之後事項
 
-### 5.1 程式與文件的文字面不一致（本步驟只回報，未改程式；均不影響 §27 任何一條）
+### 5.1 程式與文件的文字面不一致（核對時回報，未改程式；均不影響 §27 任何一條；**已於後續 commit 修正**，見「處理」欄）
 
-| 位置 | 內容 | 建議 |
+| 位置 | 核對時的內容 | 處理 |
 |---|---|---|
-| `models/error_catalog.py` `REMOTE_AUTH_FAILED` | `recommended_action` 仍寫「verify the **D-Wave** credentials on the server」；3b 起 Fujitsu 的 HTTP 401 / 403 也對應此 code（核對時以假 key 真打 Fujitsu 端點得 401，回的就是這段文字） | 之後改為廠商中性用語（例如「verify the remote solver's credentials」）；需同步 `test_error_catalog.py::test_3a_texts_match_the_spec_wording` 若有引用 |
-| `pyproject.toml` `markers` | `remote` marker 說明「live D-Wave tests (…; require DWAVE_API_TOKEN)」，未提 `FUJITSU_DA_API_KEY`；`addopts` 上方註解亦只提 D-Wave / Leap quota | 之後改為「live remote tests (opt-in; consume vendor quota; require the vendor credential)」 |
-| `.github/workflows/ci.yml` | minimal-install job 註解「recommend lists all **five** backends」，實際六個（只是註解，執行內容不受影響） | 之後改 six |
-| `.github/workflows/remote-live.yml` | 只注入 `DWAVE_API_TOKEN`，未注入 `FUJITSU_DA_API_KEY`，所以手動觸發時 DA live 測試在 CI 上永遠 skip | 有帳號時加 secret |
-| commit `4f50903` 標題 | 開頭多一個殘留的 `"` 字元（`"refactor(solvers): …`） | 歷史紀錄，不動 |
+| `models/error_catalog.py` `REMOTE_AUTH_FAILED` | `recommended_action` 仍寫「verify the **D-Wave** credentials on the server」；3b 起 Fujitsu 的 HTTP 401 / 403 也對應此 code（核對時以假 key 真打 Fujitsu 端點得 401，回的就是這段文字） | 已修正（本 commit）：改為「verify the remote solver's credentials on the server」；`test_error_catalog.py` 無逐字斷言此文字，無需同步 |
+| `models/error_catalog.py` `REMOTE_CREDENTIALS_MISSING` | 核對時漏列的同類缺陷：`fujitsu_da.py` 缺 key 時也回此 code，文字卻寫「configure them via the standard **D-Wave** config mechanism」 | 已修正（本 commit）：改為「The remote solver's credentials are not configured on the server; ask the operator to configure them, or use a local backend」 |
+| `pyproject.toml` `markers` | `remote` marker 說明「live D-Wave tests (…; require DWAVE_API_TOKEN)」，未提 `FUJITSU_DA_API_KEY`；`addopts` 上方註解亦只提 D-Wave / Leap quota | 已修正（本 commit）：marker 改為「live remote tests (opt-in; consume vendor quota; each needs its vendor credential: DWAVE_API_TOKEN or FUJITSU_DA_API_KEY)」，註解同步中性化 |
+| `.github/workflows/ci.yml` | minimal-install job 註解「recommend lists all **five** backends」，實際六個（只是註解，執行內容不受影響） | 已修正（本 commit）：改 six；檔頭註解補「也不需要 FUJITSU_DA_API_KEY」 |
+| `.github/workflows/remote-live.yml` | 只注入 `DWAVE_API_TOKEN`，未注入 `FUJITSU_DA_API_KEY`，所以手動觸發時 DA live 測試在 CI 上永遠 skip | 已修正（本 commit）：同一 step 加注入 `FUJITSU_DA_API_KEY: ${{ secrets.FUJITSU_DA_API_KEY }}`；secret 未建立時 GitHub 注入空字串，`tests/remote_live/conftest.py::_require_live_opt_in` 以真值判斷視為未設定而 skip（backend 層由 `test_fujitsu_da_mock.py::TestIsAvailable::test_empty_key_counts_as_missing` 覆蓋），workflow 註解已說明 |
+| 步驟 6a commit 標題（現 `1d640ff`） | 開頭多一個殘留的 `"` 字元（`"refactor(solvers): …`） | 已於核對後以 filter-branch 修正；步驟 6a / 6b / 7 的 hash 因此變為 `1d640ff` / `7eda283` / `3b47bbc`（樹內容不變） |
+
+刻意保留、未改：`solvers/metadata.py` 的 `REASON_CREDENTIALS_MISSING = "D-Wave credentials not configured"`（只有三個 D-Wave backend 使用，Fujitsu 另有 `REASON_API_KEY_MISSING`）與 `config/settings.py` 的模組 docstring（描述 D-Wave 憑證走 Ocean config），兩者語意正確。
 
 ### 5.2 測試覆蓋的小缺口（如實標註，均有替代證據）
 
@@ -233,7 +236,6 @@
 - 實數變數；`NON_INTEGER_INEQUALITY` 依 model type 放寬。
 - DA 原生能力（第三種 model type、`penalty_auto_mode`）、OAuth、v3c、Azure Blob、`guidance_config`。
 - `DWAVE_CONFIG_INVALID` 在 sampler 建構階段改走 `configuration_error`（與 §20.8 機制統一；3b 刻意不動）。
-- 5.1 的四項文字修正。
 
 ---
 
