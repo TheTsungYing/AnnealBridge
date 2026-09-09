@@ -65,10 +65,43 @@ def _bounds_of(bounds: Bounds | None, name: str) -> tuple[int, int]:
     return bounds.get(name, _BINARY_BOUNDS)
 
 
-def _magnitude(bounds: Bounds | None, name: str) -> int:
-    """``M = max(|lower|, |upper|)``: the largest absolute value a variable takes."""
+def _linear_width(bounds: Bounds | None, name: str) -> int:
+    """``upper - lower``: how far ``x`` (and so ``c * x`` per unit ``|c|``) can move."""
     lower, upper = _bounds_of(bounds, name)
-    return max(abs(lower), abs(upper))
+    return upper - lower
+
+
+def _square_width(lower: int, upper: int) -> int:
+    """``max(x*x) - min(x*x)`` over the integers ``lower..upper``.
+
+    The maximum is ``M**2`` with ``M = max(|lower|, |upper|)``. The minimum
+    is ``0`` when the range contains zero (an attainable integer), otherwise
+    the square of the endpoint closest to zero. The four corner products
+    ``lower*lower, lower*upper, upper*upper`` would over-estimate a range
+    straddling zero (``-4..4`` gives 32 instead of the true 16), so squares
+    are handled exactly rather than as a product of two variables.
+    """
+    largest = max(abs(lower), abs(upper))
+    smallest = 0 if lower <= 0 <= upper else min(abs(lower), abs(upper))
+    return largest * largest - smallest * smallest
+
+
+def _product_width(bounds: Bounds | None, name1: str, name2: str) -> int:
+    """``max(x*y) - min(x*y)`` over ``x in lower_1..upper_1, y in lower_2..upper_2``.
+
+    ``x * y`` is bilinear: for a fixed ``y`` it is linear in ``x`` and takes
+    its extremes at the endpoints of ``x``, and symmetrically in ``y``, so
+    both extremes sit at one of the four corners of the box (all integers,
+    so attainable). For two binary variables the corners are ``{0, 0, 0,
+    1}`` and the width is ``1``. ``x * x`` is a square, not a product of
+    two independent variables: see :func:`_square_width`.
+    """
+    lower_1, upper_1 = _bounds_of(bounds, name1)
+    if name1 == name2:
+        return _square_width(lower_1, upper_1)
+    lower_2, upper_2 = _bounds_of(bounds, name2)
+    corners = (lower_1 * lower_2, lower_1 * upper_2, upper_1 * lower_2, upper_1 * upper_2)
+    return max(corners) - min(corners)
 
 
 def _term_range(value: float, lower: int, upper: int) -> tuple[float, float]:
@@ -133,25 +166,47 @@ def compute_slack_coefficients(slack_range: int) -> list[int]:
 
 
 def compute_objective_scale(objective: Objective, bounds: Bounds | None = None) -> float:
-    """Return ``max(1.0, sum(|c_i| * M_i) + sum(|c_ij| * M_i * M_j))``.
+    """Return ``max(1.0, sum over every term of |c| * width(term))``.
 
-    ``M = max(|lower|, |upper|)`` is the largest absolute value a variable
-    can take (``1`` for binary, so the all-binary result is the Phase 1
-    ``sum(|coefficients|)`` unchanged; ``x*x`` contributes ``M_i**2``). This
-    is an upper bound on the objective's absolute value, which penalty
-    strategies use to scale hard penalties (spec §18). The term lists are
-    used verbatim (duplicates are not merged first): the result is an upper
-    bound either way and the spec formula reads over the raw coefficient
-    lists.
+    An upper bound on the objective's *range* ``objective_max -
+    objective_min`` over the declared bounds, which is what the penalty
+    derivation of spec §18 needs (``lambda > penalty_scale >= range +
+    soft_bound`` makes every hard-infeasible assignment cost more than the
+    best feasible one). ``width(term)`` is the exact ``max - min`` of that
+    single term over the box:
+
+    - ``c * x``: ``|c| * (upper - lower)``.
+    - ``c * x * y`` (``x != y``): ``|c| * (max P - min P)`` over the four
+      corner products ``P`` (bilinear, see :func:`_product_width`).
+    - ``c * x * x``: ``|c| * (M**2 - m**2)`` with ``M = max(|lower|,
+      |upper|)`` and ``m = 0`` when the range contains zero, else the
+      smaller endpoint magnitude (see :func:`_square_width`).
+
+    Proof of the bound: for any two assignments ``a, b`` inside the box,
+    ``f(a) - f(b) = sum_k (t_k(a) - t_k(b)) <= sum_k width(t_k)``; take
+    ``a`` at the maximum and ``b`` at the minimum. Sub-additivity needs no
+    independence, so the raw term lists are used verbatim (duplicates are
+    not merged first) exactly as the spec formula reads.
+
+    For a binary variable ``upper - lower == 1`` and the product corners are
+    ``{0, 0, 0, 1}``, so every term contributes ``abs(c) * 1``: the
+    all-binary result is the Phase 1 ``sum(|coefficients|)`` bit for bit
+    (``tests/unit/test_golden_phase3a.py``).
+
+    2026-09-09 review (F-06): the 3b formula ``sum(|c| * M)`` with ``M =
+    max(|lower|, |upper|)`` bounded ``max|objective|`` instead. For an
+    integer with ``lower < 0`` the range is up to twice that, so with
+    ``penalty_multiplier`` 1.5 the compiled model's global minimum could be
+    infeasible and with the default 2.0 an infeasible assignment could tie
+    it. With a range that excludes zero the magnitude bound was larger than
+    needed; the scale is now the range either way.
     """
     total = sum(
-        abs(term.coefficient) * _magnitude(bounds, term.variable)
+        abs(term.coefficient) * _linear_width(bounds, term.variable)
         for term in objective.linear_terms
     )
     total += sum(
-        abs(term.coefficient)
-        * _magnitude(bounds, term.variable1)
-        * _magnitude(bounds, term.variable2)
+        abs(term.coefficient) * _product_width(bounds, term.variable1, term.variable2)
         for term in objective.quadratic_terms
     )
     return max(1.0, total)

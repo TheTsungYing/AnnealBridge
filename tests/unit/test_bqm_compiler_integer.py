@@ -720,26 +720,19 @@ class TestPenaltyScaleBound:
     def test_scale_dominates_objective_and_soft_energy(self, index):
         problem = PENALTY_PROBLEMS[index]
         scale = compute_penalty_scale(problem)
-        constant = problem.objective.constant
 
-        worst = 0.0
         objectives = []
+        softs = []
         for assignment in business_assignments(problem):
             objective = evaluate_objective(problem.objective, assignment)
             objectives.append(objective)
-            soft = validate_solution(problem, assignment).soft_violation_score
-            # ``compute_objective_scale`` bounds the objective *without* its
-            # constant (the constant shifts every energy equally), so the
-            # comparison subtracts it, exactly as the estimates docstring reads.
-            worst = max(worst, abs(objective - constant) + soft)
-        assert scale >= worst - 1e-9
-
-        # The objective *range* is a different quantity: with a negative lower
-        # bound ``upper - lower`` can be twice ``max(|lower|, |upper|)``, so
-        # ``scale`` bounds half of it (3b §8 defines ``M = max(|lo|, |hi|)``);
-        # the default ``penalty_multiplier`` of 2.0 covers the whole range.
+            softs.append(validate_solution(problem, assignment).soft_violation_score)
+        # ``compute_objective_scale`` bounds the objective's *range* (spec §18:
+        # ``penalty_scale >= objective_max - objective_min + soft_bound``), so the
+        # constant cancels and is not subtracted.
         objective_range = max(objectives) - min(objectives)
-        assert 2.0 * scale >= objective_range - 1e-9
+        worst_soft = max(softs)
+        assert scale >= objective_range + worst_soft - 1e-9
 
     def test_hand_written_problems_are_dominated(self):
         for _, problem in hand_written_problems():
@@ -750,11 +743,13 @@ class TestPenaltyScaleBound:
             if span > 4000:
                 continue
             scale = compute_penalty_scale(problem)
-            constant = problem.objective.constant
+            objectives = []
+            softs = []
             for assignment in business_assignments(problem):
-                objective = evaluate_objective(problem.objective, assignment)
-                soft = validate_solution(problem, assignment).soft_violation_score
-                assert scale >= abs(objective - constant) + soft - 1e-9
+                objectives.append(evaluate_objective(problem.objective, assignment))
+                softs.append(validate_solution(problem, assignment).soft_violation_score)
+            objective_range = max(objectives) - min(objectives)
+            assert scale >= objective_range + max(softs) - 1e-9
 
 
 # --------------------------------------------------------------------------

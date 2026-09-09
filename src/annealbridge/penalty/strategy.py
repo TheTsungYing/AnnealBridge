@@ -54,11 +54,14 @@ class ScaledPenaltyStrategy:
     ``penalty_scale == objective_scale``. Not claimed to be mathematically
     optimal; the multiplier is overridable for debugging.
 
-    With integer variables (3b §8) the reading of the Phase 1 formula is
-    unchanged: ``objective_scale`` is still an upper bound on the largest
-    absolute value the objective can take, now over the declared bounds
-    instead of over ``{0, 1}``, and the soft bound is taken over the same
-    ranges. For an all-binary problem every number is identical to 3a.
+    With integer variables (3b §8, corrected by the 2026-09-09 review,
+    F-06) ``objective_scale`` is an upper bound on the objective's *range*
+    ``objective_max - objective_min`` over the declared bounds, which is
+    the quantity the §18 derivation needs; the soft bound is taken over the
+    same ranges. With ``penalty_multiplier > 1`` the compiled model's global
+    minimum is therefore feasible whenever a feasible assignment exists
+    (given integer coefficients, so a violation costs at least one unit).
+    For an all-binary problem every number is identical to 3a.
     """
 
     def objective_scale(self, problem: OptimizationProblem) -> float:

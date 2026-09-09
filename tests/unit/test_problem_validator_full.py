@@ -1064,13 +1064,15 @@ class TestDenseForQPUCountsBits:
 
 
 class TestBoundsAwareObjectiveScale:
-    def test_objective_scale_uses_the_integer_magnitudes(self):
+    def test_objective_scale_uses_the_integer_ranges(self):
         problem = make_problem(
             variables=(integer("n", -5, 3), "x1"),
             linear=[lin("n", 2), lin("x1", 1)],
             quadratic=[quad("n", "x1", 1)],
         )
         result = validate_problem_full(problem)
-        # 2 * 5 + 1 * 1 + 1 * 5 * 1
-        assert result.objective_scale == 16.0
+        # Range formula (review F-06): 2 * (3 - (-5)) = 16 for the linear n term,
+        # 1 * (1 - 0) = 1 for x1, and the product n * x1 spans -5..3 over the
+        # corners {0, 0, -5, 3} -> 8; total 25.
+        assert result.objective_scale == 25.0
         assert compute_objective_scale(problem.objective) == 4.0  # binary reading

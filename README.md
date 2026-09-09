@@ -380,11 +380,13 @@ and to the solution's `soft_violation_score`. The `weight` is expressed **in
 objective units** and is **not normalized** — if your objective coefficients
 are in the thousands, a weight of 5 has almost no influence. The compile step
 exposes `objective_scale`
-(`max(1.0, Σ|cᵢ|·Mᵢ + Σ|cᵢⱼ|·Mᵢ·Mⱼ)` where `M = max(|lower_bound|,
-|upper_bound|)`, i.e. `1` for a binary variable, so the formula reduces to
-`Σ|linear| + Σ|quadratic|` for an all-binary problem), an upper bound on the
-objective's absolute value over the declared bounds; choose weights relative
-to that scale. `objective_scale` never includes soft weights.
+(`max(1.0, Σ|cᵢ|·(uᵢ − lᵢ) + Σ|cᵢⱼ|·range(xᵢ·xⱼ))` where `[lᵢ, uᵢ]` are the
+variable's bounds and `range(xᵢ·xⱼ)` is the largest minus the smallest value
+the product takes over both ranges — `1` for binary variables, so the
+formula reduces to `Σ|linear| + Σ|quadratic|` for an all-binary problem), an
+upper bound on how much the objective can vary (`max − min`) over the
+declared bounds; choose weights relative to that scale. `objective_scale`
+never includes soft weights.
 
 On the CQM path a soft constraint over binary variables only is submitted as
 a native weighted constraint. A soft constraint that involves an integer
@@ -408,13 +410,22 @@ retry           = previous × 2
 
 where `D` is the largest absolute value the soft constraint's squared term
 can reach over all assignments within the declared bounds (encoding and
-slack bits included). A soft weight far
-above the objective therefore cannot drown a hard constraint: with
-`multiplier > 1` the lowest-energy assignment is always feasible whenever one
-exists (assuming integer coefficients, which inequalities already require).
-Without soft constraints `penalty_scale` equals `objective_scale`. Soft
-weights are only used to *bound* the energy the penalty must dominate; they
-are never used as, or substituted for, the hard penalty itself.
+slack bits included), and `objective_scale` bounds the objective's range
+`max − min` over the same bounds. Any assignment that violates a hard
+constraint therefore costs at least `objective_min + λ`, while the best
+feasible assignment costs at most `objective_max + Σ_soft weight × D²`, so
+a soft weight far above the objective cannot drown a hard constraint: with
+`multiplier > 1` the lowest-energy assignment of the compiled model is
+always feasible whenever one exists, for any integer bounds (negative lower
+bounds included). Two caveats remain. The argument assumes a violation costs
+at least one penalty unit, i.e. integer coefficients — inequalities already
+require them, but an equality with fractional coefficients or right-hand
+side can be violated by less than one unit. And the guarantee is about the
+model's global minimum: a non-exhaustive backend may not reach it, which is
+what the doubling retry is for. Without soft constraints `penalty_scale`
+equals `objective_scale`. Soft weights are only used to *bound* the energy
+the penalty must dominate; they are never used as, or substituted for, the
+hard penalty itself.
 
 Ranking accounts for soft violations: solutions are ordered by `ranking_score`
 (`objective_value + soft_violation_score` when minimizing,

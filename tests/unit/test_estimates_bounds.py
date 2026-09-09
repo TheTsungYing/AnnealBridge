@@ -6,8 +6,10 @@ Two families of evidence:
   ranges of at most four, negative lower bounds, binary and integer mixed)
   every assignment is enumerated and the closed-form numbers are checked
   against it: ``lhs_bounds`` is attained, ``compute_objective_scale`` bounds
-  ``|objective|`` and ``compute_soft_energy_bound`` bounds (indeed equals)
-  the largest soft energy the BQM compiler's squared form can produce.
+  the objective's range ``max - min`` (review F-06, 2026-09-09: the range
+  is what the Phase 1 §18 penalty derivation needs, not ``max|objective|``)
+  and ``compute_soft_energy_bound`` bounds (indeed equals) the largest soft
+  energy the BQM compiler's squared form can produce.
 * **Binary degeneracy.** On random all-binary problems every function
   returns the very same value with ``bounds`` passed as without, so the
   Phase 1/2/3a callers that never pass bounds see no change at all.
@@ -217,11 +219,13 @@ class TestBruteForce:
         bounds = variable_bounds(problem)
         scale = compute_objective_scale(problem.objective, bounds)
         assert scale >= 1.0
-        largest = max(
-            abs(evaluate_objective(problem.objective, point) - problem.objective.constant)
-            for point in assignments(bounds)
-        )
-        assert scale >= largest
+        # Spec §18 needs ``penalty_scale >= objective_max - objective_min``:
+        # the *range* over the declared bounds (the constant cancels). With
+        # negative lower bounds this can exceed ``max|objective|``, and with
+        # a range that excludes zero it can be smaller; the bound is on the
+        # range, never on the absolute value.
+        values = [evaluate_objective(problem.objective, point) for point in assignments(bounds)]
+        assert scale >= max(values) - min(values)
 
     @pytest.mark.parametrize("seed", SEEDS)
     def test_soft_energy_bound_is_the_exact_maximum(self, seed):
@@ -249,11 +253,13 @@ class TestBruteForce:
         # business assignment and whatever the slack bits do, so the worst
         # slack per constraint is taken at every point.
         worst_soft_energy = sum(max(compiled_soft_energies(c, bounds)) for c in soft)
-        for point in assignments(bounds):
-            objective_part = abs(
-                evaluate_objective(problem.objective, point) - problem.objective.constant
-            )
-            assert scale >= objective_part + worst_soft_energy
+        # Spec §18: ``penalty_scale >= (objective_max - objective_min) +
+        # soft_bound``. Any assignment violating a hard constraint by one
+        # unit then costs at least ``objective_min + penalty_scale``, which
+        # exceeds ``objective_max + soft_bound``, the most the best feasible
+        # assignment can cost, as soon as ``multiplier > 1``.
+        values = [evaluate_objective(problem.objective, point) for point in assignments(bounds)]
+        assert scale >= (max(values) - min(values)) + worst_soft_energy
 
     @pytest.mark.parametrize("seed", SEEDS)
     def test_slack_range_covers_every_feasible_slack(self, seed):
@@ -277,6 +283,108 @@ class TestBruteForce:
             assert count_slack_bits(constraint, bounds) == len(
                 compute_slack_coefficients(analysis.slack_range)
             )
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_objective_scale_is_tight_for_single_term_objectives(self, seed):
+        # The per-term widths are exact, not just upper bounds: an objective
+        # made of one term has ``scale == max(1, range)`` bit for bit.
+        rng = random.Random(seed)
+        problem = random_problem(rng, all_binary=False)
+        bounds = variable_bounds(problem)
+        objective = problem.objective
+        singles = [
+            Objective(direction="minimize", linear_terms=[term], quadratic_terms=[])
+            for term in objective.linear_terms
+        ] + [
+            Objective(direction="minimize", linear_terms=[], quadratic_terms=[term])
+            for term in objective.quadratic_terms
+        ]
+        for single in singles:
+            values = [evaluate_objective(single, point) for point in assignments(bounds)]
+            assert compute_objective_scale(single, bounds) == max(1.0, max(values) - min(values))
+
+
+# --------------------------------------------------------------------------
+# Objective scale: hand-computed per-term widths (review F-06, 2026-09-09)
+# --------------------------------------------------------------------------
+
+
+def objective_of(linear=(), quadratic=()) -> Objective:
+    return Objective(
+        direction="minimize",
+        linear_terms=[LinearTerm(variable=name, coefficient=c) for name, c in linear],
+        quadratic_terms=[
+            QuadraticTerm(variable1=a, variable2=b, coefficient=c) for a, b, c in quadratic
+        ],
+    )
+
+
+class TestObjectiveScaleWidths:
+    """``compute_objective_scale`` sums the exact range of every raw term.
+
+    Linear ``c * x`` spans ``|c| * (upper - lower)``; a product ``c * x * y``
+    of two different variables spans ``|c| * (max P - min P)`` over the four
+    corner products ``P``; a square ``c * x * x`` spans ``|c| * (M^2 - m^2)``
+    with ``M = max(|lower|, |upper|)`` and ``m = 0`` when the range contains
+    zero, else ``min(|lower|, |upper|)``. Summing per-term ranges bounds the
+    range of the sum for *any* term list (sub-additivity), which is what
+    spec §18 needs.
+    """
+
+    def test_linear_term_spans_upper_minus_lower(self):
+        # Range 8, while the former ``max(|lower|, |upper|)`` reading gave 4:
+        # this is the review's counterexample.
+        assert compute_objective_scale(objective_of([("x", 1)]), {"x": (-4, 4)}) == 8.0
+        # A range that excludes zero is *narrower* than its magnitude: 3
+        # instead of the former 9. The penalty only has to dominate how much
+        # the objective can change, never its absolute value.
+        assert compute_objective_scale(objective_of([("x", 3)]), {"x": (2, 3)}) == 3.0
+        assert compute_objective_scale(objective_of([("x", -2)]), {"x": (-3, -1)}) == 4.0
+
+    def test_square_term_uses_the_true_range_of_x_squared(self):
+        # ``x*x`` on -4..4 ranges over 0..16 -> 16. The four corner products
+        # would give 16 - (-16) = 32, a valid but loose bound; the square is
+        # handled exactly.
+        assert compute_objective_scale(objective_of(quadratic=[("x", "x", 1)]), {"x": (-4, 4)}) == 16.0
+        # Ranges that exclude zero: 25 - 4 on 2..5 and on -5..-2 alike.
+        assert compute_objective_scale(objective_of(quadratic=[("x", "x", 1)]), {"x": (2, 5)}) == 21.0
+        assert compute_objective_scale(objective_of(quadratic=[("x", "x", -1)]), {"x": (-5, -2)}) == 21.0
+        # A range touching zero at one end: 0..3 -> 9 - 0.
+        assert compute_objective_scale(objective_of(quadratic=[("x", "x", 2)]), {"x": (0, 3)}) == 18.0
+
+    def test_product_term_uses_the_four_corners(self):
+        # Corners of -2..3 x -1..5: {2, -10, -3, 15} -> 15 - (-10) = 25.
+        assert compute_objective_scale(
+            objective_of(quadratic=[("x", "y", 1)]), {"x": (-2, 3), "y": (-1, 5)}
+        ) == 25.0
+        # Integer times binary: corners {0, 2, 0, 3} -> 3, times |c| = 2.
+        assert compute_objective_scale(
+            objective_of(quadratic=[("x", "y", -2)]), {"x": (2, 3)}
+        ) == 6.0
+        # Two negative ranges: corners {6, 2, 3, 1} -> 6 - 1 = 5.
+        assert compute_objective_scale(
+            objective_of(quadratic=[("x", "y", 1)]), {"x": (-3, -1), "y": (-2, -1)}
+        ) == 5.0
+
+    def test_terms_are_summed_verbatim_including_duplicates(self):
+        # Raw term lists, no accumulation: ``2x - 2x`` still contributes
+        # 6 + 6 even though the sum is identically zero. Per-term widths are
+        # a valid (sub-additive) bound either way, exactly as before.
+        objective = objective_of([("x", 2), ("x", -2)], [("x", "y", 1), ("y", "x", -1)])
+        assert compute_objective_scale(objective, {"x": (0, 3), "y": (0, 2)}) == 6.0 + 6.0 + 6.0 + 6.0
+
+    def test_floor_of_one(self):
+        assert compute_objective_scale(objective_of(), {}) == 1.0
+        assert compute_objective_scale(objective_of([("x", 0.25)]), {"x": (0, 2)}) == 1.0
+        assert compute_objective_scale(objective_of([("b", 0.5)]), {"b": (0, 1)}) == 1.0
+
+    def test_review_counterexample_range_dominates_the_infeasible_gain(self):
+        # x in -4..4, y binary, minimize x, hard x + 9y == 4: the infeasible
+        # x = -4, y = 1 gains 8 over the feasible x = 4, y = 0 and violates
+        # by one unit, so any penalty above the scale 8 rules it out.
+        scale = compute_objective_scale(objective_of([("x", 1)]), {"x": (-4, 4), "y": (0, 1)})
+        assert scale == 8.0
+        assert scale >= 4 - (-4)
 
 
 class TestIntegerEncodingBits:
@@ -485,3 +593,47 @@ class TestBinaryDegeneracy:
         # Sanity: the arithmetic is plain floats either way.
         coefficients = {"a": math.inf}
         assert lhs_bounds(coefficients) == lhs_bounds(coefficients, {"a": (0, 1)})
+
+    @pytest.mark.parametrize("seed", BINARY_SEEDS)
+    def test_objective_scale_equals_the_phase1_magnitude_formula(self, seed):
+        # Review F-06 (2026-09-09) replaced ``sum(|c| * M)`` with per-term
+        # ranges. For a binary variable ``upper - lower == 1 == max(|lower|,
+        # |upper|)`` and the product corners are {0, 0, 0, 1}, so the two
+        # formulas are the same arithmetic (``abs(c) * 1``) term by term: the
+        # 1.0 golden numbers cannot move. ``phase1_magnitude_scale`` is the
+        # former implementation, kept here verbatim as the reference.
+        rng = random.Random(seed)
+        problem = random_problem(rng, all_binary=True)
+        bounds = variable_bounds(problem)
+        assert repr(compute_objective_scale(problem.objective, bounds)) == repr(
+            phase1_magnitude_scale(problem.objective, bounds)
+        )
+        assert repr(compute_objective_scale(problem.objective)) == repr(
+            phase1_magnitude_scale(problem.objective, {})
+        )
+
+    def test_reference_formula_really_is_the_old_one(self):
+        # The reference must disagree exactly where the review found the
+        # defect, otherwise the binary comparison above proves nothing.
+        objective = Objective(
+            direction="minimize",
+            linear_terms=[LinearTerm(variable="x", coefficient=1)],
+            quadratic_terms=[],
+        )
+        assert phase1_magnitude_scale(objective, {"x": (-4, 4)}) == 4.0
+        assert compute_objective_scale(objective, {"x": (-4, 4)}) == 8.0
+
+
+def phase1_magnitude_scale(objective: Objective, bounds: dict[str, tuple[int, int]]) -> float:
+    """The pre-F-06 ``compute_objective_scale``: ``max(1, sum(|c| * M))``."""
+
+    def magnitude(name: str) -> int:
+        lower, upper = bounds.get(name, (0, 1))
+        return max(abs(lower), abs(upper))
+
+    total = sum(abs(term.coefficient) * magnitude(term.variable) for term in objective.linear_terms)
+    total += sum(
+        abs(term.coefficient) * magnitude(term.variable1) * magnitude(term.variable2)
+        for term in objective.quadratic_terms
+    )
+    return max(1.0, total)

@@ -216,7 +216,7 @@ class Variable(BaseModel):
 |---|---|
 | `variable_bounds(problem) -> dict[str, tuple[int, int]]` | 新 |
 | `lhs_bounds(coefficients, bounds)` | `min = Σ min(c·lo, c·hi)`、`max = Σ max(c·lo, c·hi)` |
-| `compute_objective_scale(objective, bounds)` | `max(1, Σ|c_i|·M_i + Σ|c_ij|·M_i·M_j)`，`M = max(|lo|, |hi|)`；binary 時 `M = 1` → 現有公式；`x·x` 時 `M_i²` |
+| `compute_objective_scale(objective, bounds)` | ~~`max(1, Σ|c_i|·M_i + Σ|c_ij|·M_i·M_j)`，`M = max(|lo|, |hi|)`~~ → **2026-09-09 review F-06 改為範圍公式（§8.1）**：`max(1, Σ|c_i|·(hi_i − lo_i) + Σ|c_ij|·range(x_i·x_j))`；binary 時每項寬度為 1 → 現有公式位元一致 |
 | `analyze_inequality(constraint, bounds)` | 同 3a，`lhs_bounds` 換 bounds 版；`slack_range = int(round(rhs - lhs_min))` |
 | `count_slack_bits(constraint, bounds)` | 同 3a |
 | `compute_soft_energy_bound(constraint, bounds)` | 同 3a 結構，`_max_abs_affine` 用 bounds |
@@ -225,7 +225,30 @@ class Variable(BaseModel):
 | `estimate_compiled_variables(problem)` | `binary 個數 + Σ integer_encoding_bits + Σ count_slack_bits`（BQM 路徑）；CQM 路徑另計（§9.4） |
 | `estimate_encoded_interactions(problem) -> int` | 新：BQM 路徑二次交互作用數的上界，供 `INTEGER_QUADRATIC_BLOWUP`（§9.3）：objective 每個 `c·x·y` 貢獻 `bits(x)·bits(y)`（`x·x` 貢獻 `bits(x)·(bits(x)-1)/2`）；每條 constraint 貢獻 `B·(B-1)/2`，`B` = 該 constraint 涉及的位元數（含 slack 位元） |
 
-`PenaltyStrategy` Protocol 簽名不變（收 `problem`），`ScaledPenaltyStrategy` 內部呼叫 bounds 版；Phase 1 §18 公式對整數變數的解讀寫進 docstring：`objective_scale` 仍是「objective 可能的最大絕對值上界」。
+`PenaltyStrategy` Protocol 簽名不變（收 `problem`），`ScaledPenaltyStrategy` 內部呼叫 bounds 版；Phase 1 §18 公式對整數變數的解讀寫進 docstring：`objective_scale` 是「objective 變動範圍（`max − min`）的上界」（原文「最大絕對值上界」經 §8.1 修正）。
+
+### 8.1 2026-09-09 review 修正（F-06）：`compute_objective_scale` 改用範圍公式
+
+**問題**：Phase 1 §18 的推導需要 `penalty_scale ≥ (objective_max − objective_min) + soft_bound`，即 objective 的**範圍**。本節原公式 `Σ|c|·M`（`M = max(|lo|, |hi|)`）是 `max|objective|` 的上界；binary 時兩者相等，但整數變數 `lo < 0` 時範圍可達其 2 倍，`lo > 0`（區間不含 0）時又比需要的大。反例：`x ∈ [-4, 4]`、`y` binary、minimize `x`、hard `x + 9y == 4`（唯一可行解 `x=4, y=0`）：舊 `objective_scale = 4`，真實範圍 8；`multiplier = 1.5` 時 `λ = 6`，不可行的 `x=-4, y=1`（違反量 1）能量 `−4 + 6 = 2 < 4`，是全域最小值；預設 `multiplier = 2.0` 時 `λ = 8` 剛好平手。`exact` 因窮舉仍找到可行解，但非窮舉 backend 在少量 reads 下會誤報 infeasible。
+
+**新公式**：`objective_scale = max(1, Σ_k |c_k|·width(t_k))`，對 objective 的 raw term list 逐項相加（重複項不先合併，與原公式讀法相同），`width` 是該項在 box 上的精確 `max − min`：
+
+| 項 | `width` | 理由 |
+|---|---|---|
+| `c·x`，`x ∈ [lo, hi]` | `hi − lo` | 線性，端點取極值 |
+| `c·x·y`，`x ≠ y` | `max P − min P`，`P = {lo_x·lo_y, lo_x·hi_y, hi_x·lo_y, hi_x·hi_y}` | 雙線性：固定 `y` 對 `x` 線性 ⇒ 極值在 `x` 端點，對 `y` 同理 ⇒ 四個角落（皆為整數點，可取得） |
+| `c·x·x` | `M² − m²`，`M = max(|lo|, |hi|)`；`lo ≤ 0 ≤ hi` 時 `m = 0`，否則 `m = min(|lo|, |hi|)` | `x²` 的 max 是 `M²`，min 是 0（區間含 0）或較小端點的平方。**不能用四角公式**：`[-4, 4]` 四角給 32，真實範圍 16 |
+
+**定理**：對任意 bounds，`objective_scale ≥ objective_max − objective_min`。
+**證明**：任取 box 內兩點 `a, b`，`f(a) − f(b) = Σ_k (t_k(a) − t_k(b)) ≤ Σ_k (max t_k − min t_k) = Σ_k width(t_k)`；取 `a = argmax f`、`b = argmin f` 即得。逐項相加是次可加性，不需要任何獨立性假設，所以重複項與共用變數都成立。∎
+
+**§18 保證恢復**：`λ = multiplier × penalty_scale`，`multiplier > 1` ⇒ `λ > penalty_scale ≥ range + soft_bound`；任一違反 hard constraint 的指派（違反量 ≥ 1、平方 ≥ 1）能量 `≥ objective_min + λ > objective_max + soft_bound ≥ 最佳可行解能量`，故編譯後模型的全域最小值必可行。仍存在的例外與 §18 原註記相同：equality 係數或 rhs 非整數時最小違反量可能 < 1；保證的是全域最小值，非窮舉 backend 不一定找到它（retry 加倍 penalty 是為此）。反例驗算：新 `objective_scale = 8`，`multiplier = 1.5` ⇒ `λ = 12`，`x=-4, y=1` 能量 `8 > 4`，`x=4, y=0` 唯一最低。
+
+**binary 位元一致**：`[0, 1]` 的線性寬度 `1 − 0 = 1 = M`，乘積角落 `{0, 0, 0, 1}` 寬度 `1 = M_i·M_j`，程式上每項都是 `abs(c) * 1`，加總順序不變 ⇒ 全 binary 問題與原公式**位元一致**（§26.1 golden 不變；`test_estimates_bounds.py` 另以複製的舊公式作 reference 對 250 個隨機全 binary 問題比對 `repr`）。
+
+**語意副作用**：`objective_scale` 從「絕對值上界」變成「範圍上界」，兩者互不蘊含（`[-4, 4]`：8 vs 4；`[2, 3]`、`3x`：3 vs 9）。`SOFT_WEIGHT_SMALL` 門檻（`objective_scale × 0.01`）對區間不含 0 的整數問題會變小，但 soft weight 本來就該與「objective 變動幅度」比較（常數平移不該計入）。整數測試的期望值同步更新：`test_problem_validator_full.py` 的 `n ∈ [-5, 3]`、`x1` binary、`2n + x1 + n·x1` 由 16（`2·5 + 1 + 5`）改為 25（`2·8 + 1 + 8`）；`test_estimates_bounds.py` 與 `test_bqm_compiler_integer.py` 的暴力枚舉斷言由 `scale ≥ max|objective − constant| + soft` 改為 `scale ≥ (max − min) + soft`。新增 `tests/unit/test_penalty_dominance_integer.py` 以上述反例走 `BQMCompiler` + `ScaledPenaltyStrategy` 窮舉全部位元指派，驗證 `multiplier ∈ {1.5, 2.0}` 下最低能量指派唯一且可行。
+
+`lhs_bounds` / `_max_abs_affine` / slack range / `compute_soft_energy_bound` 是 constraint 值域界，語意本來就是範圍或絕對值，**不在本次修正範圍**。
 
 ---
 
@@ -676,7 +699,7 @@ class UrllibTransport:
 - `test_batch_arithmetic_integer.py`：隨機整數矩陣（含負值、bounds 內）上 `validate_batch` 的 `feasible` / `soft_violation_score` 與逐列 `validate_solution`、`evaluate_objective_batch` 與逐列 `evaluate_objective` 逐元素相等（3a §32.1 要求的證明）。
 - `test_models.py`：bounds 型別、version Literal、`Variable.bounds()`。
 - `test_problem_validator.py`：§9.1 五個 code 各至少一例；`SELF_QUADRATIC_TERM` 對 integer 不報、對 binary 報；`TRIVIALLY_INFEASIBLE` 用 bounds（例：`x ∈ [0,3]`，`2x <= 7` 可行、`2x >= 7` 不可行）；1.1 純 binary 合法。
-- `test_estimates_bounds.py`：對隨機小問題（≤ 3 個變數、範圍 ≤ 4）暴力枚舉驗證 `lhs_bounds` 的 min/max 可達、`compute_objective_scale ≥ max|objective|`、`compute_soft_energy_bound ≥` 任何 assignment 的 soft 能量。
+- `test_estimates_bounds.py`：對隨機小問題（≤ 3 個變數、範圍 ≤ 4）暴力枚舉驗證 `lhs_bounds` 的 min/max 可達、`compute_objective_scale ≥ objective_max − objective_min`（§8.1，2026-09-09 F-06 前為 `≥ max|objective|`）、`compute_soft_energy_bound ≥` 任何 assignment 的 soft 能量。
 - `test_integer_encoding.py`：`encode_integer_variables` 位元數 == `integer_encoding_bits`；任何位元組合的值在 bounds 內且每個整數值都可達；`substitute_quadratic` 對 `x·x`、`x·y`、`x·b` 的展開與數值代入一致（隨機 assignment）。
 - `test_bqm_compiler_integer.py`、`test_cqm_compiler_integer.py`：§25 步驟 3、4 所列。
 - `test_candidate_arrays.py`：int64 列的去重（min-energy、首見順序）與 tie-break 對逐列參考實作一致；int8 位元路徑輸出與 3a 完全相同（同一測試資料）。
