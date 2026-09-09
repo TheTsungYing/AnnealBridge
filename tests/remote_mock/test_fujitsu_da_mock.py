@@ -1071,3 +1071,24 @@ class TestRedaction:
         assert FAKE_KEY not in message
         assert "***" in message
         assert FAKE_KEY not in "".join(traceback.format_exception(error))
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "y" * 190 + " " + FAKE_KEY + " rejected",  # key straddles the 200 cut
+            "x" * 180 + "\n" * 60 + FAKE_KEY + "\n   tail",  # collapse moves it onto the cut
+        ],
+        ids=["straddles_cut", "moved_by_collapse"],
+    )
+    def test_body_summary_masks_the_key_before_truncating(self, monkeypatch, body):
+        # F-01: the summary helper must redact first; truncating or collapsing
+        # first leaves a key fragment that no longer equals the env value.
+        from annealbridge.solvers.fujitsu_da import _redacted_summary
+
+        set_key(monkeypatch)
+        summary = _redacted_summary(body)
+
+        assert "***" in summary
+        assert len(summary) <= 201  # the 200-character cap plus the ellipsis
+        for start in range(len(FAKE_KEY) - 7):
+            assert FAKE_KEY[start : start + 8] not in summary

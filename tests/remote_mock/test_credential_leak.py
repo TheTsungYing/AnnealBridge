@@ -40,7 +40,7 @@ from annealbridge.solvers import (
     SolverRegistry,
 )
 import annealbridge.solvers.metadata as metadata_module
-from tests.fakes import FakeDATransport, json_response
+from tests.fakes import FakeDATransport, bits_solution, json_response
 from tests.remote_mock.conftest import (
     FAKE_UNPATTERNED_TOKEN,
     FakeCQMSampler,
@@ -313,6 +313,107 @@ class TestFujitsuResponseBodyEchoingTheKeyIsMasked:
         assert result.status == "configuration_error"
         assert "leaked-value-123" not in result.model_dump_json()
         assert "X-Api-Key: ***" in result.errors[0].message
+
+
+
+def assert_no_key_fragment(text: str, key: str, width: int = 8) -> None:
+    """No ``width``-character window of ``key`` survives in ``text``.
+
+    A truncated or whitespace-split key is still a leak: F-01 showed that a
+    partial key defeats the literal env-value replacement in ``redact()``.
+    """
+    for start in range(len(key) - width + 1):
+        fragment = key[start : start + width]
+        assert fragment not in text, f"key fragment {fragment!r} leaked in {text!r}"
+
+
+class TestFujitsuTruncatedBodyStillMasksTheKey:
+    """F-01: the body summary is length-capped at 200 characters and
+    whitespace-collapsed. Redaction must run *before* that, or a key that
+    straddles the cut (or is moved onto it by the collapse) leaves an
+    unmasked prefix in the error message and the logs."""
+
+    @pytest.fixture(autouse=True)
+    def _key_in_env(self, monkeypatch):
+        monkeypatch.setenv("FUJITSU_DA_API_KEY", FAKE_TOKEN)
+
+    def solve_via_service(self, caplog, fake: FakeDATransport):
+        service = OptimizationService(
+            registry=SolverRegistry({"fujitsu_da": da_backend(fake)}),
+            policy=ExecutionPolicy(allow_remote=True),
+        )
+        caplog.set_level(logging.DEBUG, logger="annealbridge")
+        return service.solve(make_problem(backend="fujitsu_da"))
+
+    def assert_clean(self, caplog, result) -> None:
+        assert_no_key_fragment(result.model_dump_json(), FAKE_TOKEN)
+        assert "***" in result.errors[0].message
+        assert caplog.records
+        for record in caplog.records:
+            assert_no_key_fragment(record.getMessage(), FAKE_TOKEN)
+
+    def test_key_straddling_the_200_character_cut(self, caplog):
+        # The key starts at character ~190 of the collapsed body, so the old
+        # order truncated it mid-way and only a prefix reached redact().
+        body = (
+            "Invalid request header X-Api-Key value " + "y" * 150 + " " + FAKE_TOKEN
+            + " rejected"
+        ).encode()
+        result = self.solve_via_service(
+            caplog, FakeDATransport(submit_response=(400, body))
+        )
+
+        # "Invalid request header" classifies as a configuration error (§20.8);
+        # the classification reads the raw body, the message must not.
+        assert result.status == "configuration_error"
+        assert result.errors[0].code == "BACKEND_CONFIG_INVALID"
+        self.assert_clean(caplog, result)
+
+    def test_key_moved_onto_the_cut_by_whitespace_collapsing(self, caplog):
+        # In the raw body the key begins after 240 characters (past the cap);
+        # collapsing the 60 newlines to one space pulls it back to 181, so
+        # the cut lands inside it.
+        body = ("x" * 180 + "\n" * 60 + FAKE_TOKEN + "\n\n   tail").encode()
+        result = self.solve_via_service(
+            caplog, FakeDATransport(submit_response=(400, body))
+        )
+
+        assert result.status == "solver_error"
+        self.assert_clean(caplog, result)
+
+    def test_delete_failure_warning_with_the_key_on_the_cut(self, caplog):
+        compiled = BQMCompiler().compile(make_problem(backend="fujitsu_da"), hard_penalty=100.0)
+        width = len(compiled.model.variables)
+        fake = FakeDATransport(
+            solutions=[bits_solution([0] * width, 0.0)],
+            delete_response=(500, ("internal error " + "z" * 175 + " " + FAKE_TOKEN).encode()),
+        )
+        backend = da_backend(fake)
+
+        with caplog.at_level(logging.WARNING, logger="annealbridge.solvers.fujitsu_da"):
+            raw = backend.solve(compiled, da_preferences())
+
+        assert raw.num_samples == 1
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "could not be deleted" in warnings[0]
+        assert "***" in warnings[0]
+        assert_no_key_fragment(warnings[0], FAKE_TOKEN)
+
+    def test_non_json_2xx_body_with_the_key_on_the_cut(self):
+        body = ("<html>" + "w" * 185 + " " + FAKE_TOKEN + "</html>").encode()
+        fake = FakeDATransport(submit_response=(200, body))
+        backend = da_backend(fake)
+        compiled = BQMCompiler().compile(make_problem(backend="fujitsu_da"), hard_penalty=100.0)
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(compiled, da_preferences())
+
+        message = str(exc_info.value)
+        assert "not valid JSON" in message
+        assert "***" in message
+        assert_no_key_fragment(message, FAKE_TOKEN)
+        assert_no_key_fragment("".join(traceback.format_exception(exc_info.value)), FAKE_TOKEN)
 
 
 class TestExceptionChainCarriesNoToken:

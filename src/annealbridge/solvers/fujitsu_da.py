@@ -196,9 +196,16 @@ def _body_text(body: bytes) -> str:
     return body.decode("utf-8", errors="replace")
 
 
-def _summarize(text: str) -> str:
-    """One-line, length-capped excerpt of a response body for messages."""
-    collapsed = " ".join(text.split())
+def _redacted_summary(text: str) -> str:
+    """One-line, length-capped, *redacted* excerpt of a response body.
+
+    :func:`redact` runs first, on the intact text: it masks the configured
+    key by literal replacement, so a key cut in half by the length cap or
+    pulled onto the cap by whitespace collapsing would no longer match and
+    its prefix would leak (code review 2026-09-08, F-01). Callers still wrap
+    the final message in ``redact()``; that second pass is harmless.
+    """
+    collapsed = " ".join(redact(text).split())
     if len(collapsed) > _BODY_SUMMARY_CHARS:
         return collapsed[:_BODY_SUMMARY_CHARS] + "…"
     return collapsed
@@ -218,7 +225,7 @@ def _http_failure(what: str, status: int, body: bytes) -> SolverExecutionError:
             result_status = "configuration_error"
     else:
         code = _HTTP_STATUS_CODES.get(status, REMOTE_ERROR_FALLBACK_CODE)
-    detail = "payload too large" if status == 413 else _summarize(text)
+    detail = "payload too large" if status == 413 else _redacted_summary(text)
     return SolverExecutionError(
         redact(f"{what}: HTTP {status}: {detail}"),
         code=code,
@@ -540,7 +547,7 @@ class FujitsuDABackend:
             return json.loads(_body_text(raw))
         except ValueError:
             error = SolverExecutionError(
-                redact(f"{what}: response is not valid JSON: {_summarize(_body_text(raw))}"),
+                redact(f"{what}: response is not valid JSON: {_redacted_summary(_body_text(raw))}"),
                 code=REMOTE_ERROR_FALLBACK_CODE,
             )
         raise error
@@ -635,5 +642,5 @@ class FujitsuDABackend:
             return
         if not 200 <= status < 300:
             logger.warning(
-                "%s", redact(f"{what}: HTTP {status}: {_summarize(_body_text(raw))}")
+                "%s", redact(f"{what}: HTTP {status}: {_redacted_summary(_body_text(raw))}")
             )
