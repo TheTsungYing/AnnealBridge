@@ -328,6 +328,15 @@ Rules, each enforced by the validator with its own error code:
   values fits 64-bit *integer* arithmetic without overflow — the guarantee 3b
   relies on. The compiled model's biases are float64, so a product larger than
   2⁵³ can still be rounded there. Unbounded integers are not supported.
+- Every inequality constraint must satisfy
+  `Σ|coefficient| · max(|lower_bound|, |upper_bound|) + |rhs| <= 2⁵³`
+  (`INEQUALITY_MAGNITUDE_TOO_LARGE`; a binary variable's bound counts as 1).
+  The slack range of an inequality is computed in float64 from
+  `coefficient × bound`, and beyond 2⁵³ those products are no longer exact:
+  the range can come out too small, a feasible assignment then has no
+  encoding, and an exhaustive backend would wrongly "prove" the problem
+  infeasible. Rescale the unit of the coefficients or the variables, or
+  tighten the bounds.
 - A problem that declares any integer variable must say `"version": "1.1"`;
   with `"version": "1.0"` it is rejected with `INTEGER_REQUIRES_VERSION_1_1`.
   Version `1.1` is a superset of `1.0`: a `1.1` problem with only binary
@@ -605,7 +614,9 @@ the caller asked for.
 accepted version), `schema_versions` (`["1.0", "1.1"]`) and
 `supported_variable_types` (`["binary", "integer"]`), all derived from the
 pydantic model rather than hard-coded, together with the six backends and
-their limits.
+their limits. Each `backends[].name` is the **registry key** — the value to
+put in `solver.backend` and the one `ANNEALBRIDGE_ENABLED_BACKENDS` is matched
+against; the six built-in backends register under their own names.
 
 ### Claude Desktop (stdio)
 
@@ -946,6 +957,7 @@ Integer variables require version "1.1" and bounds within ±(2^31 − 1).
 On a BQM backend each integer costs (upper − lower).bit_length() encoding bits: a variable needing more than 10 bits raises the LARGE_INTEGER_RANGE warning, and a problem whose encoding yields more than 2000 quadratic interactions raises INTEGER_QUADRATIC_BLOWUP (and is ranked behind CQM backends by recommend).
 Only binary expansion is implemented for integers; there is no one-hot or unary encoding option.
 Inequality constraints require integer coefficients and right-hand sides (NON_INTEGER_INEQUALITY); this applies to integer variables as well.
+An inequality must also stay within the exact float64 integer range: sum(|coefficient| * max(|lower_bound|, |upper_bound|)) + |rhs| must be at most 2^53 (INEQUALITY_MAGNITUDE_TOO_LARGE; a binary variable's bound counts as 1), because the slack range is computed from those products and a rounded product could encode the constraint wrongly - rescale the units or tighten the bounds.
 Soft constraint weights are expressed in objective units and are not normalized.
 The simulated annealing backend is heuristic and does not guarantee a global optimum.
 The exact backend is for testing/debugging and is limited to small problems.

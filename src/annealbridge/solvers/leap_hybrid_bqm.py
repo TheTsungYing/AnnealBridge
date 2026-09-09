@@ -11,6 +11,7 @@ from typing import Any, Callable
 from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers.base import (
     AvailabilityStatus,
+    BackendAliases,
     ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
@@ -65,7 +66,7 @@ def _default_sampler_factory() -> Any:
     return LeapHybridSampler()
 
 
-class LeapHybridBQMBackend:
+class LeapHybridBQMBackend(BackendAliases):
     """Solves the compiled BQM on the Leap hybrid cloud solver.
 
     ``sampler_factory`` is the single test seam: production uses the default
@@ -91,16 +92,6 @@ class LeapHybridBQMBackend:
     def is_available(self) -> AvailabilityStatus:
         """Installability and credentials, via the shared check. No network I/O."""
         return dwave_availability()
-
-    @property
-    def name(self) -> str:
-        """Alias for ``capabilities.name``."""
-        return self.capabilities.name
-
-    @property
-    def is_exhaustive(self) -> bool:
-        """Alias for ``capabilities.exhaustive``."""
-        return self.capabilities.exhaustive
 
     def resolve_time_limit(
         self,

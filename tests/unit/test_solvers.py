@@ -14,7 +14,9 @@ from annealbridge.solvers import (
     ExactSolverBackend,
     SimulatedAnnealingBackend,
     SolverCapabilities,
+    SolverRegistry,
 )
+from annealbridge.solvers.base import BackendAliases
 
 # Knapsack (spec §30): capacity 10, items A(w6,v10) B(w5,v8) C(w4,v7) D(w3,v6).
 # {A, C} has weight 6 + 4 = 10 (feasible) and value 10 + 7 = 17; every other
@@ -214,3 +216,58 @@ class TestSimulatedAnnealingBackend:
         result = SimulatedAnnealingBackend().solve(compiled, preferences)
 
         assert result.num_samples == preferences.num_reads
+
+
+class TestBackendAliases:
+    """2026-09-09 review F-26c: ``name``, ``is_exhaustive`` and the "no time
+    limit" ``resolve_time_limit`` come from one mixin instead of twelve
+    verbatim copies. The test fakes deliberately keep their own copies, so
+    the ``SolverBackend`` protocol stays structural.
+    """
+
+    @staticmethod
+    def built_in_backends() -> list:
+        registry = SolverRegistry.default()
+        return [registry.get(name) for name in registry.names()]
+
+    def test_every_built_in_backend_derives_its_aliases_from_the_declaration(self):
+        backends = self.built_in_backends()
+
+        assert len(backends) == 6
+        for backend in backends:
+            assert isinstance(backend, BackendAliases), backend
+            assert backend.name == backend.capabilities.name
+            assert backend.is_exhaustive == backend.capabilities.exhaustive
+
+    @pytest.mark.parametrize("name", ["exact", "simulated_annealing", "dwave_qpu"])
+    def test_a_backend_without_a_time_limit_resolves_to_none(self, name):
+        backend = SolverRegistry.default().get(name)
+
+        assert backend.capabilities.supports_time_limit is False
+        # The mixin's default never looks at the compiled problem.
+        assert backend.resolve_time_limit(None, SolverPreferences()) is None
+
+    def test_declaring_a_time_limit_without_implementing_it_raises(self):
+        declared = SolverCapabilities(
+            name="claims_a_time_limit",
+            remote=True,
+            heuristic=True,
+            exhaustive=False,
+            supports_seed=False,
+            supports_num_reads=False,
+            supports_time_limit=True,
+            supported_model_types=["bqm"],
+            returns_multiple_samples=True,
+            description="Declares a time limit but never implements one.",
+        )
+
+        class Incomplete(BackendAliases):
+            @property
+            def capabilities(self) -> SolverCapabilities:
+                return declared
+
+        backend = Incomplete()
+        assert backend.name == "claims_a_time_limit"
+        assert backend.is_exhaustive is False
+        with pytest.raises(NotImplementedError, match="resolve_time_limit"):
+            backend.resolve_time_limit(None, SolverPreferences())

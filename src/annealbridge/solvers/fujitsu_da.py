@@ -30,6 +30,7 @@ from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import CompiledProblem, FujitsuDAOptions, SolverPreferences
 from annealbridge.solvers.base import (
     AvailabilityStatus,
+    BackendAliases,
     CredentialDeclaration,
     ParameterLimit,
     RawSolverResult,
@@ -364,7 +365,7 @@ def _decode_solutions(
     return samples, energies
 
 
-class FujitsuDABackend:
+class FujitsuDABackend(BackendAliases):
     """Solves the compiled QUBO on the Fujitsu Digital Annealer (spec §20).
 
     ``transport`` is the single network seam (production: a
@@ -412,16 +413,6 @@ class FujitsuDABackend:
     @property
     def capabilities(self) -> SolverCapabilities:
         return _CAPABILITIES
-
-    @property
-    def name(self) -> str:
-        """Alias for ``capabilities.name``."""
-        return self.capabilities.name
-
-    @property
-    def is_exhaustive(self) -> bool:
-        """Alias for ``capabilities.exhaustive``."""
-        return self.capabilities.exhaustive
 
     def is_available(self) -> AvailabilityStatus:
         """Credentials and endpoint sanity from the environment. No network I/O.

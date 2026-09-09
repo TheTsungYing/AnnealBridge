@@ -217,6 +217,20 @@ class TestDeclaredPreferencePathsAreCheckedAtConstruction:
         assert FAKE_DECLARED_NAME in message
         assert FAKE_LIMIT_KEY in message
 
+    @pytest.mark.parametrize(
+        "path", ["backend", "dwave_qpu", "dwave_qpu.auto_scale"]
+    )
+    def test_service_refuses_a_non_numeric_preference_path(self, path):
+        """2026-09-09 review (addition 2): a Literal field, a whole option
+        block and a bool are all paths a limit can never be compared
+        against; each would read as "no limit" and disable the ceiling."""
+        with pytest.raises(ValueError, match="not a numeric preference") as exc_info:
+            make_service(MisdeclaredBackend(path))
+
+        message = str(exc_info.value)
+        assert FAKE_DECLARED_NAME in message
+        assert FAKE_LIMIT_KEY in message
+
     def test_a_valid_declaration_still_builds(self):
         service = make_service(FakeDeclaredBackend())
 
@@ -228,3 +242,86 @@ class TestDeclaredPreferencePathsAreCheckedAtConstruction:
 
         with pytest.raises(SettingsError, match="num_readz"):
             build_state_from_policy(policy, registry)
+
+
+class ExplodingAvailabilityBackend(FakeDeclaredBackend):
+    """A declared backend whose availability check raises.
+
+    A credential lookup that blows up (a corrupt config file, a vendor SDK
+    import error) is a plausible third-party failure; before the 2026-09-09
+    review it escaped ``solve()`` and ``recommend()`` as a raw exception,
+    because ``gate_errors`` runs outside the service's own ``try``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.availability_calls = 0
+
+    def is_available(self):
+        self.availability_calls += 1
+        raise RuntimeError("credential lookup exploded")
+
+
+class TestAvailabilityCheckIsGuarded:
+    def test_solve_reports_backend_unavailable_instead_of_raising(self):
+        backend = ExplodingAvailabilityBackend()
+
+        result = make_service(backend).solve(make_knapsack())
+
+        assert result.status == "backend_unavailable"
+        assert [error.code for error in result.errors] == ["BACKEND_UNAVAILABLE"]
+        assert "RuntimeError" in result.errors[0].message
+        assert result.solutions == []
+        assert backend.solve_calls == 0
+        assert backend.availability_calls == 1
+
+    def test_recommend_marks_the_backend_unusable_and_keeps_the_problem_valid(self):
+        backend = ExplodingAvailabilityBackend()
+
+        result = make_service(backend).recommend(make_knapsack())
+
+        assert result.valid is True
+        entries = {entry.backend: entry for entry in result.recommendations}
+        assert FAKE_DECLARED_NAME in entries
+        entry = entries[FAKE_DECLARED_NAME]
+        assert entry.usable is False
+        assert [error.code for error in entry.blocking] == ["BACKEND_UNAVAILABLE"]
+
+    def test_validate_never_asks_for_availability(self):
+        backend = ExplodingAvailabilityBackend()
+
+        result = make_service(backend).validate(make_knapsack())
+
+        assert result.valid is True
+        assert backend.availability_calls == 0
+
+
+class TestFailureNeedsErrors:
+    """2026-09-09 review (addition 5): ``_failure`` turns ``errors[0]`` into
+    the result message, so an empty list is a programming error, not a
+    result with an empty message."""
+
+    def test_an_empty_error_list_is_refused(self):
+        service = make_service(FakeDeclaredBackend())
+
+        with pytest.raises(AssertionError):
+            service._failure("solver_error", None, None, [])
+
+
+class TestFlagDrivenLimitKeysAreCheckedAtConstruction:
+    """2026-09-09 review (addition 6): construction validates every key
+    ``policy.limits_for`` produces, not only the declared ones, so a policy
+    that has no value for a flag-driven ceiling (``variables``, ``top_k``)
+    fails at the composition root instead of on every solve."""
+
+    @pytest.mark.parametrize("missing", ["variables", "top_k"])
+    def test_a_missing_limit_value_refuses_the_service(self, monkeypatch, missing):
+        original = ExecutionPolicy.limit
+        monkeypatch.setattr(
+            ExecutionPolicy,
+            "limit",
+            lambda self, key: None if key == missing else original(self, key),
+        )
+
+        with pytest.raises(ValueError, match=missing):
+            OptimizationService()

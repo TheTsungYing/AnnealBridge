@@ -816,3 +816,200 @@ class TestTriviallyInfeasibleSharesTheSolutionTolerance:
         assert validate_solution(
             OptimizationProblem.model_validate(data), {"x1": 1, "x2": 0, "x3": 1}
         ).feasible is True
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-09 review F-24: inequality magnitude (INEQUALITY_MAGNITUDE_TOO_LARGE)
+# ---------------------------------------------------------------------------
+
+MAGNITUDE_LIMIT = 2**53
+INTEGER_BOUND = 2**31 - 1
+
+
+def magnitude_problem_dict(
+    operator: str,
+    rhs: float,
+    coefficients: dict[str, float],
+    *,
+    lower_bound: int = 0,
+    upper_bound: int = INTEGER_BOUND,
+) -> dict:
+    """The legal payload with ``x1`` / ``x2`` widened to integers.
+
+    ``constraints`` is replaced by the single constraint under test so the
+    reported path is always ``constraints[0]``.
+    """
+    data = make_problem_dict()
+    data["version"] = "1.1"
+    data["variables"] = [
+        {
+            "name": name,
+            "type": "integer",
+            "lower_bound": lower_bound,
+            "upper_bound": upper_bound,
+        }
+        for name in ("x1", "x2")
+    ] + [{"name": "x3"}]
+    data["constraints"] = [
+        {
+            "id": "wide",
+            "type": "hard",
+            "terms": [
+                {"variable": name, "coefficient": value}
+                for name, value in coefficients.items()
+            ],
+            "operator": operator,
+            "rhs": rhs,
+        }
+    ]
+    return data
+
+
+class TestInequalityMagnitudeTooLarge:
+    """An inequality whose ``sum(|c| * max|bound|) + |rhs|`` exceeds 2^53.
+
+    Beyond 2^53 a float64 no longer represents every integer, so
+    ``analyze_inequality``'s ``int(round(rhs - lhs_min))`` slack range can be
+    off by one or more. The slack bits then cannot encode every feasible
+    assignment, and an exhaustive backend would report
+    ``infeasibility_proven`` for a problem that *is* feasible — a wrong
+    conclusion, so this is an error and not a warning.
+    """
+
+    def test_the_review_example_is_rejected(self):
+        coefficient = 1e10
+        errors = validate_dict(
+            magnitude_problem_dict(
+                "<=",
+                coefficient * INTEGER_BOUND + 1,
+                {"x1": coefficient, "x2": coefficient},
+            )
+        )
+
+        assert codes(errors) == ["INEQUALITY_MAGNITUDE_TOO_LARGE"]
+        assert errors[0].path == "constraints[0]"
+        assert "2^53" in errors[0].message
+        assert errors[0].recommended_action.strip()
+        assert errors[0].retryable is False
+
+    def test_the_slack_underestimate_example_is_rejected(self):
+        # A = 4194307 with x in [-(2^31-1), 2^31-1]: the true slack range is
+        # one larger than the float computation reports, so a feasible
+        # assignment cannot be encoded at all.
+        coefficient = 4194307
+        errors = validate_dict(
+            magnitude_problem_dict(
+                "<=",
+                float(coefficient * INTEGER_BOUND),
+                {"x1": float(coefficient)},
+                lower_bound=-INTEGER_BOUND,
+                upper_bound=INTEGER_BOUND,
+            )
+        )
+
+        assert codes(errors) == ["INEQUALITY_MAGNITUDE_TOO_LARGE"]
+        assert errors[0].path == "constraints[0]"
+
+    def test_exactly_at_the_limit_passes(self):
+        # 1 * (2^31-1) + (2^53 - (2^31-1)) == 2^53 exactly: only *over* the
+        # limit is refused.
+        data = magnitude_problem_dict(
+            "<=", float(MAGNITUDE_LIMIT - INTEGER_BOUND), {"x1": 1}
+        )
+
+        assert validate_dict(data) == []
+
+    def test_one_over_the_limit_is_rejected(self):
+        data = magnitude_problem_dict(
+            "<=", float(MAGNITUDE_LIMIT - INTEGER_BOUND + 1), {"x1": 1}
+        )
+
+        assert codes(validate_dict(data)) == ["INEQUALITY_MAGNITUDE_TOO_LARGE"]
+
+    def test_two_over_the_limit_is_rejected(self):
+        data = magnitude_problem_dict(
+            "<=", float(MAGNITUDE_LIMIT - INTEGER_BOUND + 2), {"x1": 1}
+        )
+
+        assert codes(validate_dict(data)) == ["INEQUALITY_MAGNITUDE_TOO_LARGE"]
+
+    def test_equality_is_not_subject_to_the_rule(self):
+        # ``==`` needs no slack encoding, so the magnitude rule does not
+        # apply to it -- the very same coefficients are accepted.
+        coefficient = 1e10
+        data = magnitude_problem_dict(
+            "==",
+            coefficient * INTEGER_BOUND + 1,
+            {"x1": coefficient, "x2": coefficient},
+        )
+
+        assert validate_dict(data) == []
+
+    def test_all_binary_within_the_limit_passes(self):
+        # Binary bounds count as 1, so the sum is just sum(|c|) + |rhs|:
+        # 2^52 + (2^52 - 1) + 1 == 2^53.
+        data = make_problem_dict()
+        data["constraints"] = [
+            {
+                "id": "wide_binary",
+                "type": "hard",
+                "terms": [
+                    {"variable": "x1", "coefficient": float(2**52)},
+                    {"variable": "x2", "coefficient": float(2**52 - 1)},
+                ],
+                "operator": "<=",
+                "rhs": 1.0,
+            }
+        ]
+
+        assert validate_dict(data) == []
+
+    def test_all_binary_over_the_limit_is_rejected(self):
+        data = make_problem_dict()
+        data["constraints"] = [
+            {
+                "id": "wide_binary",
+                "type": "hard",
+                "terms": [{"variable": "x1", "coefficient": float(MAGNITUDE_LIMIT)}],
+                "operator": "<=",
+                "rhs": 2.0,
+            }
+        ]
+
+        assert codes(validate_dict(data)) == ["INEQUALITY_MAGNITUDE_TOO_LARGE"]
+
+    def test_over_the_limit_replaces_the_trivially_infeasible_verdict(self):
+        # The float interval the trivial-infeasibility test relies on is no
+        # longer trustworthy at this magnitude, so only the new code fires.
+        errors = validate_dict(magnitude_problem_dict(">=", 1e30, {"x1": 1e10}))
+
+        assert codes(errors) == ["INEQUALITY_MAGNITUDE_TOO_LARGE"]
+
+    def test_trivially_infeasible_still_fires_within_the_limit(self):
+        # The same shape, small enough to be judged exactly: 1 * x1 >= 2^31
+        # is unreachable for x1 in [0, 2^31-1].
+        errors = validate_dict(
+            magnitude_problem_dict(">=", float(INTEGER_BOUND + 1), {"x1": 1})
+        )
+
+        assert codes(errors) == ["TRIVIALLY_INFEASIBLE"]
+
+    def test_a_non_finite_coefficient_is_reported_alone(self):
+        data = magnitude_problem_dict("<=", 1e30, {"x1": 1e10})
+        data["constraints"][0]["terms"][0]["coefficient"] = float("inf")
+
+        assert codes(validate_dict(data)) == ["NON_FINITE_COEFFICIENT"]
+
+    def test_a_non_finite_rhs_is_reported_alone(self):
+        data = magnitude_problem_dict("<=", 1e30, {"x1": 1e10})
+        data["constraints"][0]["rhs"] = float("inf")
+
+        assert codes(validate_dict(data)) == ["NON_FINITE_COEFFICIENT"]
+
+    def test_illegal_variable_bounds_skip_the_magnitude_check(self):
+        # x1 has no upper bound: it carries its own error and no range
+        # judgement is made on a constraint mentioning it (3b §9.2).
+        data = magnitude_problem_dict("<=", 1e30, {"x1": 1e10})
+        data["variables"][0]["upper_bound"] = None
+
+        assert codes(validate_dict(data)) == ["INTEGER_BOUNDS_MISSING"]

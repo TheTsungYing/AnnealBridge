@@ -23,9 +23,14 @@ from annealbridge.models import (
     SolverPreferences,
     Variable,
 )
-from annealbridge.orchestration import OptimizationService
+from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.solvers import RawSolverResult, SolverRegistry
 from annealbridge.solvers.base import AvailabilityStatus, SolverCapabilities
+from tests.fakes.declared_backend import (
+    FAKE_DECLARED_NAME,
+    FAKE_LIMIT_KEY,
+    FakeDeclaredBackend,
+)
 
 BACKENDS = ["simulated_annealing", "exact"]
 
@@ -190,7 +195,51 @@ class FakeFailingCompiler:
         raise AssertionError("decode must not be reached: compile always fails")
 
 
+def declared_service(backend) -> OptimizationService:
+    """A service whose only backend is the fifth backend of 3a §13.1."""
+    return OptimizationService(
+        registry=SolverRegistry({FAKE_DECLARED_NAME: backend}),
+        policy=ExecutionPolicy(allow_remote=True, limits={FAKE_LIMIT_KEY: 1000}),
+    )
+
+
+def problem_on_declared_backend() -> OptimizationProblem:
+    """``feasible_problem`` routed at the fifth backend.
+
+    Its ``<=`` constraint is what takes compilation through
+    ``encode_slack``. ``SolverPreferences.backend`` is a Literal of the
+    shipped names, so a test-only backend is set with ``model_construct``.
+    """
+    solver = SolverPreferences.model_construct(backend=FAKE_DECLARED_NAME)
+    return feasible_problem().model_copy(update={"solver": solver})
+
+
 class TestCompilationErrorFallback:
+    def test_bare_exception_inside_compile_is_a_compilation_failure(self, monkeypatch):
+        """2026-09-09 review (addition 3): anything a compiler raises before
+        a backend is touched is a problem verdict, not a solver error.
+
+        A bare ``ValueError`` escaping ``encode_slack`` used to surface as
+        ``solver_error`` / ``SOLVER_ERROR`` even though no backend had run.
+        """
+
+        def raiser(*args, **kwargs):
+            raise ValueError("bare slack failure")
+
+        monkeypatch.setattr("annealbridge.compiler.bqm.encode_slack", raiser)
+        backend = FakeDeclaredBackend()
+
+        result = declared_service(backend).solve(problem_on_declared_backend())
+
+        assert result.status == "invalid_problem"
+        assert [error.code for error in result.errors] == ["COMPILATION_FAILED"]
+        message = result.errors[0].message
+        assert "ValueError" in message
+        assert "bare slack failure" in message
+        assert backend.solve_calls == 0
+        assert result.solutions == []
+        assert result.backend == FAKE_DECLARED_NAME
+
     def test_compilation_error_is_reported_as_invalid_problem(self):
         service = OptimizationService(compilers=[FakeFailingCompiler()])
 

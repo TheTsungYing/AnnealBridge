@@ -294,6 +294,8 @@ class SolverBackend(Protocol):
 | `config_invalid` | `configuration_error` | `BACKEND_CONFIG_INVALID`（新，§20） |
 | `unavailable` | `backend_unavailable` | `BACKEND_UNAVAILABLE` |
 
+**2026-09-09 review 追加**：`is_available()` 拋出任何 `Exception`、或回傳的 category 不在表中（只有繞過 `AvailabilityCategory` Literal 才可能），一律對應 `backend_unavailable` / `BACKEND_UNAVAILABLE`，訊息為 `Backend '<name>' availability check failed: unexpected <ExcType>: <text>`（經 redact）或在 detail 後加 `(unknown availability category '<x>')`；`solve` 與 `recommend` 共用 `gate_errors`，故兩者都不會被單一 backend 的壞檢查打斷；`validate` 本來就不呼叫 `is_available()`。
+
 `_AVAILABILITY_MAP` 改成以 category 為 key；`orchestration` 不再 import `REASON_*`（常數本身與 `solvers/__init__` 的 re-export 保留）。錯誤訊息格式不變：`Backend '<name>' is unavailable: <detail>`；`detail is None` 時沿用 `no reason reported`。
 
 既有測試的對應：`tests/remote_mock/conftest.py` 的 `make_remote_available` 改回 `AvailabilityStatus(category="available")`；模擬 D-Wave config 壞掉的 fake 必須連 `error_code="DWAVE_CONFIG_INVALID"` 一起給（與 `dwave_availability()` 相同），`test_service_remote_flow.py` 對該 code 的期望才不變；Phase 2 的「未知 reason」與 `(False, None)` 案例改為 `category="unavailable"`，期望 `BACKEND_UNAVAILABLE`。
@@ -453,6 +455,8 @@ class ExecutionPolicy(BaseModel):
 ### 11.3 宣告與 policy 的一致性
 
 `OptimizationService.__init__` 走訪 registry 全部 backend 的 `parameter_limits`，任何 `limit` key 在 policy 查不到值（`limit(key) is None`）→ `raise ValueError("backend 'x' declares limit 'iterations' but the policy has no value for it")`。這是 composition root 的錯誤（`build_state` 轉成 `SettingsError` 一併印到 stderr、exit 2），不是 solve 時的結構化錯誤：一個宣告了上限卻沒有上限值的遠端 backend 不可以靜默地無上限執行。
+
+**2026-09-09 review 追加**：建構期檢查改走 `policy.limits_for(caps)`，宣告 key 與 flag-driven key（`variables` / `time_seconds` / `local_retries` / `remote_retries` / `top_k`）任一無值即 `ValueError`；`ParameterLimit.preference` 的葉節點依 annotation 必須是 `int` / `float`（`bool` 不算），否則同樣在建構期拒絕。
 
 ### 11.4 2026-09-09 review 修正（F-02 / F-07）：新增五個內建 limit key
 
@@ -684,6 +688,8 @@ class OptimizationService:
 18. attempt > max_retries → infeasible
 19. λ = next_penalty；回到 10
 ```
+
+2026-09-09 review F-14：exhaustive 上限先於步驟 10 之前以估算擋，步驟 11 保留。
 
 步驟 3–5 的 gate 順序、availability 的 lazy 評估、回報的 backend 名稱規則，全部沿用 Phase 2（見 §12 `gate_errors` docstring）。
 

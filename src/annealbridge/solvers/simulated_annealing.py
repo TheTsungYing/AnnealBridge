@@ -8,6 +8,7 @@ from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers.base import (
     AvailabilityStatus,
+    BackendAliases,
     ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
@@ -46,7 +47,7 @@ _CAPABILITIES = SolverCapabilities(
 )
 
 
-class SimulatedAnnealingBackend:
+class SimulatedAnnealingBackend(BackendAliases):
     """Samples the compiled problem with D-Wave's simulated annealer.
 
     All reads are kept (never just ``.first``) so every candidate reaches the
@@ -64,24 +65,6 @@ class SimulatedAnnealingBackend:
     def is_available(self) -> AvailabilityStatus:
         """Local backend, always available. No network I/O."""
         return AvailabilityStatus(category="available")
-
-    @property
-    def name(self) -> str:
-        """Alias for ``capabilities.name``."""
-        return self.capabilities.name
-
-    @property
-    def is_exhaustive(self) -> bool:
-        """Alias for ``capabilities.exhaustive``."""
-        return self.capabilities.exhaustive
-
-    def resolve_time_limit(
-        self,
-        compiled_problem: CompiledProblem,
-        preferences: SolverPreferences,
-    ) -> float | None:
-        """Local backend without a time limit: always None."""
-        return None
 
     def solve(
         self,

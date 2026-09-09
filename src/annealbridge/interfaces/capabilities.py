@@ -7,6 +7,7 @@ Lives outside the ``mcp`` subpackage so the CLI ``capabilities`` command can
 use the same source without the ``[mcp]`` extra installed.
 """
 
+import json
 from functools import cache
 from typing import get_args
 
@@ -18,7 +19,15 @@ from annealbridge.solvers import SolverRegistry
 
 
 class BackendCapability(BaseModel):
-    """What one solver backend offers, and whether this server will use it."""
+    """What one solver backend offers, and whether this server will use it.
+
+    ``name`` is the *registry key*: the value to put in ``solver.backend``
+    and the one ``enabled_backends`` is matched against (2026-09-09 review
+    F-22). The six built-in backends register under their own
+    ``capabilities.name``, so for them the two coincide; a custom registry
+    may register a backend under another key, and the key is the only
+    name a request can use.
+    """
 
     name: str
     available: bool
@@ -49,15 +58,23 @@ class OptimizationCapabilities(BaseModel):
 
 
 @cache
-def _problem_json_schema() -> dict:
-    """The problem JSON schema, generated once per process.
+def _problem_json_schema_json() -> str:
+    """The problem JSON schema as text, generated once per process.
 
     ``model_json_schema()`` walks the whole model tree (~3 ms) and the
     result is a pure function of the model classes, so it is safe to cache
     for the process lifetime. Availability is deliberately *not* cached:
-    credentials can change between calls.
+    credentials can change between calls. The cache holds the *serialised*
+    form (2026-09-09 review F-22): a cached dict is a shared mutable
+    object, and pydantic only shallow-copies the top level, so one
+    caller's edit to a nested entry would show up in every later response.
     """
-    return OptimizationProblem.model_json_schema()
+    return json.dumps(OptimizationProblem.model_json_schema())
+
+
+def _problem_json_schema() -> dict:
+    """A fresh, independent copy of the problem JSON schema for one response."""
+    return json.loads(_problem_json_schema_json())
 
 
 def build_capabilities(
@@ -75,7 +92,9 @@ def build_capabilities(
         enabled = in_set and (not caps.remote or policy.allow_remote)
         backends.append(
             BackendCapability(
-                name=caps.name,
+                # The registry key, not caps.name: it is what a request
+                # names and what ``enabled`` was just judged by.
+                name=name,
                 available=status.available,
                 enabled=enabled,
                 unavailable_reason=status.detail if not status.available else None,

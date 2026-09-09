@@ -237,6 +237,49 @@ class SolverBackend(Protocol):
     ) -> RawSolverResult: ...
 
 
+class BackendAliases:
+    """The ``SolverBackend`` members every backend derives from its declaration.
+
+    A mixin, not a base class the protocol requires: ``SolverBackend``
+    stays structural and a third-party backend may implement the aliases
+    itself (the test fakes do). It exists because ``name``,
+    ``is_exhaustive`` and the "no time limit" ``resolve_time_limit`` were
+    copied verbatim into every shipped backend (2026-09-09 review F-26);
+    the subclass supplies the ``capabilities`` property and everything else.
+    """
+
+    capabilities: SolverCapabilities
+
+    @property
+    def name(self) -> str:
+        """Alias for ``capabilities.name``."""
+        return self.capabilities.name
+
+    @property
+    def is_exhaustive(self) -> bool:
+        """Alias for ``capabilities.exhaustive``."""
+        return self.capabilities.exhaustive
+
+    def resolve_time_limit(
+        self,
+        compiled_problem: CompiledProblem,
+        preferences: SolverPreferences,
+    ) -> float | None:
+        """None for a backend that declares no time limit.
+
+        A backend whose declaration says ``supports_time_limit`` must
+        override this with its effective-value rule; falling through to
+        None would silently disable the service's REMOTE_TIME_LIMIT check,
+        so that case raises instead.
+        """
+        if self.capabilities.supports_time_limit:
+            raise NotImplementedError(
+                f"backend '{self.capabilities.name}' declares supports_time_limit "
+                f"but does not implement resolve_time_limit"
+            )
+        return None
+
+
 def sampleset_to_arrays(
     sampleset: dimod.SampleSet,
     *,

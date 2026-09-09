@@ -23,6 +23,14 @@ from annealbridge.orchestration.limits import (
     read_preference,
 )
 from annealbridge.orchestration.policy import ExecutionPolicy
+from annealbridge.solvers import SolverRegistry
+from tests.fakes.declared_backend import (
+    FAKE_CREDENTIAL_ENV,
+    FAKE_DECLARED_NAME,
+    FakeDeclaredBackend,
+)
+
+FAKE_KEY = "fake-key-ABC123"
 
 QPU_LIMITS = [
     ParameterLimit(preference="num_reads", limit="reads", error_code="QPU_READS_LIMIT"),
@@ -59,15 +67,22 @@ def make_capabilities(**overrides) -> SolverCapabilities:
 
 
 class SpyBackend:
-    """A ``SolverBackend`` that counts ``is_available()`` calls."""
+    """A ``SolverBackend`` that counts ``is_available()`` calls.
+
+    ``raise_on_available`` makes the availability check raise instead of
+    answering — a third-party backend whose credential lookup blows up
+    (2026-09-09 review, addition 1).
+    """
 
     def __init__(
         self,
         capabilities: SolverCapabilities,
         status: AvailabilityStatus = AvailabilityStatus(category="available"),
+        raise_on_available: Exception | None = None,
     ) -> None:
         self._capabilities = capabilities
         self._status = status
+        self.raise_on_available = raise_on_available
         self.availability_calls = 0
 
     @property
@@ -76,6 +91,8 @@ class SpyBackend:
 
     def is_available(self) -> AvailabilityStatus:
         self.availability_calls += 1
+        if self.raise_on_available is not None:
+            raise self.raise_on_available
         return self._status
 
     @property
@@ -381,3 +398,87 @@ class TestReportedName:
         assert result is not None
         assert result[1] == "fake_remote"
         assert "'fake_remote'" in result[2][0].message
+
+
+class TestAvailabilityCheckFailures:
+    """2026-09-09 review (additions 1 and 4): ``gate_errors`` is the one
+    place ``is_available()`` is called, so it is where a backend that raises
+    — or reports a category the map has never heard of — is turned into a
+    structured refusal instead of an exception escaping to the caller."""
+
+    def test_an_exception_becomes_a_backend_unavailable_error(self):
+        backend = SpyBackend(
+            make_capabilities(), raise_on_available=RuntimeError("boom")
+        )
+
+        result = gate_errors("fake_remote", backend, ExecutionPolicy(allow_remote=True))
+
+        assert result is not None
+        status, name, errors = result
+        assert status == "backend_unavailable"
+        assert name == backend.capabilities.name
+        assert [error.code for error in errors] == ["BACKEND_UNAVAILABLE"]
+        message = errors[0].message
+        assert "RuntimeError" in message
+        assert "availability check failed" in message
+        assert "boom" in message
+        assert backend.availability_calls == 1
+
+    def test_the_message_is_redacted(self, monkeypatch):
+        # Registering the fifth backend is what teaches the shared redaction
+        # about its declared env var (review F-10), exactly as in
+        # ``test_service_fallback.py::test_non_optimizer_error_is_a_redacted_solver_error``.
+        monkeypatch.setenv(FAKE_CREDENTIAL_ENV, FAKE_KEY)
+        SolverRegistry({FAKE_DECLARED_NAME: FakeDeclaredBackend()})
+        backend = SpyBackend(
+            make_capabilities(),
+            raise_on_available=RuntimeError(f"vendor sdk blew up with {FAKE_KEY}"),
+        )
+
+        result = gate_errors("fake_remote", backend, ExecutionPolicy(allow_remote=True))
+
+        assert result is not None
+        message = result[2][0].message
+        assert FAKE_KEY not in message
+        assert "***" in message
+        # The class name is categorical and survives redaction.
+        assert "RuntimeError" in message
+
+    def test_an_unknown_category_falls_back_to_the_same_pair(self):
+        # ``AvailabilityCategory`` is a Literal, so an unknown value is only
+        # reachable through ``model_construct``; it must still be a
+        # structured refusal that names the offending category.
+        backend = SpyBackend(
+            make_capabilities(),
+            AvailabilityStatus.model_construct(
+                category="weird", detail=None, error_code=None
+            ),
+        )
+
+        result = gate_errors("fake_remote", backend, ExecutionPolicy(allow_remote=True))
+
+        assert result is not None
+        status, _name, errors = result
+        assert status == "backend_unavailable"
+        assert [error.code for error in errors] == ["BACKEND_UNAVAILABLE"]
+        assert "weird" in errors[0].message
+
+
+class TestNonNumericPreferencePaths:
+    """2026-09-09 review (addition 2 / F-26e): a declaration may only point
+    at a numeric leaf. A ``Literal`` field, a whole option block or a bool
+    would each read as "no limit" and silently disable the ceiling."""
+
+    @pytest.mark.parametrize(
+        "path", ["backend", "dwave_qpu", "dwave_qpu.auto_scale"]
+    )
+    def test_a_non_numeric_leaf_raises(self, path):
+        with pytest.raises(ValueError, match="not a numeric preference"):
+            read_preference(SolverPreferences(), path)
+
+    def test_numeric_leaves_still_read_normally(self):
+        preferences = SolverPreferences()
+
+        assert read_preference(preferences, "seed") is None
+        assert read_preference(preferences, "num_reads") == 100
+        assert read_preference(preferences, "dwave_qpu.annealing_time_us") is None

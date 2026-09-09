@@ -15,6 +15,7 @@ from annealbridge.models import (
 )
 from annealbridge.solvers.base import (
     AvailabilityStatus,
+    BackendAliases,
     ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
@@ -85,22 +86,21 @@ def _default_sampler_factory() -> Any:
 
 
 def _average_chain_break_fraction(sampleset: Any) -> float | None:
-    """Mean of ``record.chain_break_fraction`` when safely available.
+    """Mean of ``record.chain_break_fraction`` when the sampler provided one.
 
     Samplesets built without that vector have no such record field at all
     (attribute access would raise), so presence is checked via
-    ``record.dtype.names``.
+    ``record.dtype.names``. Nothing else is guarded (2026-09-09 review
+    F-26): with presence settled, any further exception is a bug of our
+    own, and the service's fallback reports it rather than a silent None.
     """
-    try:
-        record = sampleset.record
-        if "chain_break_fraction" not in (record.dtype.names or ()):
-            return None
-        values = record.chain_break_fraction
-        if len(values) == 0:
-            return None
-        return float(values.mean())
-    except Exception:
+    record = sampleset.record
+    if "chain_break_fraction" not in (record.dtype.names or ()):
         return None
+    values = record.chain_break_fraction
+    if len(values) == 0:
+        return None
+    return float(values.mean())
 
 
 def _embedding_max_chain_length(info: dict) -> int | None:
@@ -124,7 +124,7 @@ def _embedding_max_chain_length(info: dict) -> int | None:
     return max(lengths)
 
 
-class DWaveQPUBackend:
+class DWaveQPUBackend(BackendAliases):
     """Solves the compiled BQM directly on a D-Wave QPU.
 
     ``sampler_factory`` is the single test seam: production uses the default
@@ -152,24 +152,6 @@ class DWaveQPUBackend:
     def is_available(self) -> AvailabilityStatus:
         """Installability and credentials, via the shared check. No network I/O."""
         return dwave_availability()
-
-    @property
-    def name(self) -> str:
-        """Alias for ``capabilities.name``."""
-        return self.capabilities.name
-
-    @property
-    def is_exhaustive(self) -> bool:
-        """Alias for ``capabilities.exhaustive``."""
-        return self.capabilities.exhaustive
-
-    def resolve_time_limit(
-        self,
-        compiled_problem: CompiledProblem,
-        preferences: SolverPreferences,
-    ) -> float | None:
-        """The QPU takes no time limit: always None."""
-        return None
 
     def solve(
         self,

@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from annealbridge.models import (
     Constraint,
     LinearTerm,
+    ModelType,
     Objective,
     OptimizationProblem,
 )
@@ -319,6 +320,13 @@ class InequalityAnalysis:
     value — it is negative for a trivially infeasible constraint (a hard one
     is rejected by the validator before compilation; the compiler clamps a
     soft one) and is ``None`` when ``redundant``.
+
+    That ``int(round(...))`` is exact, not approximate, for every problem
+    the validator accepts (2026-09-09 review F-24): inequality coefficients
+    and rhs are integer-valued, and ``INEQUALITY_MAGNITUDE_TOO_LARGE``
+    rejects a constraint whose ``sum(|c| * max|bound|) + |rhs|`` exceeds
+    2^53, so every product and every partial sum in :func:`lhs_bounds` is
+    an integer float64 represents exactly.
     """
 
     coefficients: dict[str, float]
@@ -449,6 +457,22 @@ def estimate_cqm_variables(problem: OptimizationProblem) -> int:
             continue
         slack_variables += 1
     return len(problem.variables) + slack_variables
+
+
+def estimate_model_variables(problem: OptimizationProblem, model_type: ModelType) -> int:
+    """Compiled variable count of the path a backend's ``model_type`` takes.
+
+    Dispatches to :func:`estimate_compiled_variables` (``"bqm"``) or
+    :func:`estimate_cqm_variables` (``"cqm"``). For a problem that passes
+    ``validate_problem`` each equals the respective compiler's
+    ``compile(...).num_variables`` exactly (pinned by the compiler tests),
+    which is what lets the service refuse an over-limit exhaustive solve
+    *before* compiling (2026-09-09 review F-14) and the validator and
+    routing report the same number.
+    """
+    if model_type == "bqm":
+        return estimate_compiled_variables(problem)
+    return estimate_cqm_variables(problem)
 
 
 def estimate_encoded_interactions(problem: OptimizationProblem) -> int:

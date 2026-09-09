@@ -264,6 +264,7 @@ class Variable(BaseModel):
 | `BOUNDS_ON_BINARY` | binary 變數帶任一 bound | `variables[i]` |
 | `INTEGER_RANGE_TOO_LARGE` | `|lower_bound| > 2**31 - 1` 或 `|upper_bound| > 2**31 - 1` | `variables[i]` |
 | `INTEGER_REQUIRES_VERSION_1_1` | 有 integer 變數但 `version == "1.0"` | `version` |
+| `INEQUALITY_MAGNITUDE_TOO_LARGE`（2026-09-09 review F-24） | inequality 的 `Σ|c|·max(|lower|,|upper|) + |rhs| > 2**53`（binary bound 視為 1；係數、rhs 非有限或非整數、或任一變數 bounds 不合法時跳過；**總和必須以 Python 整數累加**，float 累加會把 2^53+1 捨入回 2^53 而放行） | `constraints[i]` |
 
 `recommended_action` 文字（固定）：
 - `INTEGER_BOUNDS_MISSING`：「An integer variable needs both lower_bound and upper_bound; add them, or make the variable binary.」
@@ -271,6 +272,7 @@ class Variable(BaseModel):
 - `BOUNDS_ON_BINARY`：「Binary variables are 0/1 and take no bounds; remove lower_bound/upper_bound, or set type to integer.」
 - `INTEGER_RANGE_TOO_LARGE`：「Integer bounds must lie within ±(2^31-1); tighten the bounds or rescale the variable's unit.」
 - `INTEGER_REQUIRES_VERSION_1_1`：「Integer variables require schema version 1.1; set version to \"1.1\".」
+- `INEQUALITY_MAGNITUDE_TOO_LARGE`（2026-09-09 review F-24）：「An inequality's coefficients times its variables' bounds are too large for the slack range to be computed exactly, so the constraint could be encoded wrongly; rescale the unit of the coefficients or the variables, or tighten the bounds.」
 
 ### 9.2 既有規則的整數版
 
@@ -510,6 +512,7 @@ lhs 改用 `QuadraticModel`（各變數帶 vartype / bounds），`add_constraint
 | code | 類型 | status | 何時 |
 |---|---|---|---|
 | `INTEGER_BOUNDS_MISSING` / `INTEGER_BOUNDS_INVALID` / `BOUNDS_ON_BINARY` / `INTEGER_RANGE_TOO_LARGE` / `INTEGER_REQUIRES_VERSION_1_1` | error | `invalid_problem` | §9.1 |
+| `INEQUALITY_MAGNITUDE_TOO_LARGE`（2026-09-09 review F-24） | error | `invalid_problem` | §9.1 |
 | `REMOTE_QUOTA_EXCEEDED` | error | `solver_error` | Fujitsu 400 "Monthly usage exceeds specified metering limit."（§20.5） |
 | `REMOTE_BUSY` | error（`retryable=True`） | `solver_error` | Fujitsu 429 "Exceed limit of number of request."（帳號 16 個 job 上限） |
 | `LARGE_INTEGER_RANGE` / `INTEGER_QUADRATIC_BLOWUP` | warning | — | §9.3 |
@@ -520,7 +523,7 @@ lhs 改用 `QuadraticModel`（各變數帶 vartype / bounds），`add_constraint
 - `LARGE_INTEGER_RANGE`：「An integer variable needs more than 10 encoding bits on a BQM backend; tighten its bounds, rescale its unit, or use a backend that accepts integer variables natively.」
 - `INTEGER_QUADRATIC_BLOWUP`：「Binary-encoding the integer variables produces many quadratic interactions on a BQM backend; prefer a backend that accepts integer variables natively (model type cqm), or reduce the ranges.」
 
-計數分開看：**catalog（`RECOMMENDED_ACTIONS`）34 → 41**（5 個 validator error + 2 個 remote code）；**warning 表（`_WARNING_RECOMMENDED_ACTIONS`）9 → 11**，warning 不進 catalog 計數。`test_error_catalog.py` 每步同步；DA 的 `_HTTP_STATUS_CODES` 表（§20.8）與 Ocean 兩張表一樣要登記到該測試的 `declared_error_codes()`，否則 AST 掃描看不到表格內的 code。`RETRYABLE_CODES` 加 `REMOTE_BUSY`。
+計數分開看：**catalog（`RECOMMENDED_ACTIONS`）34 → 41**（5 個 validator error + 2 個 remote code），2026-09-09 review F-24 再 +1（`INEQUALITY_MAGNITUDE_TOO_LARGE`）→ **42**；**warning 表（`_WARNING_RECOMMENDED_ACTIONS`）9 → 11**，warning 不進 catalog 計數。`test_error_catalog.py` 每步同步；DA 的 `_HTTP_STATUS_CODES` 表（§20.8）與 Ocean 兩張表一樣要登記到該測試的 `declared_error_codes()`，否則 AST 掃描看不到表格內的 code。`RETRYABLE_CODES` 加 `REMOTE_BUSY`。
 
 ---
 

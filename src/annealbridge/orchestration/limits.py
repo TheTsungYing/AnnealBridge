@@ -6,7 +6,10 @@ capability flags — never a backend name, and this module imports no
 concrete backend or compiler (spec §4, overview principle 4).
 """
 
-from typing import get_args
+import logging
+import types
+import typing
+from typing import Annotated, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -21,6 +24,9 @@ from annealbridge.models import (
 )
 from annealbridge.orchestration.policy import ExecutionPolicy
 from annealbridge.solvers.base import SolverBackend
+from annealbridge.solvers.metadata import redact
+
+logger = logging.getLogger(__name__)
 
 # AvailabilityStatus.category → (result status, default error code), per
 # spec §8.2. Keyed on the structured category, never on a backend's reason
@@ -33,6 +39,13 @@ AVAILABILITY_MAP: dict[str, tuple[SolveStatus, str]] = {
     "config_invalid": ("configuration_error", "BACKEND_CONFIG_INVALID"),
     "unavailable": ("backend_unavailable", "BACKEND_UNAVAILABLE"),
 }
+# What an availability check that cannot be trusted maps to (2026-09-09
+# review, service-layer follow-ups): a category outside the map (only
+# reachable by bypassing the ``AvailabilityCategory`` Literal) and an
+# ``is_available()`` that raises. Both mean "this backend cannot be run
+# right now and its own check could not say why", which is what the
+# generic entry already expresses.
+_AVAILABILITY_FALLBACK: tuple[SolveStatus, str] = AVAILABILITY_MAP["unavailable"]
 
 
 def _nested_model(annotation: object) -> type[BaseModel] | None:
@@ -47,6 +60,23 @@ def _nested_model(annotation: object) -> type[BaseModel] | None:
     return None
 
 
+def _numeric_leaf(annotation: object) -> bool:
+    """Whether a field annotation is a numeric preference (``int`` / ``float``).
+
+    Unwraps ``X | None`` / ``Optional[X]`` and ``Annotated[X, ...]`` (the
+    IR's ``Count`` / ``Quantity`` types) and requires every remaining
+    member to be exactly ``int`` or ``float``. ``bool`` is not numeric
+    even though it subclasses ``int``: a limit on a flag is meaningless.
+    """
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        return _numeric_leaf(get_args(annotation)[0])
+    if origin is types.UnionType or origin is typing.Union:
+        members = [arg for arg in get_args(annotation) if arg is not type(None)]
+        return bool(members) and all(_numeric_leaf(member) for member in members)
+    return annotation is int or annotation is float
+
+
 def read_preference(preferences: SolverPreferences, path: str) -> float | int | None:
     """Value at the dotted ``path`` into ``preferences``.
 
@@ -55,10 +85,16 @@ def read_preference(preferences: SolverPreferences, path: str) -> float | int | 
     regardless, so a declaration naming a field that does not exist raises
     ``ValueError`` even when the block is None — a wrong declaration is a
     backend bug the tests should catch, not a silently unlimited parameter.
+    The leaf must be a numeric field (2026-09-09 review, service-layer
+    follow-ups): a declaration pointing at ``backend``, an option block or
+    a flag is refused here, by annotation, so the service rejects it at
+    construction instead of failing with a ``TypeError`` on the first
+    ``value > maximum`` comparison of a solve.
     """
     parts = path.split(".")
     model: type[BaseModel] | None = type(preferences)
     value: object = preferences
+    annotation: object = None
     for index, part in enumerate(parts):
         if model is None or part not in model.model_fields:
             raise ValueError(
@@ -67,13 +103,28 @@ def read_preference(preferences: SolverPreferences, path: str) -> float | int | 
             )
         if value is not None:
             value = getattr(value, part)
-        model = _nested_model(model.model_fields[part].annotation)
+        annotation = model.model_fields[part].annotation
+        model = _nested_model(annotation)
         if index < len(parts) - 1 and model is None:
             raise ValueError(
                 f"preference path '{path}' does not exist on "
                 f"{type(preferences).__name__}: '{part}' is not an option block"
             )
-    return value  # type: ignore[return-value]
+    if not _numeric_leaf(annotation):
+        raise ValueError(
+            f"preference path '{path}' is not a numeric preference "
+            f"(annotation {annotation!r}); only int / float fields can carry "
+            f"a limit"
+        )
+    if value is None:
+        return None
+    # The annotation check above is the real guard; this keeps the
+    # returned type honest for a value that somehow bypassed validation.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"preference path '{path}' holds a non-numeric value {value!r}"
+        )
+    return value
 
 
 def select_model_type(
@@ -168,6 +219,15 @@ def gate_errors(
     compares and reports ``backend_name``; the other two report
     ``capabilities.name``, which a custom registry may register under a
     different key. Never substitutes another backend.
+
+    The availability check is third-party code from the service's point
+    of view, so it is guarded like a backend's ``solve`` (2026-09-09
+    review, service-layer follow-ups): an ``is_available()`` that raises,
+    or a status whose category is outside :data:`AVAILABILITY_MAP`, is
+    reported as ``backend_unavailable`` / ``BACKEND_UNAVAILABLE`` with the
+    reason in the message (redacted, since it never passed through the
+    backend's own wrapping). Both ``solve`` and ``recommend`` go through
+    here, so neither can be taken down by one backend's broken check.
     """
     caps = backend.capabilities
     if policy.enabled_backends is not None and backend_name not in policy.enabled_backends:
@@ -194,17 +254,30 @@ def gate_errors(
                 )
             ],
         )
-    availability = backend.is_available()
+    try:
+        availability = backend.is_available()
+    except Exception as exc:
+        # Only ``Exception``: KeyboardInterrupt / SystemExit must propagate.
+        message = redact(
+            f"Backend '{caps.name}' availability check failed: "
+            f"unexpected {type(exc).__name__}: {exc}"
+        )
+        logger.warning("%s", message)
+        status, code = _AVAILABILITY_FALLBACK
+        return (status, caps.name, [catalog_error(code, message)])
     if not availability.available:
-        status, default_code = AVAILABILITY_MAP[availability.category]
+        mapped = AVAILABILITY_MAP.get(availability.category)
+        status, default_code = mapped if mapped is not None else _AVAILABILITY_FALLBACK
+        detail = availability.detail or "no reason reported"
+        if mapped is None:
+            detail += f" (unknown availability category {availability.category!r})"
         return (
             status,
             caps.name,
             [
                 catalog_error(
                     availability.error_code or default_code,
-                    f"Backend '{caps.name}' is unavailable: "
-                    f"{availability.detail or 'no reason reported'}",
+                    f"Backend '{caps.name}' is unavailable: {detail}",
                 )
             ],
         )

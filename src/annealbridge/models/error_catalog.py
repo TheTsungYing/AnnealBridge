@@ -217,6 +217,13 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "Integer variables require schema version 1.1; set version to "
         '"1.1".'
     ),
+    # 2026-09-09 review F-24: the slack range must be computed exactly.
+    "INEQUALITY_MAGNITUDE_TOO_LARGE": (
+        "An inequality's coefficients times its variables' bounds are too "
+        "large for the slack range to be computed exactly, so the constraint "
+        "could be encoded wrongly; rescale the unit of the coefficients or "
+        "the variables, or tighten the bounds."
+    ),
     # Compilation
     "COMPILATION_FAILED": (
         "The problem passed validation but could not be compiled into a "

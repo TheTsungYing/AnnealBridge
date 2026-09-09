@@ -61,6 +61,7 @@ from annealbridge.validation import (
     validate_problem_full,
     validate_solution,
 )
+from annealbridge.validation.estimates import estimate_model_variables
 
 logger = logging.getLogger(__name__)
 
@@ -351,23 +352,32 @@ class OptimizationService:
         self._solve_slots = threading.BoundedSemaphore(policy.max_concurrent_solves)
 
     def _check_declared_limits(self) -> None:
-        """Spec §11.3: every declared limit is checkable before any solve.
+        """Spec §11.3: every limit a backend is subject to is checkable before any solve.
 
-        Two things can be wrong with a ``ParameterLimit``: the policy has
-        no value for its limit key (the backend would run unlimited), or
-        its preference path names nothing on ``SolverPreferences`` (every
-        solve and recommend would raise from ``read_preference``; 2026-09-09
-        review F-03). Both are composition-root errors, so both fail here,
-        at construction, rather than on each request.
+        Three things can be wrong: the policy has no value for a limit key
+        the backend is subject to (it would run unlimited, or a solve
+        would compare against None), a ``ParameterLimit`` preference path
+        names nothing on ``SolverPreferences``, or it names a field that is
+        not numeric (every solve and recommend would raise from
+        ``read_preference``; 2026-09-09 review F-03 and its follow-ups).
+        All are composition-root errors, so all fail here, at
+        construction, rather than on each request. The keys come from
+        ``policy.limits_for(caps)`` — the same single source the
+        capabilities view and the service's checks read (spec §12.3) — so
+        the declared keys and the flag-driven ones (``variables`` for an
+        exhaustive backend, ``time_seconds``, the retry ceiling, ``top_k``)
+        are covered alike.
         """
         for name in self._registry.names():
             caps = self._registry.get(name).capabilities
-            for declaration in caps.parameter_limits:
-                if self._policy.limit(declaration.limit) is None:
+            for key, maximum in self._policy.limits_for(caps).items():
+                if maximum is None:
                     raise ValueError(
-                        f"backend '{name}' declares limit '{declaration.limit}' "
-                        f"but the policy has no value for it"
+                        f"backend '{name}' is subject to limit "
+                        f"'{key.removeprefix('max_')}' but the policy has no "
+                        f"value for it"
                     )
+            for declaration in caps.parameter_limits:
                 try:
                     read_preference(SolverPreferences(), declaration.preference)
                 except ValueError as exc:
@@ -375,8 +385,8 @@ class OptimizationService:
                         f"backend '{name}' declares a limit on preference "
                         f"'{declaration.preference}' (limit "
                         f"'{declaration.limit}', error code "
-                        f"'{declaration.error_code}') but that path does not "
-                        f"exist on SolverPreferences: {exc}"
+                        f"'{declaration.error_code}') but that path cannot "
+                        f"carry a limit: {exc}"
                     ) from exc
 
     def _select_model_type(self, caps: SolverCapabilities) -> ModelType | None:
@@ -524,8 +534,11 @@ class OptimizationService:
         """Build a no-solutions SolveResult for a structured failure.
 
         ``metadata`` carries the last completed attempt's facts (e.g. quota
-        spent on a remote solve) when a later attempt failed.
+        spent on a remote solve) when a later attempt failed. ``errors``
+        must not be empty: its first message becomes the result message,
+        and a failure with nothing to say is a caller bug.
         """
+        assert errors, "_failure needs at least one error: it becomes the result message"
         return SolveResult(
             status=status,
             backend=backend,
@@ -620,6 +633,49 @@ class OptimizationService:
             attempts=attempts,
         )
 
+    @staticmethod
+    def _exact_variable_limit_error(num_variables: int, limit: int | float) -> SolveError:
+        """§14 step 9 / 3a §12.2: the exhaustive backend's variable ceiling.
+
+        One wording for both places it is checked: from the estimate before
+        compile and from the compiled model after (2026-09-09 review
+        F-14). The estimate equals the compiled count for every validated
+        problem (``estimate_model_variables``), so the sentence is true
+        either way.
+        """
+        return catalog_error(
+            "EXACT_VARIABLE_LIMIT",
+            f"Compiled problem has {num_variables} variables (including "
+            f"internal), exceeding the exhaustive backend limit of {limit}",
+        )
+
+    @staticmethod
+    def _compile(
+        compiler: ModelCompiler, problem: OptimizationProblem, penalty: float | None
+    ) -> CompiledProblem:
+        """``compiler.compile`` with every failure expressed as a CompilationError.
+
+        No backend has been called yet, so whatever goes wrong here is a
+        problem-side failure the caller must see as ``invalid_problem`` /
+        COMPILATION_FAILED, never as ``solver_error`` (2026-09-09 review,
+        service-layer follow-ups). A ``CompilationError`` (including
+        ``NonFiniteModelError``) passes through unchanged so the handlers in
+        ``_run_attempts`` keep telling them apart; anything else — a bare
+        ``ValueError`` from the bounds / slack arithmetic on a problem that
+        bypassed the validator, a dimod or pydantic error — is wrapped with
+        its class name kept. The compiler's ``decode`` is deliberately not
+        wrapped: by then a backend has answered, and a result missing a
+        column is that backend's contract violation (review F-03).
+        """
+        try:
+            return compiler.compile(problem, penalty)
+        except CompilationError:
+            raise
+        except Exception as exc:
+            raise CompilationError(
+                f"unexpected {type(exc).__name__} while compiling: {exc}"
+            ) from exc
+
     def _max_attempts(
         self,
         backend: SolverBackend,
@@ -686,6 +742,21 @@ class OptimizationService:
                     preference_errors,
                 )
 
+            # §14 step 9 / 3a §12.2, checked *before* compile (2026-09-09
+            # review F-14): the estimate is pure arithmetic and equals the
+            # compiled count, while compiling a large inequality is O(n²).
+            # The post-compile check below stays as the final guarantee.
+            variable_limit = self._policy.limit("variables")
+            if backend.is_exhaustive:
+                estimated = estimate_model_variables(problem, compiler.model_type)
+                if estimated > variable_limit:
+                    return self._failure(
+                        "resource_limit_exceeded",
+                        backend.name,
+                        direction,
+                        [self._exact_variable_limit_error(estimated, variable_limit)],
+                    )
+
             max_attempts = self._max_attempts(backend, compiler, problem.solver)
             # §16.2 step 9: a native-constraint model has no hard penalty.
             penalty = (
@@ -693,15 +764,18 @@ class OptimizationService:
                 if compiler.uses_hard_penalty
                 else None
             )
-            logger.info(
-                "Problem %s: model_type=%s, objective_scale=%s, "
-                "penalty_scale=%s, initial hard_penalty=%s",
-                problem.name,
-                compiler.model_type,
-                self._penalty_strategy.objective_scale(problem),
-                self._penalty_strategy.penalty_scale(problem),
-                penalty,
-            )
+            # Both scales walk the whole problem, so they are only computed
+            # when the line will actually be emitted (2026-09-09 review F-26).
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(
+                    "Problem %s: model_type=%s, objective_scale=%s, "
+                    "penalty_scale=%s, initial hard_penalty=%s",
+                    problem.name,
+                    compiler.model_type,
+                    self._penalty_strategy.objective_scale(problem),
+                    self._penalty_strategy.penalty_scale(problem),
+                    penalty,
+                )
 
             for attempt in range(1, max_attempts + 1):
                 # 2026-09-09 review (F-07): the penalty ladder must stop
@@ -712,10 +786,10 @@ class OptimizationService:
                     return self._penalty_overflow(
                         backend, direction, attempts, penalty
                     )
-                compiled = compiler.compile(problem, penalty)
-                # §14 step 9: this limit needs compiled info (slack included),
-                # so it runs after compile. Never clamp, never fall back.
-                variable_limit = self._policy.limit("variables")
+                compiled = self._compile(compiler, problem, penalty)
+                # §14 step 9 on the compiled model (slack included): the
+                # final guarantee behind the estimate above. Never clamp,
+                # never fall back.
                 if (
                     backend.is_exhaustive
                     and compiled.num_variables > variable_limit
@@ -725,13 +799,8 @@ class OptimizationService:
                         backend.name,
                         direction,
                         [
-                            catalog_error(
-                                "EXACT_VARIABLE_LIMIT",
-                                f"Compiled problem has "
-                                f"{compiled.num_variables} variables "
-                                f"(including internal), exceeding the "
-                                f"exhaustive backend limit of "
-                                f"{variable_limit}",
+                            self._exact_variable_limit_error(
+                                compiled.num_variables, variable_limit
                             )
                         ],
                         attempts=attempts,

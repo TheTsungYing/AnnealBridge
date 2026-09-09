@@ -8,6 +8,7 @@ from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers.base import (
     AvailabilityStatus,
+    BackendAliases,
     RawSolverResult,
     SolverCapabilities,
     sampleset_to_arrays,
@@ -32,7 +33,7 @@ _CAPABILITIES = SolverCapabilities(
 )
 
 
-class ExactSolverBackend:
+class ExactSolverBackend(BackendAliases):
     """Enumerates all assignments via ``dimod.ExactSolver``.
 
     Intended for small scenarios, compiler correctness checks, and SA
@@ -48,24 +49,6 @@ class ExactSolverBackend:
     def is_available(self) -> AvailabilityStatus:
         """Local backend, always available. No network I/O."""
         return AvailabilityStatus(category="available")
-
-    @property
-    def name(self) -> str:
-        """Alias for ``capabilities.name``."""
-        return self.capabilities.name
-
-    @property
-    def is_exhaustive(self) -> bool:
-        """Alias for ``capabilities.exhaustive``."""
-        return self.capabilities.exhaustive
-
-    def resolve_time_limit(
-        self,
-        compiled_problem: CompiledProblem,
-        preferences: SolverPreferences,
-    ) -> float | None:
-        """Local backend without a time limit: always None."""
-        return None
 
     def solve(
         self,

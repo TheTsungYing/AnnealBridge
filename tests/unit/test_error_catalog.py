@@ -54,6 +54,9 @@ EXPECTED_CODES = [
     "BOUNDS_ON_BINARY",
     "INTEGER_RANGE_TOO_LARGE",
     "INTEGER_REQUIRES_VERSION_1_1",
+    # 2026-09-09 review (F-24): an inequality whose coefficients times its
+    # variables' bounds put the slack range beyond exact float64 integers.
+    "INEQUALITY_MAGNITUDE_TOO_LARGE",
     # Compilation
     "COMPILATION_FAILED",
     # 2026-09-09 review (F-02 / F-07 / F-08): the parameter ceilings that
@@ -97,7 +100,7 @@ class TestRecommendedActions:
         assert set(RECOMMENDED_ACTIONS) == set(EXPECTED_CODES)
 
     def test_expected_codes_are_unique(self):
-        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 46
+        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 47
 
 
 class TestRetryableCodes:
@@ -131,6 +134,8 @@ EXPECTED_VALIDATOR_CODES = {
     "BOUNDS_ON_BINARY",
     "INTEGER_RANGE_TOO_LARGE",
     "INTEGER_REQUIRES_VERSION_1_1",
+    # 2026-09-09 review (F-24).
+    "INEQUALITY_MAGNITUDE_TOO_LARGE",
 }
 
 

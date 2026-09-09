@@ -7,6 +7,7 @@ energy landscape so a large soft weight can never drown a hard constraint.
 """
 
 import itertools
+import logging
 
 import dimod
 import pytest
@@ -21,6 +22,7 @@ from annealbridge.models import (
     SolverPreferences,
     Variable,
 )
+from annealbridge.orchestration import OptimizationService
 from annealbridge.penalty import (
     ScaledPenaltyStrategy,
     compute_objective_scale,
@@ -284,3 +286,69 @@ class TestSoftEnergyBound:
         summed = sum(compute_soft_energy_bound(c) for c in constraints)
         assert max_compiled_energy(problem) <= summed + 1e-9
         assert compute_penalty_scale(problem) == pytest.approx(1.0 + summed)
+
+
+class SpyStrategy:
+    """A ``PenaltyStrategy`` that counts the *trace-only* scale calls.
+
+    ``initial_penalty`` / ``next_penalty`` delegate to a private
+    ``ScaledPenaltyStrategy``, so the penalty ladder behaves exactly as in
+    production and the inner strategy's own use of ``penalty_scale`` is not
+    counted: the counters only move when the *service* asks for a scale.
+    """
+
+    def __init__(self) -> None:
+        self._inner = ScaledPenaltyStrategy()
+        self.objective_scale_calls = 0
+        self.penalty_scale_calls = 0
+
+    def initial_penalty(self, problem):
+        return self._inner.initial_penalty(problem)
+
+    def next_penalty(self, previous, attempt):
+        return self._inner.next_penalty(previous, attempt)
+
+    def objective_scale(self, problem):
+        self.objective_scale_calls += 1
+        return self._inner.objective_scale(problem)
+
+    def penalty_scale(self, problem):
+        self.penalty_scale_calls += 1
+        return self._inner.penalty_scale(problem)
+
+
+class TestServiceDoesNotComputeScalesForDisabledLogging:
+    """2026-09-09 review F-26b: the two scales only feed one INFO trace line.
+
+    Both walk every objective term and every soft constraint, which on a
+    large problem costs real time on every solve — paid even when the log
+    line is thrown away. The call must sit behind ``isEnabledFor(INFO)``.
+    The guarded logger is ``annealbridge.orchestration.optimizer``, so the
+    ``annealbridge`` level decides.
+    """
+
+    @staticmethod
+    def solve_knapsack(load_example) -> tuple[SpyStrategy, object]:
+        spy = SpyStrategy()
+        problem = OptimizationProblem.model_validate(
+            load_example("knapsack.json", backend="exact")
+        )
+        result = OptimizationService(penalty_strategy=spy).solve(problem)
+        assert result.status == "success"
+        return spy, result
+
+    def test_nothing_is_computed_when_info_is_off(self, caplog, load_example):
+        caplog.set_level(logging.WARNING, logger="annealbridge")
+
+        spy, _ = self.solve_knapsack(load_example)
+
+        assert spy.objective_scale_calls == 0
+        assert spy.penalty_scale_calls == 0
+
+    def test_each_scale_is_computed_once_when_info_is_on(self, caplog, load_example):
+        caplog.set_level(logging.INFO, logger="annealbridge")
+
+        spy, _ = self.solve_knapsack(load_example)
+
+        assert spy.objective_scale_calls == 1
+        assert spy.penalty_scale_calls == 1

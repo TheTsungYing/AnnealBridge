@@ -684,3 +684,115 @@ class TestNonzeroCoefficients:
 
     def test_empty_terms_give_a_constant_constraint(self):
         assert nonzero_coefficients([]) == {}
+
+
+# --------------------------------------------------------------------------
+# 2026-09-09 review F-24: slack range exactness inside the validator's limit
+# --------------------------------------------------------------------------
+
+MAGNITUDE_LIMIT = 2**53
+INTEGER_BOUND = 2**31 - 1
+
+
+def magnitude_total(
+    coefficients: dict[str, int], bounds: dict[str, tuple[int, int]], rhs: int
+) -> int:
+    """``sum(|c| * max|bound|) + |rhs|`` in exact Python integers.
+
+    The quantity ``INEQUALITY_MAGNITUDE_TOO_LARGE`` compares against 2^53.
+    """
+    total = 0
+    for name, value in coefficients.items():
+        lower, upper = bounds.get(name, (0, 1))
+        total += abs(value) * max(abs(lower), abs(upper))
+    return total + abs(rhs)
+
+
+def exact_slack_range(
+    operator: str,
+    coefficients: dict[str, int],
+    bounds: dict[str, tuple[int, int]],
+    rhs: int,
+) -> int:
+    """``rhs - sum(min(c*lo, c*hi))`` after normalizing to ``<=``, in integers."""
+    if operator == ">=":
+        coefficients = {name: -value for name, value in coefficients.items()}
+        rhs = -rhs
+    lhs_min = 0
+    for name, value in coefficients.items():
+        lower, upper = bounds.get(name, (0, 1))
+        lhs_min += min(value * lower, value * upper)
+    return rhs - lhs_min
+
+
+def inequality(
+    operator: str, coefficients: dict[str, int], rhs: int
+) -> Constraint:
+    return Constraint(
+        id="magnitude",
+        type="hard",
+        terms=[
+            LinearTerm(variable=name, coefficient=float(value))
+            for name, value in coefficients.items()
+        ],
+        operator=operator,
+        rhs=float(rhs),
+    )
+
+
+# Each case sits at or below 2^53, i.e. inside what the validator accepts.
+# ``x`` is a full-range integer variable, ``y`` and ``z`` are binary.
+SLACK_RANGE_CASES = [
+    # Small, mixed signs, negative lower bounds.
+    ("<=", {"x": 3, "y": -2}, {"x": (-5, 7)}, 10),
+    (">=", {"x": -3, "y": 2}, {"x": (-5, 7)}, -10),
+    # All binary (no bounds mapping at all).
+    ("<=", {"y": 1, "z": 1}, {}, 1),
+    # A full-range integer variable carrying almost the whole budget.
+    ("<=", {"x": -4194303}, {"x": (0, INTEGER_BOUND)}, -1),
+    # Exactly at the limit: 4194304 * (2^31-1) + 1 + 4194303 == 2^53.
+    ("<=", {"x": -(2**22), "y": 1}, {"x": (0, INTEGER_BOUND)}, -4194303),
+    # Exactly at the limit, all binary: 2^52 + (2^52 - 1) + 1 == 2^53.
+    ("<=", {"y": 2**52, "z": -(2**52 - 1)}, {}, -1),
+]
+
+
+class TestSlackRangeIsExactWithinTheLimit:
+    """``int(round(rhs - lhs_min))`` is exact for every accepted inequality.
+
+    The 2026-09-09 review (F-24) added ``INEQUALITY_MAGNITUDE_TOO_LARGE`` so
+    that ``sum(|c| * max|bound|) + |rhs|`` never exceeds 2^53. Below that
+    bound every product and every partial sum in :func:`lhs_bounds` is an
+    integer float64 holds exactly, so ``slack_range`` equals the value
+    computed in arbitrary-precision Python integers -- which is what makes
+    the compiled slack bits able to encode every feasible assignment.
+    """
+
+    @pytest.mark.parametrize(
+        "operator, coefficients, bounds, rhs",
+        SLACK_RANGE_CASES,
+        ids=[f"{index}-{case[0]}" for index, case in enumerate(SLACK_RANGE_CASES)],
+    )
+    def test_slack_range_matches_the_integer_computation(
+        self, operator, coefficients, bounds, rhs
+    ):
+        assert magnitude_total(coefficients, bounds, rhs) <= MAGNITUDE_LIMIT
+
+        analysis = analyze_inequality(inequality(operator, coefficients, rhs), bounds)
+
+        assert analysis.redundant is False
+        assert analysis.slack_range == exact_slack_range(
+            operator, coefficients, bounds, rhs
+        )
+
+    def test_the_boundary_cases_really_sit_on_the_limit(self):
+        # The two cases the parametrization calls "exactly at the limit" are
+        # worth pinning: they are what the validator's own boundary test
+        # accepts, so drifting them would silently weaken this evidence.
+        at_the_limit = [
+            case
+            for case in SLACK_RANGE_CASES
+            if magnitude_total(case[1], case[2], case[3]) == MAGNITUDE_LIMIT
+        ]
+
+        assert len(at_the_limit) == 2

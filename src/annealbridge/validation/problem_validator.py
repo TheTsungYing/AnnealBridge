@@ -45,9 +45,8 @@ from annealbridge.validation.estimates import (
     compute_objective_scale,
     constraint_bit_count,
     count_slack_bits,
-    estimate_compiled_variables,
-    estimate_cqm_variables,
     estimate_encoded_interactions,
+    estimate_model_variables,
     integer_encoding_bits,
     lhs_bounds,
     variable_bounds,
@@ -68,6 +67,16 @@ INTEGER_QUADRATIC_BLOWUP_THRESHOLD = 2000
 # 3b §7: integer bounds must lie within ±(2^31-1) so every encoded value,
 # every product of two values and every float64 evaluation stays exact.
 INTEGER_BOUND_LIMIT = 2**31 - 1
+# 2026-09-09 review F-24: the bound alone does not make the *slack range*
+# exact. ``analyze_inequality`` computes ``rhs - lhs_min`` in float64 from
+# ``coefficient * bound`` products, and float64 represents every integer
+# up to 2^53 exactly but not beyond. An inequality whose per-term
+# ``sum(|c| * max|bound|) + |rhs|`` stays within that limit has every
+# product and every partial sum exact, so the slack encoding is exact;
+# above it the range can be off by hundreds of units and a feasible
+# assignment may become unreachable (an exhaustive backend would then
+# "prove" infeasibility wrongly). Binary variables count with bound 1.
+INEQUALITY_MAGNITUDE_LIMIT = 2**53
 
 # Defaults are read off the model so they can never drift from the schema.
 _DEFAULT_SOLVER_PREFERENCES = SolverPreferences()
@@ -83,6 +92,7 @@ VALIDATOR_ERROR_CODES: frozenset[str] = frozenset(
         "DUPLICATE_VARIABLE",
         "EMPTY_CONSTRAINT",
         "HARD_CONSTRAINT_HAS_WEIGHT",
+        "INEQUALITY_MAGNITUDE_TOO_LARGE",
         "INTEGER_BOUNDS_INVALID",
         "INTEGER_BOUNDS_MISSING",
         "INTEGER_RANGE_TOO_LARGE",
@@ -347,11 +357,7 @@ def validate_problem_full(
     # Safe from here on: the error pass guarantees every bound is legal.
     bounds = variable_bounds(problem)
     objective_scale = compute_objective_scale(problem.objective, bounds)
-    estimated = (
-        estimate_compiled_variables(problem)
-        if model_type == "bqm"
-        else estimate_cqm_variables(problem)
-    )
+    estimated = estimate_model_variables(problem, model_type)
 
     warnings: list[SolveError] = []
     _warn_soft_weights(problem, objective_scale, warnings)
@@ -1016,7 +1022,66 @@ def _check_constraint(
                 _non_finite(f"weight {constraint.weight}", f"{base}.weight")
             )
 
-    _check_trivially_infeasible(constraint, base, safe_bounds, errors)
+    # The range judgement below trusts float64 arithmetic on the lhs; it is
+    # skipped for a constraint whose magnitude puts that arithmetic outside
+    # the exact range, the same way it is skipped for illegal bounds.
+    if _check_inequality_magnitude(constraint, base, safe_bounds, errors):
+        _check_trivially_infeasible(constraint, base, safe_bounds, errors)
+
+
+def _check_inequality_magnitude(
+    constraint: Constraint,
+    base: str,
+    safe_bounds: dict[str, tuple[int, int] | None],
+    errors: list[SolveError],
+) -> bool:
+    """2026-09-09 review F-24: keep the slack arithmetic inside float64 exactness.
+
+    For a ``<=`` / ``>=`` constraint the compiler sizes its slack from
+    ``rhs - lhs_min`` computed in float64 (``analyze_inequality``); that
+    value is exact only while every ``coefficient * bound`` product and
+    every partial sum stays within ±2^53. The per-term sum
+    ``sum(|c| * max(|lower|, |upper|)) + |rhs|`` bounds all of them at
+    once (it is at least the accumulated-coefficient sum the estimates
+    use), so a constraint within it is encoded exactly and one above it is
+    rejected with INEQUALITY_MAGNITUDE_TOO_LARGE. Non-finite values and
+    variables with illegal bounds are skipped: each already carries its
+    own error. Returns False when the constraint was rejected, so the
+    caller can skip the range-based judgement that would rely on the same
+    inexact arithmetic.
+    """
+    if constraint.operator not in ("<=", ">=") or not constraint.terms:
+        return True
+    # Only integer-valued, finite numbers are summed (anything else already
+    # carries NON_FINITE_COEFFICIENT / NON_INTEGER_INEQUALITY), and they are
+    # summed as Python integers so the comparison with the limit is itself
+    # exact right at the boundary.
+    values = [term.coefficient for term in constraint.terms] + [constraint.rhs]
+    if not all(math.isfinite(value) and value.is_integer() for value in values):
+        return True
+    if any(safe_bounds.get(term.variable, (0, 1)) is None for term in constraint.terms):
+        return True
+
+    magnitude = abs(int(constraint.rhs))
+    for term in constraint.terms:
+        lower, upper = safe_bounds.get(term.variable) or (0, 1)
+        magnitude += abs(int(term.coefficient)) * max(abs(lower), abs(upper))
+    if magnitude <= INEQUALITY_MAGNITUDE_LIMIT:
+        return True
+    errors.append(
+        _error(
+            code="INEQUALITY_MAGNITUDE_TOO_LARGE",
+            path=base,
+            message=(
+                f"Inequality constraint {constraint.id} is too large to encode "
+                f"exactly: sum(|coefficient| * max|bound|) + |rhs| is "
+                f"{magnitude}, above the 2^53 limit "
+                f"({INEQUALITY_MAGNITUDE_LIMIT}) within which the slack range "
+                f"is computed exactly"
+            ),
+        )
+    )
+    return False
 
 
 def _check_trivially_infeasible(

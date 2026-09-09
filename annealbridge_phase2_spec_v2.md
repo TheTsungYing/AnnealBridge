@@ -371,6 +371,10 @@ class SolveResult(BaseModel):
 16. λ = next_penalty；回到 8
 ```
 
+**2026-09-09 review F-14 修正**：步驟 9 的 exhaustive 變數上限先以
+`estimate_model_variables(problem, model_type)` 在 compile 前擋（估算與編譯結果
+相等是 estimates 的契約），compile 後的檢查保留為最終保證；code / message 不變。
+
 不得 silent fallback：使用者指定 `dwave_qpu` 而不可用，就回 `backend_unavailable`，不改用 SA。
 
 Concurrency slot 用 `threading.BoundedSemaphore`，屬 service 實例狀態；CLI 單次呼叫不受影響。
@@ -511,7 +515,7 @@ Input：無。Output：
 
 ```python
 class BackendCapability(BaseModel):
-    name: str
+    name: str                 # 2026-09-09 review F-22：registry key（= solver.backend 用的名字）
     available: bool           # 套件 + credential（無網路呼叫）
     enabled: bool             # policy 允許
     unavailable_reason: str | None
