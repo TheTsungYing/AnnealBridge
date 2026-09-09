@@ -15,12 +15,11 @@ from annealbridge.solvers.exact import ExactSolverBackend
 from annealbridge.solvers.fujitsu_da import FujitsuDABackend
 from annealbridge.solvers.leap_hybrid_bqm import LeapHybridBQMBackend
 from annealbridge.solvers.leap_hybrid_cqm import LeapHybridCQMBackend
-from annealbridge.solvers.metadata import (
+from annealbridge.solvers.metadata import redact, sanitize_sampleset_info
+from annealbridge.solvers.ocean import (
     REASON_CONFIG_INVALID,
     REASON_CREDENTIALS_MISSING,
     REASON_NOT_INSTALLED,
-    redact,
-    sanitize_sampleset_info,
 )
 from annealbridge.solvers.registry import SolverRegistry
 from annealbridge.solvers.simulated_annealing import SimulatedAnnealingBackend

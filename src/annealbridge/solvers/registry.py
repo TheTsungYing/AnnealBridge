@@ -6,14 +6,24 @@ from annealbridge.solvers.exact import ExactSolverBackend
 from annealbridge.solvers.fujitsu_da import FujitsuDABackend
 from annealbridge.solvers.leap_hybrid_bqm import LeapHybridBQMBackend
 from annealbridge.solvers.leap_hybrid_cqm import LeapHybridCQMBackend
+from annealbridge.solvers.metadata import declare_credentials
 from annealbridge.solvers.simulated_annealing import SimulatedAnnealingBackend
 
 
 class SolverRegistry:
-    """Lookup table from backend name to ``SolverBackend`` instance."""
+    """Lookup table from backend name to ``SolverBackend`` instance.
+
+    Registering a backend is also what makes its credential declaration
+    (``capabilities.credentials``) part of the shared redaction (review
+    F-10): a backend only has to *declare* its env vars / headers, and
+    every error message, log line and metadata field that passes through
+    ``metadata.redact`` masks them from then on.
+    """
 
     def __init__(self, backends: dict[str, SolverBackend]) -> None:
         self._backends = dict(backends)
+        for name, backend in self._backends.items():
+            declare_credentials(name, backend.capabilities.credentials)
 
     def get(self, name: str) -> SolverBackend:
         """Return the registered backend named ``name``.

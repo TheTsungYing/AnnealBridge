@@ -3,6 +3,7 @@
 from annealbridge.models.capabilities import (
     AvailabilityCategory,
     AvailabilityStatus,
+    CredentialDeclaration,
     ModelType,
     ParameterLimit,
     SolverCapabilities,
@@ -48,6 +49,7 @@ __all__ = [
     "Constraint",
     "ConstraintEvaluation",
     "ConstraintTrace",
+    "CredentialDeclaration",
     "DWaveQPUOptions",
     "FujitsuDAOptions",
     "IntegerEncoding",

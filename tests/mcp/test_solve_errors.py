@@ -83,6 +83,67 @@ async def test_wrong_type_in_payload_is_an_sdk_tool_error(load_example):
     assert result.is_error is True
 
 
+# --- 2026-09-09 review F-11: booleans and strings in numeric fields ---------
+#
+# Type errors and semantic errors keep using different channels: a payload
+# Pydantic cannot parse is an SDK *tool error* (the tool body never runs), a
+# well-typed but nonsensical problem is a structured ``invalid_problem``
+# result. F-11 does not move anything between the two channels — it only makes
+# sure the type-layer message names the offending field and says *why* it was
+# refused, so an agent can fix the payload without guessing.
+
+
+def _set_path(problem: dict, path: str, value) -> dict:
+    """Set e.g. ``objective.linear_terms[0].coefficient`` on a payload copy."""
+    node = problem
+    keys = path.split(".")
+    for key in keys[:-1]:
+        if key.endswith("]"):
+            key, _, index = key[:-1].partition("[")
+            node = node[key][int(index)]
+        else:
+            node = node[key]
+    node[keys[-1]] = value
+    return problem
+
+
+@pytest.mark.parametrize("tool", ["validate_optimization_problem", "solve_optimization"])
+@pytest.mark.parametrize(
+    "path, value, field, noun",
+    [
+        ("objective.linear_terms[0].coefficient", True, "coefficient", "boolean"),
+        ("objective.linear_terms[0].coefficient", "2", "coefficient", "string"),
+        ("constraints[0].rhs", True, "rhs", "boolean"),
+        ("solver.num_reads", True, "num_reads", "boolean"),
+        ("solver.top_k", "3", "top_k", "string"),
+    ],
+    ids=[
+        "coefficient-bool",
+        "coefficient-string",
+        "rhs-bool",
+        "num_reads-bool",
+        "top_k-string",
+    ],
+)
+async def test_boolean_or_string_numeric_field_is_a_readable_tool_error(
+    load_example, tool, path, value, field, noun
+):
+    """Type errors go through the SDK tool error, semantic ones through the
+    structured ``invalid_problem`` result; F-11 only guarantees the type-layer
+    message is readable — it adds no new structured channel."""
+    problem = _set_path(
+        copy.deepcopy(load_example("knapsack.json", backend="exact")), path, value
+    )
+
+    async with Client(mcp) as client:
+        result = await client.call_tool(tool, {"problem": problem})
+
+    assert result.is_error is True
+    message = result.content[0].text
+    assert field in message
+    assert noun in message
+
+
 async def test_unknown_variable_is_a_structured_invalid_problem():
     async with Client(mcp) as client:
         result = await client.call_tool(

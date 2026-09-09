@@ -29,12 +29,15 @@ from annealbridge.solvers.base import (
     assert_samples_within_bounds,
     sampleset_to_arrays,
 )
-from annealbridge.solvers.metadata import dwave_availability, sanitize_sampleset_info
+from annealbridge.solvers.metadata import sanitize_sampleset_info
 from annealbridge.solvers.ocean import (
+    OCEAN_CREDENTIALS,
     HYBRID_SAMPLE_EXCEPTION_CODES,
     SAMPLER_INIT_EXCEPTION_CODES,
     LazySampler,
     call_ocean,
+    dwave_availability,
+    register_ocean_config_token,
     resolved,
 )
 
@@ -50,6 +53,7 @@ _CAPABILITIES = SolverCapabilities(
     supports_time_limit=True,
     supported_model_types=["cqm"],
     returns_multiple_samples=True,
+    credentials=OCEAN_CREDENTIALS,
     parameter_limits=[
         ParameterLimit(
             preference="leap_hybrid_cqm.time_limit_seconds",
@@ -108,6 +112,7 @@ class LeapHybridCQMBackend:
 
     def __init__(self, sampler_factory: Callable[[], Any] | None = None) -> None:
         self._sampler = LazySampler(sampler_factory, _default_sampler_factory)
+        register_ocean_config_token()
 
     @property
     def capabilities(self) -> SolverCapabilities:

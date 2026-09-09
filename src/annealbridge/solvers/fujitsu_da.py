@@ -30,6 +30,7 @@ from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import CompiledProblem, FujitsuDAOptions, SolverPreferences
 from annealbridge.solvers.base import (
     AvailabilityStatus,
+    CredentialDeclaration,
     ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
@@ -119,6 +120,14 @@ _CAPABILITIES = SolverCapabilities(
             error_code="REMOTE_TIME_LIMIT",
         ),
     ],
+    # Review F-10: the key's env var and the vendor's credential headers
+    # (``X-Api-Key`` is what we send; ``X-Access-Token`` is the alternative
+    # the vendor's error bodies may echo) — the shared redaction masks both
+    # from this declaration alone (spec §20.5, §22).
+    credentials=CredentialDeclaration(
+        env_vars=[API_KEY_ENV],
+        header_names=["X-Api-Key", "X-Access-Token"],
+    ),
     description=(
         "Fujitsu Digital Annealer (QUBO API V4, 3rd/4th-generation solver) accessed over HTTPS with an API key. "
         "Receives the compiled QUBO (objective, hard-constraint penalties and slack bits) as one binary polynomial; "

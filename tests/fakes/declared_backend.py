@@ -9,16 +9,20 @@ comes from its ``SolverCapabilities`` declaration:
   ``limits={"iterations": ...}`` — this proves the generic ``limits``
   channel of spec §11 works end to end;
 * ``FAKE_ITERATIONS_LIMIT`` is deliberately *not* in the error catalog, so
-  the test also pins ``catalog_error``'s behaviour for unknown codes.
+  the test also pins ``catalog_error``'s behaviour for unknown codes;
+* it declares its credential material (an ``ACME_API_KEY`` env var and an
+  ``X-Acme-Key`` header) so the shared redaction masks its key without the
+  solver layer ever having heard of it (2026-09-09 review F-10).
 
 Registering it must require zero changes to ``orchestration/*``,
-``validation/*``, ``interfaces/capabilities.py`` or ``policy.py``; the
-architecture test is the proof.
+``validation/*``, ``interfaces/capabilities.py``, ``policy.py`` or
+``solvers/metadata.py``; the architecture test is the proof.
 """
 
 from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers.base import (
     AvailabilityStatus,
+    CredentialDeclaration,
     ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
@@ -27,6 +31,8 @@ from annealbridge.solvers.base import (
 FAKE_DECLARED_NAME = "fake_declared"
 FAKE_LIMIT_KEY = "iterations"
 FAKE_LIMIT_ERROR_CODE = "FAKE_ITERATIONS_LIMIT"
+FAKE_CREDENTIAL_ENV = "ACME_API_KEY"
+FAKE_CREDENTIAL_HEADER = "X-Acme-Key"
 
 # Feasible for examples/knapsack.json: weight 6 + 4 = 10 <= 10, value 17
 # (the global optimum). Any compiled variable not named here — slack bits
@@ -51,6 +57,10 @@ _CAPABILITIES = SolverCapabilities(
             error_code=FAKE_LIMIT_ERROR_CODE,
         )
     ],
+    credentials=CredentialDeclaration(
+        env_vars=[FAKE_CREDENTIAL_ENV],
+        header_names=[FAKE_CREDENTIAL_HEADER],
+    ),
 )
 
 
@@ -61,10 +71,17 @@ class FakeDeclaredBackend:
     variable (slack = 0), so the returned sample is feasible for the
     problem the assignment was written for. Records every ``solve`` call
     so a test can prove a refused solve never reached the backend.
+    ``raise_on_solve`` makes ``solve`` raise that exception instead (a
+    vendor failure whose text may embed the credential).
     """
 
-    def __init__(self, assignment: dict[str, int] | None = None) -> None:
+    def __init__(
+        self,
+        assignment: dict[str, int] | None = None,
+        raise_on_solve: Exception | None = None,
+    ) -> None:
         self._assignment = dict(DEFAULT_ASSIGNMENT if assignment is None else assignment)
+        self.raise_on_solve = raise_on_solve
         self.solve_calls = 0
         self.last_preferences: SolverPreferences | None = None
 
@@ -99,6 +116,8 @@ class FakeDeclaredBackend:
     ) -> RawSolverResult:
         self.solve_calls += 1
         self.last_preferences = preferences
+        if self.raise_on_solve is not None:
+            raise self.raise_on_solve
         bqm = compiled_problem.model
         variables = [str(variable) for variable in bqm.variables]
         row = {variable: int(self._assignment.get(variable, 0)) for variable in variables}

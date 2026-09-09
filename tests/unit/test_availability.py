@@ -14,8 +14,8 @@ import types
 import pytest
 
 from annealbridge.models import AvailabilityStatus
-import annealbridge.solvers.metadata as metadata_module
-from annealbridge.solvers.metadata import (
+import annealbridge.solvers.ocean as ocean_module
+from annealbridge.solvers.ocean import (
     REASON_CONFIG_INVALID,
     REASON_CREDENTIALS_MISSING,
     REASON_NOT_INSTALLED,
@@ -158,4 +158,4 @@ class TestBackendsShareTheCheck:
         assert leap_module.LeapHybridBQMBackend().is_available() is sentinel
 
     def test_module_level_helper_is_what_the_backends_import(self):
-        assert metadata_module.dwave_availability is dwave_availability
+        assert ocean_module.dwave_availability is dwave_availability

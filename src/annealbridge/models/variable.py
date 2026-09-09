@@ -2,7 +2,9 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
+
+from annealbridge.models.quantities import Count
 
 
 class Variable(BaseModel):
@@ -14,22 +16,17 @@ class Variable(BaseModel):
     are the problem validator's job so they surface as ``invalid_problem``
     with a recommended action, not as a bare type error. Integer encoding is
     the compiler's concern: the IR carries no bits and no encoding choice.
+
+    The bounds are ``Count`` (models/quantities.py), the shared IR integer
+    type: a boolean or a string is refused rather than coerced, while an
+    integral float (``2.0``) is still accepted (2026-09-09 review F-11).
     """
 
     name: str
     type: Literal["binary", "integer"] = "binary"
-    lower_bound: int | None = None
-    upper_bound: int | None = None
+    lower_bound: Count | None = None
+    upper_bound: Count | None = None
     description: str | None = None
-
-    @field_validator("lower_bound", "upper_bound", mode="before")
-    @classmethod
-    def _reject_bool(cls, value: object) -> object:
-        # pydantic's lax mode would coerce True -> 1; a bound is a quantity,
-        # not a flag, so a boolean is a mistake worth rejecting at the schema.
-        if isinstance(value, bool):
-            raise ValueError("a bound must be an integer, not a boolean")
-        return value
 
     def bounds(self) -> tuple[int, int]:
         """Return ``(lower, upper)``: ``(0, 1)`` for binary, the declared

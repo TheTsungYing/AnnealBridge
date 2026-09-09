@@ -818,7 +818,10 @@ model.
   a timing whitelist rather than returned as-is, and results, error messages,
   logs, and metadata all pass through redaction, so an API token cannot leak
   into a tool response or a stack trace. This is covered by a dedicated
-  credential-leak test.
+  credential-leak test. A backend opts into this protection purely by
+  declaring its credential environment variables and header names in
+  `SolverCapabilities.credentials`; the shared redaction knows no vendor, so
+  a new backend is protected without touching the solver layer.
 - **The Fujitsu key is handled the same way.** `FUJITSU_DA_API_KEY` is read
   from the environment inside the backend only; it is never written to a log
   line, metadata, an error message, an exception chain, or a URL query

@@ -20,6 +20,7 @@ from annealbridge.models import (
 from annealbridge.models.capabilities import (  # noqa: F401
     AvailabilityCategory,
     AvailabilityStatus,
+    CredentialDeclaration,
     ModelType,
     ParameterLimit,
     SolverCapabilities,

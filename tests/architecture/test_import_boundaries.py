@@ -5,10 +5,13 @@ must not import ``mcp``, ``dwave.cloud``, ``annealbridge.config`` or
 ``annealbridge.interfaces``.  ``dwave.system`` is deliberately NOT banned:
 remote solver backends are allowed to lazy-import it (spec §4).
 
-One documented exception: ``solvers/metadata.py`` may lazy-import
-``dwave.cloud.config`` *inside a function* — spec §19 requires ``redact()``
-to resolve the token from the active Ocean config, and that config loader
+One documented exception: ``solvers/ocean.py`` may lazy-import
+``dwave.cloud.config`` *inside a function* — spec §19 requires the active
+Ocean config token to be resolvable for redaction, and that config loader
 lives in ``dwave.cloud``.  A module-level import there is still a violation.
+Since the 2026-09-09 review F-10 the exemption belongs to ``ocean.py`` and
+not to ``solvers/metadata.py``: the shared metadata module knows no vendor
+at all, so reading the Ocean config moved to the one D-Wave-aware module.
 """
 
 import ast
@@ -32,7 +35,7 @@ BANNED_IMPORTS = [
 
 # (file relative to SRC_ROOT, module prefix): allowed only inside a function.
 LAZY_IMPORT_EXEMPTIONS = {
-    ("solvers/metadata.py", "dwave.cloud.config"),
+    ("solvers/ocean.py", "dwave.cloud.config"),
 }
 
 SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "annealbridge"

@@ -36,6 +36,7 @@ from annealbridge.models import (
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.solvers import RawSolverResult, SolverRegistry
 from tests.fakes.declared_backend import (
+    FAKE_CREDENTIAL_ENV,
     FAKE_DECLARED_NAME,
     FAKE_LIMIT_ERROR_CODE,
     FAKE_LIMIT_KEY,
@@ -114,7 +115,10 @@ class TestUnexpectedFailuresBecomeSolverError:
         assert result.message == error.message
 
     def test_non_optimizer_error_is_a_redacted_solver_error(self, monkeypatch, caplog):
-        monkeypatch.setenv("FUJITSU_DA_API_KEY", FAKE_KEY)
+        # The fake backend declares this variable itself (review F-10), so
+        # registering it is the only thing that teaches the shared redaction
+        # about the key — no vendor backend has to be in the registry.
+        monkeypatch.setenv(FAKE_CREDENTIAL_ENV, FAKE_KEY)
         backend = ScriptedBackend([RuntimeError(f"vendor sdk blew up with {FAKE_KEY}")])
         caplog.set_level(logging.DEBUG, logger="annealbridge")
 

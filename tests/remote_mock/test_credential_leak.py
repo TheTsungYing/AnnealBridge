@@ -6,18 +6,20 @@ A fake credential is placed in the backend's environment variable
 Fujitsu kind) and a fake sampler / transport raises an exception whose text
 embeds it. Nothing that leaves the service — the ``SolveResult`` JSON, its
 errors/warnings, or any ``annealbridge`` log record — may contain the
-credential. The service-level tests run once per remote backend kind
-(``dwave_qpu`` on the BQM path, ``leap_hybrid_cqm`` on the CQM path,
-``fujitsu_da`` on the HTTP path; 3b spec §22) so every backend is proven to
-share the same redaction route.
+credential. The service-level tests run once per **every remote backend
+in the default registry** (3b spec §22; 2026-09-09 review F-10): the kinds
+are generated from ``SolverRegistry.default()``, the env var comes from
+each backend's own ``capabilities.credentials`` declaration, and a remote
+backend without a fake builder here — or without a declared credential
+env var — fails the suite instead of silently going untested.
 
 The token deliberately contains hyphens, so it does *not* match the
-``DEV-[A-Za-z0-9]{20,}`` redaction pattern: masking has to come from the
-live environment-variable candidate that :func:`redact` resolves. With the
-env var set, ``ocean_config_status()`` already reports ``"ok"`` (the
-``dwave`` extra is not installed, so the env var is the only config
-source), which is exactly the path under test — only
-``dwave_system_installed`` is patched.
+``DEV-[A-Za-z0-9]{20,}`` value pattern the D-Wave backends declare:
+masking has to come from the live environment-variable candidate that
+:func:`redact` resolves. With the env var set, ``ocean_config_status()``
+already reports ``"ok"`` (the ``dwave`` extra is not installed, so the env
+var is the only config source), which is exactly the path under test —
+only ``dwave_system_installed`` is patched.
 """
 
 import logging
@@ -39,7 +41,7 @@ from annealbridge.solvers import (
     LeapHybridCQMBackend,
     SolverRegistry,
 )
-import annealbridge.solvers.metadata as metadata_module
+import annealbridge.solvers.ocean as ocean_module
 from tests.fakes import FakeDATransport, bits_solution, json_response
 from tests.remote_mock.conftest import (
     FAKE_UNPATTERNED_TOKEN,
@@ -79,6 +81,11 @@ def _build_cqm(message: str, lazy: bool):
     return fake, LeapHybridCQMBackend(sampler_factory=lambda: fake)
 
 
+def _build_hybrid(message: str, lazy: bool):
+    fake = FakeLeapHybridSampler(raise_on_sample=RuntimeError(message), lazy=lazy)
+    return fake, LeapHybridBQMBackend(sampler_factory=lambda: fake)
+
+
 def _build_da(message: str, lazy: bool):
     # The transport raises on the very first request (job submission); the
     # DA flow has no lazy resolve step, so ``lazy`` is irrelevant here.
@@ -86,18 +93,37 @@ def _build_da(message: str, lazy: bool):
     return fake, FujitsuDABackend(transport=fake, sleep=lambda _seconds: None)
 
 
-# One BQM-path D-Wave backend, the CQM-path D-Wave backend and the HTTP-path
-# Fujitsu backend, so every compile path and every credential kind is proven
-# to redact.
-REMOTE_KINDS: dict[str, RemoteKind] = {
-    "dwave_qpu": RemoteKind("DWAVE_API_TOKEN", _build_qpu, lambda fake: fake.sample_calls),
-    "leap_hybrid_cqm": RemoteKind(
-        "DWAVE_API_TOKEN", _build_cqm, lambda fake: fake.sample_calls
-    ),
-    "fujitsu_da": RemoteKind(
-        "FUJITSU_DA_API_KEY", _build_da, lambda fake: fake.submit_calls
-    ),
+# How to drive each shipped remote backend *class* into a failure with a
+# fake. Keyed by class, not by name: the names and env vars come from the
+# default registry below, so adding a remote backend without adding a fake
+# here fails ``_remote_kinds`` loudly.
+_FAKE_BUILDERS: dict[type, tuple[Callable[[str, bool], tuple[Any, Any]], Callable[[Any], int]]] = {
+    DWaveQPUBackend: (_build_qpu, lambda fake: fake.sample_calls),
+    LeapHybridBQMBackend: (_build_hybrid, lambda fake: fake.sample_calls),
+    LeapHybridCQMBackend: (_build_cqm, lambda fake: fake.sample_calls),
+    FujitsuDABackend: (_build_da, lambda fake: fake.submit_calls),
 }
+
+
+def _remote_kinds() -> dict[str, RemoteKind]:
+    """Every remote backend of the default registry, driven by its own declaration."""
+    kinds: dict[str, RemoteKind] = {}
+    defaults = SolverRegistry.default()
+    for name in defaults.names():
+        backend = defaults.get(name)
+        if not backend.capabilities.remote:
+            continue
+        assert type(backend) in _FAKE_BUILDERS, (
+            f"remote backend {name!r} has no fake builder in the credential-leak suite"
+        )
+        env_vars = backend.capabilities.credentials.env_vars
+        assert env_vars, f"remote backend {name!r} declares no credential env var"
+        build, calls = _FAKE_BUILDERS[type(backend)]
+        kinds[name] = RemoteKind(env_vars[0], build, calls)
+    return kinds
+
+
+REMOTE_KINDS: dict[str, RemoteKind] = _remote_kinds()
 
 
 @pytest.fixture(params=sorted(REMOTE_KINDS))
@@ -111,11 +137,12 @@ def solve_with_leaky_sampler(
     """Run a full remote solve on ``kind`` whose sampler raises ``message``."""
     remote = REMOTE_KINDS[kind]
     monkeypatch.setenv(remote.env_var, FAKE_TOKEN)
-    if remote.env_var == "DWAVE_API_TOKEN":
-        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
-        # The env token alone makes ocean_config_status() report "ok"; that
-        # path is under test, so it is deliberately not patched.
-        assert metadata_module.ocean_config_status() == "ok"
+    # Only installability is patched (harmless for non-Ocean kinds): an env
+    # token alone makes ``ocean_config_status()`` report "ok", and that path
+    # is under test, so it is deliberately left real.
+    monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: True)
+    if remote.env_var == ocean_module.TOKEN_ENV:
+        assert ocean_module.ocean_config_status() == "ok"
 
     fake, backend = remote.build(message, lazy)
     service = OptimizationService(

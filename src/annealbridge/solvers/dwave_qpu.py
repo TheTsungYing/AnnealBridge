@@ -20,11 +20,14 @@ from annealbridge.solvers.base import (
     SolverCapabilities,
     sampleset_to_arrays,
 )
-from annealbridge.solvers.metadata import dwave_availability, sanitize_sampleset_info
+from annealbridge.solvers.metadata import sanitize_sampleset_info
 from annealbridge.solvers.ocean import (
+    OCEAN_CREDENTIALS,
     SAMPLER_INIT_EXCEPTION_CODES,
     LazySampler,
     call_ocean,
+    dwave_availability,
+    register_ocean_config_token,
     resolved,
 )
 
@@ -41,6 +44,7 @@ _CAPABILITIES = SolverCapabilities(
     supported_model_types=["bqm"],
     returns_multiple_samples=True,
     requires_embedding=True,
+    credentials=OCEAN_CREDENTIALS,
     parameter_limits=[
         ParameterLimit(
             preference="num_reads", limit="reads", error_code="QPU_READS_LIMIT"
@@ -137,6 +141,7 @@ class DWaveQPUBackend:
 
     def __init__(self, sampler_factory: Callable[[], Any] | None = None) -> None:
         self._sampler = LazySampler(sampler_factory, _default_sampler_factory)
+        register_ocean_config_token()
 
     @property
     def capabilities(self) -> SolverCapabilities:

@@ -286,6 +286,7 @@ class Constraint(BaseModel):
 
 - `operator` 為 `<=` 或 `>=` 的 constraint，**所有 `coefficient` 與 `rhs` 必須是整數值**（型別仍可為 float，但 `value.is_integer()` 必須為 True）。違反時 validator 回 `NON_INTEGER_INEQUALITY`。
 - `operator` 為 `==` 的 constraint 不受此限制。
+- 所有數值欄位（`coefficient`、`rhs`、`weight`、`constant`、`SolverPreferences` 的數值欄位）拒絕 bool 與字串（`true` 不是 `1`、`"10"` 不是 `10`），整數欄位接受整數值 float；schema 層以 pydantic `mode="before"` validator 實作（2026-09-09 review F-11）。
 
 Phase 1 不做自動 scaling。未來若要支援小數係數，在 compiler 加 scaling 層即可，IR 不變。
 

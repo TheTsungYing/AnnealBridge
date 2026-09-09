@@ -214,14 +214,18 @@ class TestVariableBounds:
             Variable.model_validate({"name": "x", "type": "integer", field: bad})
         assert "boolean" in str(excinfo.value)
 
-    def test_lax_integer_strings_are_accepted(self):
-        """Bounds follow pydantic's lax mode, like every other numeric field."""
-        assert (
+    def test_integer_string_bound_is_rejected_but_integral_float_is_accepted(self):
+        """A bound is a quantity, not text (2026-09-09 review F-11).
+
+        ``"3"`` is refused along with ``True`` — every IR numeric field now
+        uses the shared ``Count`` / ``Quantity`` types — while the rest of
+        pydantic's lax mode survives, so an integral float still parses.
+        """
+        with pytest.raises(ValidationError) as excinfo:
             Variable.model_validate(
                 {"name": "x", "type": "integer", "upper_bound": "3"}
-            ).upper_bound
-            == 3
-        )
+            )
+        assert "string" in str(excinfo.value)
         assert (
             Variable.model_validate(
                 {"name": "x", "type": "integer", "upper_bound": 2.0}

@@ -1,50 +1,54 @@
-"""Sampleset-info sanitization, credential redaction and D-Wave availability
-checks (Phase 2 spec §17, §19, §10).
+"""Sampleset-info sanitization, credential redaction and the guarded call
+(Phase 2 spec §17, §19; 3b spec §20.8).
 
-This module must import cleanly without any D-Wave packages installed:
-``dwave.cloud`` is only touched lazily inside :func:`_resolve_ocean_config`,
-and ``dwave.system`` is only probed with ``importlib.util.find_spec``. It
-is the one place in the solver layer that knows how Ocean config works, so
-both remote backends share the helpers here instead of carrying copies.
+Vendor-neutral by construction (OVERVIEW §五 principle 4; 2026-09-09 review
+F-10): this module names no environment variable, no HTTP header and no
+token shape of any vendor. Every backend declares what its credential
+material looks like in ``SolverCapabilities.credentials``
+(:class:`~annealbridge.models.capabilities.CredentialDeclaration`), and
+``SolverRegistry`` hands each declaration to :func:`declare_credentials`
+when the backend is registered. A credential that is not an environment
+variable at all (e.g. a token in a vendor config file) is contributed by
+the backend through :func:`register_secret_source`. :func:`redact` reads
+both process-level tables live on every call.
+
+The D-Wave availability / Ocean-config helpers that used to live here are
+in ``solvers.ocean`` — the one module that may lazy-import
+``dwave.cloud.config``. This module imports no vendor package, lazily or
+otherwise.
 """
 
-import importlib.util
 import os
 import re
-from typing import Callable, Literal, TypeVar
+from typing import Callable, TypeVar
 
 from annealbridge.exceptions import SolverExecutionError
-from annealbridge.models.capabilities import AvailabilityStatus
+from annealbridge.models.capabilities import CredentialDeclaration
 from annealbridge.models.metadata import SolverExecutionMetadata
 
 __all__ = [
-    "REASON_CONFIG_INVALID",
-    "REASON_CREDENTIALS_MISSING",
-    "REASON_NOT_INSTALLED",
     "REMOTE_ERROR_FALLBACK_CODE",
     "classify_exception",
-    "dwave_availability",
-    "dwave_system_installed",
+    "credential_env_vars",
+    "declare_credentials",
     "guarded_call",
-    "ocean_config_status",
     "redact",
+    "register_secret_source",
     "sanitize_sampleset_info",
 ]
 
 _T = TypeVar("_T")
 
-# Spec §10: the categorical ``is_available()`` details for the D-Wave
-# backends. They never contain config values. Since Phase 3a the service
-# maps availability by ``AvailabilityStatus.category``, not by these strings;
-# they remain constants so tests and messages share one wording.
-REASON_NOT_INSTALLED = "dwave-system not installed"
-REASON_CREDENTIALS_MISSING = "D-Wave credentials not configured"
-REASON_CONFIG_INVALID = "D-Wave configuration invalid"
-
 # Catalog code for a remote failure no classification table names.
 REMOTE_ERROR_FALLBACK_CODE = "REMOTE_SOLVER_ERROR"
 
 # Spec §17: the only timing keys that may leave the solver layer.
+#
+# This is an *allow-list on output* and deliberately stays a core decision
+# rather than a per-backend declaration: a key a backend reports but this
+# set does not name is silently dropped (fail-safe), the opposite failure
+# mode from a credential the redaction does not know about (fail-open).
+# Widening it is the same kind of decision as adding a ``ModelType``.
 TIMING_WHITELIST = frozenset(
     {
         "qpu_access_time",
@@ -54,7 +58,7 @@ TIMING_WHITELIST = frozenset(
         "total_post_processing_time",
         "run_time",
         "charge_time",
-        # Fujitsu Digital Annealer (3b spec §21); the backend converts the
+        # Digital-annealer style keys (3b spec §21); the backend converts the
         # vendor's millisecond strings to float microseconds before calling
         # ``sanitize_sampleset_info``.
         "solve_time",
@@ -62,24 +66,71 @@ TIMING_WHITELIST = frozenset(
     }
 )
 
-# Every environment variable that holds a vendor credential (3b spec §20.5).
-# ``redact`` masks the live value of each one; the D-Wave entry is also what
-# Ocean itself honours, so it counts as "configured" for the D-Wave checks.
-_CREDENTIAL_ENV_VARS = ("DWAVE_API_TOKEN", "FUJITSU_DA_API_KEY")
-
-# Spec §19 / 3b §20.5: mask credential-shaped substrings regardless of which
-# vendor produced the text (D-Wave token / query / Authorization header;
-# Fujitsu ``X-Api-Key`` / ``X-Access-Token`` headers in plain and JSON form).
-_REDACTION_PATTERNS = [
-    (re.compile(r"DEV-[A-Za-z0-9]{20,}"), "***"),
+# Spec §19: protocol-level conventions that are nobody's vendor knowledge —
+# a ``token=`` URL query parameter and the standard HTTP ``Authorization``
+# header. They are the only patterns this module owns; every vendor-shaped
+# pattern comes from a backend's declaration.
+_FALLBACK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"token=[^\s&]+"), "token=***"),
     (re.compile(r"Authorization: [^\n]+"), "Authorization: ***"),
-    (re.compile(r"X-Api-Key: [^\n]+"), "X-Api-Key: ***"),
-    (re.compile(r"X-Access-Token: [^\n]+"), "X-Access-Token: ***"),
-    (re.compile(r'"X-Api-Key":\s*"[^"]*"'), '"X-Api-Key": "***"'),
 ]
 
-OceanConfigStatus = Literal["ok", "missing", "invalid"]
+
+class _CompiledDeclaration:
+    """A backend's :class:`CredentialDeclaration` with its patterns compiled once."""
+
+    __slots__ = ("env_vars", "patterns")
+
+    def __init__(self, declaration: CredentialDeclaration) -> None:
+        self.env_vars = tuple(declaration.env_vars)
+        patterns: list[tuple[re.Pattern[str], str]] = []
+        for source in declaration.value_patterns:
+            patterns.append((re.compile(source), "***"))
+        for header in declaration.header_names:
+            escaped = re.escape(header)
+            # ``X-Name: value`` line form and JSON ``"X-Name": "value"`` form.
+            patterns.append((re.compile(rf"{escaped}: [^\n]+"), f"{header}: ***"))
+            patterns.append(
+                (re.compile(rf'"{escaped}":\s*"[^"]*"'), f'"{header}": "***"')
+            )
+        self.patterns = tuple(patterns)
+
+
+# Process-level tables, keyed by backend name / source name so that
+# re-registering (a second registry in the same process, a test building
+# its own) replaces rather than accumulates. They are unions across every
+# registry ever built in this process: over-masking is always safe.
+_DECLARATIONS: dict[str, _CompiledDeclaration] = {}
+_SECRET_SOURCES: dict[str, Callable[[], str | None]] = {}
+
+
+def declare_credentials(backend_name: str, declaration: CredentialDeclaration) -> None:
+    """Make ``declaration`` part of what :func:`redact` masks.
+
+    Called by ``SolverRegistry`` for every registered backend; a backend
+    author never calls it directly. An empty declaration is recorded too
+    (it replaces a stale one under the same name).
+    """
+    _DECLARATIONS[backend_name] = _CompiledDeclaration(declaration)
+
+
+def register_secret_source(name: str, source: Callable[[], str | None]) -> None:
+    """Register a live provider of one secret value that is not an env var.
+
+    ``source`` is called on every :func:`redact` and must never raise; it
+    returns the current value or None. Idempotent per ``name``.
+    """
+    _SECRET_SOURCES[name] = source
+
+
+def credential_env_vars() -> list[str]:
+    """Every environment variable name currently declared, in declaration order."""
+    names: list[str] = []
+    for compiled in _DECLARATIONS.values():
+        for name in compiled.env_vars:
+            if name not in names:
+                names.append(name)
+    return names
 
 
 def _timing_value(value: object) -> float | None:
@@ -127,107 +178,25 @@ def sanitize_sampleset_info(
     )
 
 
-def _env_token() -> str | None:
-    """Return ``DWAVE_API_TOKEN`` from the environment, if set.
+def _live_secrets() -> list[str]:
+    """Current non-empty values of every declared env var and secret source.
 
-    Ocean itself honours this variable, so it must count both as
-    "configured" and as material to redact. Read live on every call —
-    never cached — so tests (and runtime config changes) are honoured.
+    Read live on every call — never cached — so tests and runtime config
+    changes are honoured (Phase 2 §19).
     """
-    token = os.environ.get("DWAVE_API_TOKEN")
-    if isinstance(token, str) and token:
-        return token
-    return None
-
-
-def _env_credentials() -> list[str]:
-    """Non-empty values of every credential env var, read live (3b §20.5)."""
     values: list[str] = []
-    for name in _CREDENTIAL_ENV_VARS:
+    for name in credential_env_vars():
         value = os.environ.get(name)
         if isinstance(value, str) and value:
             values.append(value)
+    for source in _SECRET_SOURCES.values():
+        try:
+            value = source()
+        except Exception:
+            value = None
+        if isinstance(value, str) and value:
+            values.append(value)
     return values
-
-
-def _resolve_ocean_config() -> tuple[OceanConfigStatus, str | None]:
-    """Classify the active Ocean config and return its token, if any.
-
-    The single place that touches ``dwave.cloud.config`` (architecture
-    boundary exemption). Returns ``(status, config_token)`` where
-    ``config_token`` is the token from the Ocean config file only — the
-    ``DWAVE_API_TOKEN`` env var is folded into ``status`` (Ocean honours
-    it) but reported separately by :func:`_env_token` so callers that
-    redact can mask both.
-
-    - ``"ok"``: a non-empty token resolves (config or env var).
-    - ``"invalid"``: ``dwave.cloud`` is importable but ``load_config()``
-      raises — a config exists but cannot be parsed. The env var does not
-      rescue this case: a broken config file would still break the Ocean
-      runtime, so the operator must fix it.
-    - ``"missing"``: no token resolves anywhere.
-
-    No network I/O; any failure yields no token rather than an exception.
-    """
-    try:
-        from dwave.cloud.config import load_config
-    except Exception:
-        # dwave.cloud not installed: the env var is the only config source.
-        return ("ok" if _env_token() is not None else "missing"), None
-    try:
-        config = load_config()
-    except Exception:
-        return "invalid", None
-    token = config.get("token") if isinstance(config, dict) else None
-    if not (isinstance(token, str) and token):
-        token = None
-    # load_config() already merges the env var, but check it explicitly too
-    # in case an older Ocean version does not.
-    if token is not None or _env_token() is not None:
-        return "ok", token
-    return "missing", None
-
-
-def ocean_config_status() -> OceanConfigStatus:
-    """Classify the active D-Wave credential configuration. No network I/O.
-
-    Callers only ever see the categorical status, never config values.
-    """
-    return _resolve_ocean_config()[0]
-
-
-def dwave_system_installed() -> bool:
-    """Return whether ``dwave.system`` is importable, without importing it."""
-    try:
-        return importlib.util.find_spec("dwave.system") is not None
-    except (ImportError, ValueError):
-        return False
-
-
-def dwave_availability() -> AvailabilityStatus:
-    """The shared ``is_available()`` answer for the D-Wave backends.
-
-    Checks installability, then credentials. No network I/O. Details are
-    the categorical constants above and never contain config values
-    (spec §10). ``config_invalid`` names the D-Wave-specific catalog code
-    so the service can report it without knowing the backend (3a §8.2).
-    Evaluated live on every call: credentials can change at any time, so
-    this must never be cached.
-    """
-    if not dwave_system_installed():
-        return AvailabilityStatus(category="not_installed", detail=REASON_NOT_INSTALLED)
-    status = ocean_config_status()
-    if status == "invalid":
-        return AvailabilityStatus(
-            category="config_invalid",
-            detail=REASON_CONFIG_INVALID,
-            error_code="DWAVE_CONFIG_INVALID",
-        )
-    if status == "missing":
-        return AvailabilityStatus(
-            category="credentials_missing", detail=REASON_CREDENTIALS_MISSING
-        )
-    return AvailabilityStatus(category="available")
 
 
 def classify_exception(exc: Exception, codes: dict[str, str]) -> str:
@@ -237,8 +206,8 @@ def classify_exception(exc: Exception, codes: dict[str, str]) -> str:
     name is :data:`REMOTE_ERROR_FALLBACK_CODE`.
 
     Matching by name (not identity) keeps classification testable with
-    fakes and working without dwave-cloud-client installed. The walk starts
-    at the most-derived class, so a named Ocean exception that happens to
+    fakes and working without the vendor SDK installed. The walk starts
+    at the most-derived class, so a named vendor exception that happens to
     subclass ``ValueError`` still wins over a ``ValueError`` entry.
     """
     for klass in type(exc).__mro__:
@@ -252,14 +221,18 @@ def redact(text: str) -> str:
     """Mask credential material in ``text`` (spec §19).
 
     Every string headed for a SolveError, log line or metadata field must
-    pass through here before leaving the solver layer. Candidate secrets
-    (the Ocean config token and every credential env var in
-    :data:`_CREDENTIAL_ENV_VARS`) are resolved live on every call.
+    pass through here before leaving the solver layer. Candidate secrets —
+    the live value of every declared credential env var and of every
+    registered secret source — are resolved on every call and replaced
+    literally; then every declared value / header pattern and the two
+    protocol-level fallbacks are applied.
     """
-    for token in (_resolve_ocean_config()[1], *_env_credentials()):
-        if token:
-            text = text.replace(token, "***")
-    for pattern, replacement in _REDACTION_PATTERNS:
+    for secret in _live_secrets():
+        text = text.replace(secret, "***")
+    for compiled in _DECLARATIONS.values():
+        for pattern, replacement in compiled.patterns:
+            text = pattern.sub(replacement, text)
+    for pattern, replacement in _FALLBACK_PATTERNS:
         text = pattern.sub(replacement, text)
     return text
 

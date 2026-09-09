@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from annealbridge.solvers import SolverRegistry
+
 # The repository's ``examples/`` directory, shared by every test that loads a
 # shipped example problem.
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
@@ -32,15 +34,31 @@ def load_example():
     return _load
 
 
-# Every vendor credential variable the runtime honours (3b spec §20.5).
-# ``FUJITSU_DA_URL`` is not a secret, but it is part of the same "is this
-# backend configured?" answer, so it is cleared with the keys.
-_CREDENTIAL_ENV_VARS = ("DWAVE_API_TOKEN", "FUJITSU_DA_API_KEY", "FUJITSU_DA_URL")
+def _declared_credential_env_vars() -> tuple[str, ...]:
+    """Every credential variable the default registry's backends declare.
+
+    Derived from ``SolverCapabilities.credentials`` rather than hardcoded
+    (2026-09-09 review F-10), so a new backend is covered by the fixture
+    below the moment it declares its env vars — no test-suite change.
+    """
+    registry = SolverRegistry.default()
+    names: list[str] = []
+    for name in registry.names():
+        for env_var in registry.get(name).capabilities.credentials.env_vars:
+            if env_var not in names:
+                names.append(env_var)
+    return tuple(names)
+
+
+# ``FUJITSU_DA_URL`` is not a secret (so no backend declares it), but it is
+# part of the same "is this backend configured?" answer, so it is cleared
+# with the declared keys.
+_CREDENTIAL_ENV_VARS = _declared_credential_env_vars() + ("FUJITSU_DA_URL",)
 
 
 @pytest.fixture(autouse=True)
 def _clear_credential_env(monkeypatch):
-    """Remove every vendor credential variable from the environment.
+    """Remove every declared vendor credential variable from the environment.
 
     Ocean honours ``DWAVE_API_TOKEN`` and the Fujitsu Digital Annealer
     backend honours ``FUJITSU_DA_API_KEY`` / ``FUJITSU_DA_URL``, so a

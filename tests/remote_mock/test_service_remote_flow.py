@@ -4,7 +4,7 @@ Everything goes through :meth:`OptimizationService.solve`; no internal
 helper is called directly. Real D-Wave is never touched: fake samplers are
 injected through each backend's ``sampler_factory`` seam, and availability
 is forced by patching the ``dwave_availability`` name each backend module
-imports from ``solvers.metadata`` (the ``dwave`` extra is not installed in
+imports from ``solvers.ocean`` (the ``dwave`` extra is not installed in
 mock CI, so the real ``is_available()`` would report
 ``REASON_NOT_INSTALLED``). Patching per module keeps the two backends
 independently controllable.

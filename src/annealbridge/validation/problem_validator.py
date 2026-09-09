@@ -128,10 +128,29 @@ def _optional_model(annotation: object) -> type[BaseModel] | None:
     return None
 
 
+def _unwrap_annotated(annotation: object) -> object:
+    """The underlying type of an ``Annotated[T, ...]``, else the annotation.
+
+    The IR's numeric fields are ``Annotated`` aliases (``Quantity`` / ``Count``
+    from models/quantities.py, 2026-09-09 review F-11); the reflection below
+    cares about ``T``, not about the validators attached to it.
+    """
+    while hasattr(annotation, "__metadata__"):  # an Annotated alias
+        annotation = typing.get_args(annotation)[0]
+    return annotation
+
+
 def _optional_number(annotation: object) -> bool:
-    """True for ``int | None`` / ``float | None`` (either union spelling)."""
+    """True for ``int | None`` / ``float | None`` (either union spelling).
+
+    ``Annotated`` wrappers are transparent, so ``Quantity | None`` counts.
+    """
     members = _optional_members(annotation)
-    return members is not None and len(members) == 1 and members[0] in (int, float)
+    return (
+        members is not None
+        and len(members) == 1
+        and _unwrap_annotated(members[0]) in (int, float)
+    )
 
 
 def _option_blocks() -> dict[str, type[BaseModel]]:

@@ -11,25 +11,34 @@ capabilities view must handle it purely from its declaration:
 * the validator's advisory warnings follow the capability flags;
 * a policy that lacks the declared key is refused at construction;
 * ``service.recommend()`` lists it as usable, ranked purely from its
-  declaration (3a step 9).
+  declaration (3a step 9);
+* its credential (env var / header declared in ``capabilities.credentials``)
+  is masked by the shared redaction the moment it is registered — no edit
+  to ``solvers/metadata.py`` (2026-09-09 review F-10).
 
 The proof that none of this needed a code change is
 ``test_core_sources_never_mention_the_fake``: the files the fake flows
-through do not contain its name.
+through do not contain its name, its error code or its credential names.
 """
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
 
 from annealbridge.config import SettingsError
+from annealbridge.exceptions import SolverExecutionError
 from annealbridge.interfaces.capabilities import build_capabilities
 from annealbridge.interfaces.composition import build_state_from_policy
 from annealbridge.models import OptimizationProblem, SolverPreferences, catalog_error
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.solvers import SolverRegistry
+import annealbridge.solvers.metadata as metadata_module
+from annealbridge.solvers.metadata import guarded_call, redact
 from tests.fakes.declared_backend import (
+    FAKE_CREDENTIAL_ENV,
+    FAKE_CREDENTIAL_HEADER,
     FAKE_DECLARED_NAME,
     FAKE_LIMIT_ERROR_CODE,
     FAKE_LIMIT_KEY,
@@ -50,7 +59,14 @@ CORE_FILES_THE_FAKE_FLOWS_THROUGH = [
     "orchestration/routing.py",
     "interfaces/capabilities.py",
     "validation/problem_validator.py",
+    # Review F-10: the redaction data is declared by the backend, so the
+    # shared redaction module is on the zero-change list too.
+    "solvers/metadata.py",
 ]
+
+# Never a real key; hyphenated so no vendor token-shape pattern could match
+# it — only the declared env var can mask it.
+FAKE_KEY = "sk-7thvendor-SUPERSECRET-0123456789"
 
 
 def make_registry(fake: FakeDeclaredBackend) -> SolverRegistry:
@@ -253,10 +269,86 @@ class TestRecommendFollowsTheDeclaration:
         )
 
 
+class TestCredentialsFollowTheDeclaration:
+    """Review F-10: the fake's key is masked because it *declared* the env
+    var and header, not because ``solvers/metadata.py`` knows the vendor."""
+
+    @pytest.fixture(autouse=True)
+    def _key_in_env(self, monkeypatch):
+        monkeypatch.setenv(FAKE_CREDENTIAL_ENV, FAKE_KEY)
+
+    def test_declared_env_value_is_masked_once_registered(self, registry):
+        assert FAKE_KEY not in redact(f"auth failed for key {FAKE_KEY}")
+        assert redact(f"auth failed for key {FAKE_KEY}") == "auth failed for key ***"
+
+    def test_declared_header_line_is_masked_even_for_an_unknown_value(self, registry):
+        text = f"400 Bad Request\n{FAKE_CREDENTIAL_HEADER}: some-other-key-value\n"
+        assert redact(text) == f"400 Bad Request\n{FAKE_CREDENTIAL_HEADER}: ***\n"
+        json_form = f'{{"{FAKE_CREDENTIAL_HEADER}": "some-other-key-value"}}'
+        assert redact(json_form) == f'{{"{FAKE_CREDENTIAL_HEADER}": "***"}}'
+
+    def test_guarded_call_never_lets_the_key_out(self, registry):
+        def fail():
+            raise RuntimeError(f"401 Unauthorized ({FAKE_CREDENTIAL_HEADER} {FAKE_KEY})")
+
+        with pytest.raises(SolverExecutionError) as excinfo:
+            guarded_call("Acme solve failed", lambda exc: "REMOTE_SOLVER_ERROR", fail)
+
+        message = str(excinfo.value)
+        assert FAKE_KEY not in message
+        assert "***" in message
+        assert excinfo.value.__cause__ is None
+
+    def test_full_solve_failure_leaks_nothing(self, policy, caplog):
+        fake = FakeDeclaredBackend(
+            raise_on_solve=RuntimeError(f"vendor rejected key {FAKE_KEY}")
+        )
+        service = OptimizationService(registry=make_registry(fake), policy=policy)
+        caplog.set_level(logging.DEBUG, logger="annealbridge")
+
+        result = service.solve(make_knapsack(num_reads=10))
+
+        assert result.status == "solver_error"
+        assert result.backend == FAKE_DECLARED_NAME
+        assert fake.solve_calls == 1
+        assert FAKE_KEY not in result.model_dump_json()
+        assert "***" in result.errors[0].message
+        assert caplog.records
+        for record in caplog.records:
+            assert FAKE_KEY not in record.getMessage()
+
+    def test_masking_really_comes_from_the_declaration(self, monkeypatch):
+        # With no declaration at all the value is not a candidate: the
+        # protection is the declaration, not something hidden in the core.
+        monkeypatch.setattr(metadata_module, "_DECLARATIONS", {})
+        assert redact(f"key {FAKE_KEY}") == f"key {FAKE_KEY}"
+        SolverRegistry({FAKE_DECLARED_NAME: FakeDeclaredBackend()})
+        assert redact(f"key {FAKE_KEY}") == "key ***"
+
+    def test_a_backend_that_declares_nothing_masks_nothing_and_breaks_nothing(
+        self, monkeypatch
+    ):
+        defaults = SolverRegistry.default()
+        local = {
+            name: defaults.get(name)
+            for name in defaults.names()
+            if not defaults.get(name).capabilities.remote
+        }
+        assert local
+        # Only *after* the default registry has been built: building one
+        # (re)declares every shipped backend.
+        monkeypatch.setattr(metadata_module, "_DECLARATIONS", {})
+        SolverRegistry(local)
+        assert redact(f"key {FAKE_KEY}") == f"key {FAKE_KEY}"
+        assert metadata_module.credential_env_vars() == []
+
+
 def test_core_sources_never_mention_the_fake() -> None:
     """§13.1: registering the fake required no edit to the core files."""
     for relative in CORE_FILES_THE_FAKE_FLOWS_THROUGH:
         source = (SRC_ROOT / relative).read_text(encoding="utf-8")
         assert FAKE_DECLARED_NAME not in source, relative
         assert FAKE_LIMIT_ERROR_CODE not in source, relative
+        assert FAKE_CREDENTIAL_ENV not in source, relative
+        assert FAKE_CREDENTIAL_HEADER not in source, relative
 

@@ -88,7 +88,7 @@ BQMCompiler    CQMCompiler
 
 - **整數編碼是 compiler 的事，不是 IR 的事**：JSON 只有 `type: "integer"` 與 bounds，沒有位元、沒有編碼方式。任何 backend 看到的都是 compiler 產出的模型，backend 不做編碼、不做 decode。
 - `ModelCompiler` Protocol 新增 `decode(compiled, raw) -> RawSolverResult`（§13）。service 的 `process_candidates` 只處理「業務變數、整數值」的結果；`deduplicate_samples` 不再接 `internal_variables`。
-- 新增第六個 backend，**backend 本體**只改：`solvers/fujitsu_da.py`（新）、`solvers/registry.py`、`models/problem.py`（Literal + option block）。另有三項**一次性的通用機制改動**，與 fujitsu 無關、之後任何廠商都受益：`solvers/metadata.py` 的 credential 清單與 redaction pattern 通用化（§20.5）、`exceptions.py` 的 `SolverExecutionError.status` + `optimizer.py` 一行（§20.8）、`models/error_catalog.py` 兩個新 remote code（§19）。`test_fifth_backend.py` 的「零改動」清單不變；`test_no_backend_names.py` 的名單加 `"fujitsu_da"`。
+- 新增第六個 backend，**backend 本體**只改：`solvers/fujitsu_da.py`（新）、`solvers/registry.py`、`models/problem.py`（Literal + option block）。另有三項**一次性的通用機制改動**，與 fujitsu 無關、之後任何廠商都受益：`solvers/metadata.py` 的 credential 清單與 redaction pattern 通用化（§20.5）（2026-09-09 F-10 後：backend 只需宣告，`metadata.py` 零改動）、`exceptions.py` 的 `SolverExecutionError.status` + `optimizer.py` 一行（§20.8）、`models/error_catalog.py` 兩個新 remote code（§19）。`test_fifth_backend.py` 的「零改動」清單不變；`test_no_backend_names.py` 的名單加 `"fujitsu_da"`。
 - Fujitsu backend 不得 import `requests` / `httpx`（不加依賴）；HTTP 走標準庫 `urllib.request`，透過可注入的 transport 測試（§20.4）。
 - 依賴方向新增檢查：`compiler/integer_encoding.py`（§14）在套件內只能 import `annealbridge.models` 與 `annealbridge.validation.estimates`（第三方 `dimod` / `numpy` 不受此限）。
 
@@ -194,7 +194,8 @@ class Variable(BaseModel):
         """binary → (0, 1)；integer → (lower_bound, upper_bound)。只供 validator / compiler 用。"""
 ```
 
-- schema 層：`lower_bound` / `upper_bound` 型別 `int`（pydantic 對 `1.5` 拒絕、對 `"3"` 依 pydantic 預設 lax mode 接受——**維持 lax**，與其他欄位一致）；實測 pydantic 會把 `True` coerce 成 `1`，所以加一個 `mode="before"` 的 field validator 拒絕 `bool`（bounds 是數量，不是旗標）。
+- schema 層：`lower_bound` / `upper_bound` 用 `models/quantities.py` 的 `Count`（`Annotated[int, BeforeValidator(...)]`）。bounds 是數量，不是旗標、也不是文字，所以 `True` 與 `"3"` 都拒絕（實測 pydantic lax mode 會把 `True` coerce 成 `1`、把 `"3"` coerce 成 `3`）；`1.5` 仍拒絕，整數值 float（`2.0` → `2`）仍接受。`BeforeValidator` 不影響發布的 JSON Schema（仍是 `{"type": "integer"}`）。
+  - 2026-09-09 review F-11：同一規則套用到全部 IR 數值欄位（`coefficient`、`constant`、`rhs`、`weight`、`SolverPreferences` 與各 option block 的數值欄位、`seed`），共用 `Quantity`（實數）與 `Count`（整數）兩個型別。
 - `OptimizationProblem.version: Literal["1.0", "1.1"] = "1.0"`。
 - `Variable.bounds()`：binary → `(0, 1)`；integer 且兩個 bound 皆非 None → `(lower, upper)`；否則 `raise ValueError`。**只允許在 validator 的 error pass 通過後呼叫**（compiler、estimates、`validate_problem_full` 的 warning 層都在 error pass 之後）；validator 的 error pass 內對 bounds 不合法的變數視為「未知」（§9.2）。
 - **語意規則（validator，§9.1）**：
@@ -587,7 +588,7 @@ class UrllibTransport:
 - 環境變數（**只在 backend 內、每次呼叫時讀，不快取，不進 `ServerSettings`**）：`FUJITSU_DA_API_KEY`（必要）、`FUJITSU_DA_URL`（預設 §20.1 base URL）。API 版本固定 `v4`，不提供切換（沒有消費者；v3c 見 §30.2）。
 - `is_available()`：key 缺或空 → `AvailabilityStatus(category="credentials_missing", detail="Fujitsu DA API key not configured")`；URL 不是 `https://` 開頭 → `config_invalid`（`error_code="BACKEND_CONFIG_INVALID"`，detail 不含值）；否則 available。無網路 I/O。
 - 測試隔離：`tests/conftest.py` 的 autouse fixture 目前只 `delenv("DWAVE_API_TOKEN")`，改為同時清除 `FUJITSU_DA_API_KEY` / `FUJITSU_DA_URL`（否則開發機設了 key 會改變 capabilities / recommend / CLI 表的輸出）；`tests/remote_live/conftest.py` 同。
-- `solvers/metadata.py` 通用化：`_CREDENTIAL_ENV_VARS = ("DWAVE_API_TOKEN", "FUJITSU_DA_API_KEY")`，`redact()` 對每個非空值做替換；`_REDACTION_PATTERNS` 加 `(r"X-Api-Key: [^\n]+", "X-Api-Key: ***")`、`(r"X-Access-Token: [^\n]+", "X-Access-Token: ***")`、`(r'"X-Api-Key":\s*"[^"]*"', '"X-Api-Key": "***"')`。D-Wave 的 Ocean config 讀取邏輯不變。所有進 `SolveError` / log / metadata 的字串（含 HTTP 回應 body 摘要）必經 `redact()`。
+- `solvers/metadata.py` 通用化：`_CREDENTIAL_ENV_VARS = ("DWAVE_API_TOKEN", "FUJITSU_DA_API_KEY")`，`redact()` 對每個非空值做替換；`_REDACTION_PATTERNS` 加 `(r"X-Api-Key: [^\n]+", "X-Api-Key: ***")`、`(r"X-Access-Token: [^\n]+", "X-Access-Token: ***")`、`(r'"X-Api-Key":\s*"[^"]*"', '"X-Api-Key": "***"')`。D-Wave 的 Ocean config 讀取邏輯不變。所有進 `SolveError` / log / metadata 的字串（含 HTTP 回應 body 摘要）必經 `redact()`。**2026-09-09 review F-10 修正**：`_CREDENTIAL_ENV_VARS` / `_REDACTION_PATTERNS` 已移除；改由各 backend 在 `SolverCapabilities.credentials`（`CredentialDeclaration`：`env_vars` / `header_names` / `value_patterns`）宣告，`SolverRegistry` 註冊時餵給 `metadata.declare_credentials`；Ocean config 檔 token 由 `solvers/ocean.py` 以 `register_secret_source` 提供；`metadata.py` 不再出現任何廠商名。
 - 不得把 key 放進 URL query、log、metadata、exception `__cause__`（沿用 3a `call_ocean` 的「在 except 外 raise」手法，抽成 `solvers/ocean.py` 的通用 `guarded_call`，或在 `fujitsu_da.py` 內同樣寫法——擇一，不複製第三份）。
 
 ### 20.6 `resolve_time_limit`

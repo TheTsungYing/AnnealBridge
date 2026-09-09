@@ -4,12 +4,16 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from annealbridge.models.quantities import Quantity
+
 
 class LinearTerm(BaseModel):
     """A linear term: coefficient * variable."""
 
     variable: str
-    coefficient: float
+    # Quantity, not plain float: booleans and strings are refused rather than
+    # coerced (see models/quantities.py, 2026-09-09 review F-11).
+    coefficient: Quantity
 
 
 class QuadraticTerm(BaseModel):
@@ -17,7 +21,7 @@ class QuadraticTerm(BaseModel):
 
     variable1: str
     variable2: str
-    coefficient: float
+    coefficient: Quantity
 
 
 class Objective(BaseModel):
@@ -26,4 +30,4 @@ class Objective(BaseModel):
     direction: Literal["minimize", "maximize"]
     linear_terms: list[LinearTerm]
     quadratic_terms: list[QuadraticTerm] = []
-    constant: float = 0
+    constant: Quantity = 0

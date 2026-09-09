@@ -38,8 +38,8 @@ from annealbridge.solvers import (
     SolverRegistry,
 )
 import annealbridge.solvers.leap_hybrid_cqm as cqm_module
-import annealbridge.solvers.metadata as metadata_module
-from annealbridge.solvers.metadata import (
+import annealbridge.solvers.ocean as ocean_module
+from annealbridge.solvers.ocean import (
     REASON_CONFIG_INVALID,
     REASON_CREDENTIALS_MISSING,
     REASON_NOT_INSTALLED,
@@ -677,26 +677,26 @@ class TestSamplerCaching:
 
 
 class TestIsAvailable:
-    """The backend answers through the shared check in solvers.metadata."""
+    """The backend answers through the shared check in solvers.ocean."""
 
     def test_dwave_system_not_installed(self, monkeypatch):
-        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: False)
+        monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: False)
 
         assert LeapHybridCQMBackend().is_available() == AvailabilityStatus(
             category="not_installed", detail=REASON_NOT_INSTALLED
         )
 
     def test_credentials_not_configured(self, monkeypatch):
-        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
-        monkeypatch.setattr(metadata_module, "ocean_config_status", lambda: "missing")
+        monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: True)
+        monkeypatch.setattr(ocean_module, "ocean_config_status", lambda: "missing")
 
         assert LeapHybridCQMBackend().is_available() == AvailabilityStatus(
             category="credentials_missing", detail=REASON_CREDENTIALS_MISSING
         )
 
     def test_configuration_invalid(self, monkeypatch):
-        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
-        monkeypatch.setattr(metadata_module, "ocean_config_status", lambda: "invalid")
+        monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: True)
+        monkeypatch.setattr(ocean_module, "ocean_config_status", lambda: "invalid")
 
         assert LeapHybridCQMBackend().is_available() == AvailabilityStatus(
             category="config_invalid",
@@ -705,8 +705,8 @@ class TestIsAvailable:
         )
 
     def test_available_when_installed_and_configured(self, monkeypatch):
-        monkeypatch.setattr(metadata_module, "dwave_system_installed", lambda: True)
-        monkeypatch.setattr(metadata_module, "ocean_config_status", lambda: "ok")
+        monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: True)
+        monkeypatch.setattr(ocean_module, "ocean_config_status", lambda: "ok")
 
         assert LeapHybridCQMBackend().is_available() == AvailabilityStatus(
             category="available"
