@@ -1,12 +1,44 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "annealbridge"
 version = "0.1.0"
-description = "Optimization Tool Middleware — deterministic BQM compilation, solving, validation and ranking for combinatorial optimization problems"
+description = "Optimization middleware for AI agents: deterministic BQM/CQM compilation, solving, re-validation and ranking of combinatorial optimization problems, exposed over MCP and a CLI"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "TsungYing" }]
 requires-python = ">=3.11"
+keywords = [
+    "optimization",
+    "combinatorial-optimization",
+    "qubo",
+    "bqm",
+    "cqm",
+    "quantum-annealing",
+    "simulated-annealing",
+    "d-wave",
+    "fujitsu-digital-annealer",
+    "mcp",
+    "model-context-protocol",
+    "ai-agents",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2",
@@ -20,9 +52,17 @@ dependencies = [
 mcp = ["mcp>=2,<3"]
 dwave = ["dwave-system"]
 all = ["mcp>=2,<3", "dwave-system"]
-# Spec §6 lists "pytest-anyio", but no real distribution exists (PyPI only has an
-# empty 0.0.0 placeholder); anyio ships its own pytest plugin, so depend on anyio.
+# "pytest-anyio" does not exist as a real distribution (PyPI only has an empty
+# 0.0.0 placeholder); anyio ships its own pytest plugin, so depend on anyio.
 dev = ["pytest>=8.0", "anyio>=4", "mcp[cli]>=2,<3"]
+
+# Replace OWNER with the GitHub account or organisation that hosts the repository.
+[project.urls]
+Homepage = "https://github.com/OWNER/AnnealBridge"
+Repository = "https://github.com/OWNER/AnnealBridge"
+Documentation = "https://github.com/OWNER/AnnealBridge/tree/main/docs"
+Issues = "https://github.com/OWNER/AnnealBridge/issues"
+Changelog = "https://github.com/OWNER/AnnealBridge/blob/main/CHANGELOG.md"
 
 [project.scripts]
 annealbridge = "annealbridge.interfaces.cli.main:main"
@@ -34,8 +74,8 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Deselect the opt-in live remote tests by default so a plain `pytest` never
-# consumes vendor quota (spec §28). Run them explicitly with `pytest -m remote`;
-# each live test skips unless its own vendor credential is set.
+# consumes vendor quota. Run them explicitly with `pytest -m remote`; each live
+# test skips unless its own vendor credential is set.
 addopts = '-m "not remote"'
 markers = [
     "remote: live remote tests (opt-in; consume vendor quota; each needs its vendor credential: DWAVE_API_TOKEN or FUJITSU_DA_API_KEY)",

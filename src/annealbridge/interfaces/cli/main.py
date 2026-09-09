@@ -245,7 +245,7 @@ def validate(
         False, "--json", help="Print the full ProblemValidationResult as JSON"
     ),
 ) -> None:
-    """Validate an optimization problem without solving it (3a §10)."""
+    """Validate an optimization problem without solving it."""
     problem = _load_problem(problem_file)
     if backend is not None:
         problem = _override_backend(problem, backend)
@@ -308,7 +308,7 @@ def recommend(
         False, "--json", help="Print the full BackendRecommendationResult as JSON"
     ),
 ) -> None:
-    """Rank the backends for a problem without solving it (3a §25).
+    """Rank the backends for a problem without solving it.
 
     Advisory only: ``solve`` still uses solver.backend exactly as given.
     """
@@ -362,7 +362,7 @@ def _render_capabilities_table(backends: list[BackendCapability]) -> str:
 
 @app.command()
 def capabilities() -> None:
-    """List backends with availability, policy status and limits (spec §30)."""
+    """List backends with availability, policy status and limits."""
     state = _build_state()
     caps = build_capabilities(state.registry, state.policy)
     typer.echo(_render_capabilities_table(caps.backends))
@@ -370,7 +370,7 @@ def capabilities() -> None:
 
 @app.command("export-schema")
 def export_schema() -> None:
-    """Print the OptimizationProblem JSON schema (spec §38)."""
+    """Print the OptimizationProblem JSON schema."""
     typer.echo(json.dumps(OptimizationProblem.model_json_schema(), indent=2))
 
 

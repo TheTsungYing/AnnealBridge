@@ -1,21 +1,24 @@
 # Remote live tests — spec §29
 #
-# 注意事項：
-#   * 唯一觸發方式是 workflow_dispatch（手動觸發）。刻意「沒有」push /
-#     pull_request / schedule trigger，因為這個 workflow 會實際連線
-#     D-Wave Leap / Fujitsu DA 並消耗 quota。
-#   * DWAVE_API_TOKEN 與 FUJITSU_DA_API_KEY 從 repository secrets 注入，
-#     且只注入到底下那一個 pytest step（不放在 job 或 workflow 層級），
-#     把 secret 的暴露面縮到最小。
-#   * 尚未建立的 secret（例如沒有 Fujitsu 帳號時的 FUJITSU_DA_API_KEY）GitHub
-#     會注入空字串；tests/remote_live/conftest.py 的 _require_live_opt_in 以
-#     真值判斷，空字串視為未設定而 skip，backend 亦同
-#     （test_fujitsu_da_mock.py::TestIsAvailable::test_empty_key_counts_as_missing），
-#     所以對應的 live 測試只會 skip，不會失敗。
-#   * fork 的 PR 取不到本 repo 的 secrets；而且 workflow_dispatch 本來
-#     就只能由本 repo 有權限的人手動觸發，fork 無法啟動這個 workflow。
-#   * 本檔案刻意不包含任何 printenv / env dump / echo secrets /
-#     debug 環境變數步驟。
+# Notes:
+#   * The only trigger is workflow_dispatch (manual). There is deliberately
+#     NO push / pull_request / schedule trigger, because this workflow really
+#     connects to D-Wave Leap / Fujitsu DA and consumes quota.
+#   * DWAVE_API_TOKEN and FUJITSU_DA_API_KEY come from repository secrets and
+#     are injected into the single pytest step below only (not at job or
+#     workflow level), keeping the secrets' exposure surface minimal.
+#   * A secret that has not been created (FUJITSU_DA_API_KEY without a Fujitsu
+#     account, say) is injected by GitHub as an empty string;
+#     _require_live_opt_in in tests/remote_live/conftest.py tests for
+#     truthiness, so an empty string counts as unset and the test skips. The
+#     backend behaves the same way
+#     (test_fujitsu_da_mock.py::TestIsAvailable::test_empty_key_counts_as_missing),
+#     so the matching live test only skips, it never fails.
+#   * A pull request from a fork cannot read this repository's secrets, and
+#     workflow_dispatch can only be started manually by someone with
+#     permission on this repository, so a fork cannot launch this workflow.
+#   * This file deliberately contains no printenv / env dump / echo secrets /
+#     debug environment step.
 
 name: Remote Live Tests
 
@@ -37,8 +40,9 @@ jobs:
       - name: Install package with all extras
         run: pip install -e ".[all,dev]"
 
-      # -m remote 覆寫 pyproject addopts 的 -m "not remote"，
-      # 讓 remote_live 測試實際執行。憑證只在這一步提供。
+      # -m remote overrides the pyproject addopts -m "not remote" so the
+      # remote_live tests actually run. Credentials are supplied to this
+      # step only.
       - name: Run remote live tests
         run: pytest -m remote tests/remote_live -v
         env:

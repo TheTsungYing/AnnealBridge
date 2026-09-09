@@ -15,5 +15,5 @@ build/
 dwave.conf
 .dwave*
 
-# AI-generated plans and review reports (not versioned)
-docs/
+# AI-generated plans, review reports and internal design specs (not versioned)
+.ai-docs/

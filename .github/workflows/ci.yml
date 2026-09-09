@@ -1,10 +1,12 @@
 # CI — spec §29
 #
-# 普通 push / PR 跑：unit、scenarios、architecture、mcp、remote_mock。
-# remote_live 測試由 pytest addopts (-m "not remote") 預設排除，
-# 因此本 workflow 不會消耗任何廠商 quota，也不需要 DWAVE_API_TOKEN / FUJITSU_DA_API_KEY。
+# An ordinary push / PR runs: unit, scenarios, architecture, mcp, remote_mock.
+# The remote_live tests are deselected by default through the pytest addopts
+# (-m "not remote"), so this workflow consumes no vendor quota and needs
+# neither DWAVE_API_TOKEN nor FUJITSU_DA_API_KEY.
 #
-# 本檔案刻意不包含任何 printenv / env dump / echo secrets / debug 環境變數步驟。
+# This file deliberately contains no printenv / env dump / echo secrets /
+# debug environment step.
 
 name: CI
 
@@ -30,8 +32,8 @@ jobs:
       - name: Install package with all extras
         run: pip install -e ".[all,dev]"
 
-      # 不加 -m：沿用 pyproject 的 addopts = -m "not remote"，
-      # 涵蓋 unit / scenarios / architecture / mcp / remote_mock。
+      # No -m here: the pyproject addopts = -m "not remote" applies, which
+      # covers unit / scenarios / architecture / mcp / remote_mock.
       - name: Run tests
         run: pytest
 
@@ -47,7 +49,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      # 刻意不安裝任何 extra：驗證缺少 mcp / dwave-system 時仍可運作。
+      # Deliberately no extras: proves the package still works without
+      # mcp / dwave-system installed.
       - name: Install package without extras
         run: pip install .
 
