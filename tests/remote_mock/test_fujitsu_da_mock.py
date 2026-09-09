@@ -762,7 +762,8 @@ class TestMalformedResponses:
 
         assert error.code == "REMOTE_SOLVER_ERROR"
         assert "Canceled" in str(error)
-        assert fake.delete_calls == 0
+        # Review F-09: a job that reached a terminal status is deleted too.
+        assert fake.delete_calls == 1
 
 
 class TestPollTimeout:
@@ -815,6 +816,239 @@ class TestPollTimeout:
         expect_failure(monkeypatch, fake, clock=self.stepping_clock())
 
         assert fake.delete_calls == 0
+
+
+class TestFailedJobCleanup:
+    """Code review 2026-09-08 F-09: every failure after the job id is known
+    releases the vendor-side job on a best-effort basis (OVERVIEW principle
+    5: no invisible paid side effect).
+
+    The vendor API makes both calls harmless whatever the job's state:
+    ``POST .../jobs/cancel`` only cancels a *Waiting* job and answers 200
+    with the current status otherwise; ``DELETE .../jobs/result/{id}`` only
+    deletes a *completed* job and answers 200 with the current status
+    otherwise. So a failure whose job state is unknown (the poll itself
+    failed) sends cancel then DELETE, and a failure at a terminal status
+    (``Done`` / ``Error`` / ``Canceled`` / anything else) sends DELETE only.
+    The poll timeout keeps its own cancel-only handling (§20.7 step 4).
+    """
+
+    LOGGER = "annealbridge.solvers.fujitsu_da"
+
+    @staticmethod
+    def calls(fake: FakeDATransport) -> list[tuple[str, str]]:
+        """``(method, last path segment)`` of every request, in order."""
+        return [(r.method, r.url.rsplit("/", 1)[-1]) for r in fake.requests]
+
+    @staticmethod
+    def warnings(caplog) -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+
+    # -- terminal status: DELETE only ---------------------------------------
+
+    def test_done_without_qubo_solution_deletes_the_result(self, monkeypatch):
+        fake = FakeDATransport(
+            poll_statuses=("Done",),
+            result_response=json_response(200, {"status": "Done"}),
+        )
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert "no qubo_solution" in str(error)
+        assert fake.delete_calls == 1
+        assert fake.cancel_calls == 0
+        assert self.calls(fake) == [
+            ("POST", "solve"),
+            ("GET", FAKE_JOB_ID),
+            ("DELETE", FAKE_JOB_ID),
+        ]
+
+    def test_canceled_status_deletes_the_result(self, monkeypatch):
+        fake = FakeDATransport(
+            poll_responses={0: json_response(200, {"status": "Canceled"})}
+        )
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert "Canceled" in str(error)
+        assert fake.delete_calls == 1
+        assert fake.cancel_calls == 0
+        assert self.calls(fake) == [
+            ("POST", "solve"),
+            ("GET", FAKE_JOB_ID),
+            ("DELETE", FAKE_JOB_ID),
+        ]
+
+    def test_error_status_is_deleted_exactly_once(self, monkeypatch):
+        fake = FakeDATransport(poll_statuses=("Error",))
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert fake.delete_calls == 1
+        assert fake.cancel_calls == 0
+
+    # -- unknown state: cancel, then DELETE ---------------------------------
+
+    def test_poll_http_failure_cancels_then_deletes(self, monkeypatch):
+        fake = FakeDATransport(poll_responses={0: (500, b"internal error")})
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert "HTTP 500" in str(error)
+        assert fake.cancel_calls == 1
+        assert fake.delete_calls == 1
+        assert self.calls(fake) == [
+            ("POST", "solve"),
+            ("GET", FAKE_JOB_ID),
+            ("POST", "cancel"),
+            ("DELETE", FAKE_JOB_ID),
+        ]
+        cancel = fake.requests_for("POST", CANCEL_PATH)[0]
+        assert cancel.url == f"{DEFAULT_BASE_URL}{CANCEL_PATH}"
+        assert cancel.json == {"job_id": FAKE_JOB_ID}
+        delete = fake.requests_for("DELETE")[0]
+        assert delete.url == f"{DEFAULT_BASE_URL}{RESULT_PATH}"
+
+    def test_poll_transport_exception_cancels_then_deletes(self, monkeypatch):
+        fake = FakeDATransport(poll_responses={0: OSError("boom")})
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert "OSError" in str(error)
+        assert error.__cause__ is None
+        assert error.__context__ is None
+        assert fake.cancel_calls == 1
+        assert fake.delete_calls == 1
+
+    def test_non_object_payload_cancels_then_deletes(self, monkeypatch):
+        fake = FakeDATransport(poll_responses={0: json_response(200, [1, 2])})
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert "unexpected status None" in str(error)
+        assert fake.cancel_calls == 1
+        assert fake.delete_calls == 1
+
+    # -- the cleanup itself failing ----------------------------------------
+
+    def test_delete_failure_keeps_the_original_error_and_warns(self, monkeypatch, caplog):
+        fake = FakeDATransport(
+            result_response=json_response(200, {"status": "Done"}),
+            delete_response=(500, b"internal error"),
+        )
+
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER):
+            error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert "no qubo_solution" in str(error)
+        assert fake.delete_calls == 1
+        warnings = self.warnings(caplog)
+        assert len(warnings) == 1
+        assert FAKE_JOB_ID in warnings[0]
+        assert "may still occupy a job slot" in warnings[0]
+        assert "HTTP 500" in warnings[0]
+        assert FAKE_KEY not in warnings[0]
+
+    def test_both_cleanup_calls_failing_keeps_the_original_error(
+        self, monkeypatch, caplog
+    ):
+        fake = FakeDATransport(
+            poll_responses={0: (500, b"internal error")},
+            cancel_response=OSError("cancel refused"),
+            delete_response=OSError("delete refused"),
+        )
+
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER):
+            error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert "HTTP 500" in str(error)
+        assert error.__cause__ is None
+        assert fake.cancel_calls == 1
+        assert fake.delete_calls == 1
+        warnings = self.warnings(caplog)
+        assert len(warnings) == 2
+        assert all(FAKE_JOB_ID in text for text in warnings)
+        assert all("may still occupy a job slot" in text for text in warnings)
+        assert "cancel refused" in warnings[0]
+        assert "delete refused" in warnings[1]
+
+    def test_cleanup_response_echoing_the_key_is_masked(self, monkeypatch, caplog):
+        body = ('{"message": "rejected ' + FAKE_KEY + '"}').encode()
+        fake = FakeDATransport(
+            result_response=json_response(200, {"status": "Done"}),
+            delete_response=(500, body),
+        )
+
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER):
+            error = expect_failure(monkeypatch, fake)
+
+        assert FAKE_KEY not in str(error)
+        warnings = self.warnings(caplog)
+        assert len(warnings) == 1
+        assert FAKE_KEY not in warnings[0]
+        assert "***" in warnings[0]
+
+    # -- interrupts -----------------------------------------------------------
+
+    def test_interrupt_during_a_poll_request_still_releases_the_job(self, monkeypatch):
+        fake = FakeDATransport(poll_responses={0: KeyboardInterrupt()})
+
+        with pytest.raises(KeyboardInterrupt):
+            solve(monkeypatch, fake)
+
+        assert fake.cancel_calls == 1
+        assert fake.delete_calls == 1
+
+    def test_interrupt_during_sleep_still_releases_the_job(self, monkeypatch):
+        fake = FakeDATransport(poll_statuses=("Running",))
+        set_key(monkeypatch)
+
+        def interrupted_sleep(_seconds: float) -> None:
+            raise KeyboardInterrupt()
+
+        backend = FujitsuDABackend(
+            transport=fake, sleep=interrupted_sleep, clock=lambda: 0.0
+        )
+        with pytest.raises(KeyboardInterrupt):
+            backend.solve(make_compiled(), make_preferences())
+
+        assert fake.poll_calls == 1
+        assert fake.cancel_calls == 1
+        assert fake.delete_calls == 1
+
+    def test_a_second_interrupt_during_cleanup_is_not_swallowed(self, monkeypatch):
+        fake = FakeDATransport(
+            poll_responses={0: (500, b"internal error")},
+            cancel_response=KeyboardInterrupt(),
+        )
+
+        with pytest.raises(KeyboardInterrupt):
+            solve(monkeypatch, fake)
+
+        assert fake.cancel_calls == 1
+        assert fake.delete_calls == 0
+
+    # -- through the service --------------------------------------------------
+
+    def test_service_status_is_unchanged_by_the_cleanup(self, monkeypatch):
+        fake = FakeDATransport(poll_responses={0: (500, b"internal error")})
+        set_key(monkeypatch)
+        service = make_da_service(fake)
+
+        result = service.solve(make_problem(backend="fujitsu_da"))
+
+        assert result.status == "solver_error"
+        assert result.errors[0].code == "REMOTE_SOLVER_ERROR"
+        assert fake.cancel_calls == 1
+        assert fake.delete_calls == 1
 
 
 class TestServiceStatusMapping:

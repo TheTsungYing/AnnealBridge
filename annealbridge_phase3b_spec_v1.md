@@ -604,6 +604,17 @@ class UrllibTransport:
 6. 轉換：每個 solution → 一列（`configuration["i"]` → 0/1）；**任何一個變數索引在 `configuration` 缺席、或值不是 bool → `REMOTE_SOLVER_ERROR`**（不補 0：替求解器捏造一個位元是偷偷做決定，原則 5）；`energies = energy`（不加 `penalty_energy`：我們沒送 penalty polynomial，DA 回 0）；`frequency` 不展開（§3）。`RawSolverResult(samples=int8)`。
 7. metadata：`sanitize_sampleset_info({"timing": {...}}, backend, remote=True)` 前先把 DA 的 `solve_time` / `total_elapsed_time`（毫秒字串）轉成 µs 浮點；`TIMING_WHITELIST` 加 `solve_time`、`total_elapsed_time`；`solver_id = "fujitsuDA3/v4"`；`num_reads_requested = num_output_solution × num_group`，未給者以 DA 預設（5、1）代入，所以永遠有值；`effective_time_limit_seconds`。
 
+**2026-09-09 review 修正（F-09）：submit 之後的任何失敗都 best-effort 釋放 job。** 原步驟 4 / 5 只在 `Done` 成功後 DELETE、`Error` 後 DELETE、超時後 cancel；其餘終止（`Done` 但無 `qubo_solution`、`Canceled` / 非預期 status、payload 非 dict、輪詢中 HTTP 非 2xx、transport 例外、`KeyboardInterrupt`）直接 raise，job 留在帳號佔用 slot（原則 5：不留下使用者看不見的付費副作用）。修正後 `_await_result` 的所有 raise 出口統一經過一次 best-effort 清理，依「已知多少」決定送什麼（Fujitsu OpenAPI YAML 語意：`POST .../jobs/cancel` 只對 Waiting 的 job 有效、`DELETE .../jobs/result/{id}` 只刪已完成的 job，其餘情況皆回 200 帶目前狀態，是無害 no-op）：
+
+| 出口 | 清理 |
+|---|---|
+| 已讀到終止 status（`Done` 缺 `qubo_solution`、`Error`、`Canceled`、其他非預期字串） | `DELETE` 一次 |
+| 狀態未知（輪詢請求本身失敗：HTTP 非 2xx / transport 例外 / 非 JSON；payload 非 dict；`KeyboardInterrupt` 落在 request 或 sleep） | `POST cancel` 再 `DELETE` |
+| 輪詢超時 | 維持步驟 4 的 cancel-only（不另 DELETE；訊息語意屬 F-23） |
+| `Done` 成功 | 維持步驟 5 由 `solve()` DELETE |
+
+清理失敗只留 WARNING（經 redact，job id 可出現、key 不可），訊息註明「the job may still occupy a job slot on the vendor side」；原本要 raise 的例外與 code 完全不變。`BaseException` 也清理（slot 是付費資源），但清理本身只 catch `Exception`，第二次中斷會直接穿出、不被吞掉。
+
 ### 20.8 例外 → code（`_HTTP_STATUS_CODES` 表 + 訊息比對）
 
 | 情況 | code |
@@ -732,6 +743,7 @@ class UrllibTransport:
 - 上限：`time_limit_seconds=400` 且 policy 300 → `resource_limit_exceeded` / `REMOTE_TIME_LIMIT`，未 clamp；`num_run=2000` → schema 拒絕（pydantic ValidationError，MCP 為 tool error）。
 - 例外 §20.8 每列一個測試（transport 拋 `TimeoutError`、`URLError(reason=TimeoutError())`、`URLError(reason=ConnectionRefusedError())`、`http.client.RemoteDisconnected` 各一）；`BACKEND_CONFIG_INVALID` → `configuration_error`；400 問題層級拒絕 → `solver_error`；`REMOTE_BUSY.retryable is True`。
 - 輪詢超時 → cancel 被呼叫 → `REMOTE_TIMEOUT`。
+- 2026-09-09 F-09（`TestFailedJobCleanup`）：終止 status（`Done` 缺 `qubo_solution` / `Error` / `Canceled`）→ DELETE 恰一次、不 cancel；狀態未知（輪詢 HTTP 500 / transport 例外 / payload 非 dict / `KeyboardInterrupt`）→ cancel 再 DELETE 各一次、請求序列固定；清理失敗（DELETE 500、兩者皆拋例外、body 含 key）→ 原例外與 code 不變、WARNING 含 job id 與「may still occupy a job slot」且無 key；清理中第二次 `KeyboardInterrupt` 穿出、不送 DELETE；經 service 仍 `solver_error`；成功與超時路徑呼叫次數不變。
 - `is_available()` 兩種失敗 category（無 key、http URL）與 available；無網路（transport spy 未被呼叫）。
 - 整數問題經 DA mock：fake 回傳的位元列經 decode 成整數值、在 bounds 內。
 - `allow_remote_retries=False` → 1 attempt + `REMOTE_RETRIES_DISABLED`；`True` → 可到 `1 + max_retries`。

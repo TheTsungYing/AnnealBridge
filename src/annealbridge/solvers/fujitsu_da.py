@@ -447,8 +447,10 @@ class FujitsuDABackend:
         after the job is ``Done`` its result is deleted on a best-effort
         basis (the account has a small number of job slots); a job that
         does not finish within ``time_limit + 60 s`` is cancelled (best
-        effort) and reported as ``REMOTE_TIMEOUT``. Policy ceilings are
-        enforced by the service layer, not here.
+        effort) and reported as ``REMOTE_TIMEOUT``; any other failure after
+        submission releases the job the same best-effort way (F-09, see
+        :meth:`_await_result`). Policy ceilings are enforced by the service
+        layer, not here.
         """
         key, base_url = self._require_settings()
         bqm = compiled_problem.model
@@ -573,56 +575,114 @@ class FujitsuDABackend:
         job_id: str,
         effective_time_limit: float,
     ) -> dict[str, Any]:
-        """Poll ``GET .../jobs/result/{job_id}`` until ``Done`` (spec §20.7 step 4)."""
+        """Poll ``GET .../jobs/result/{job_id}`` until ``Done`` (spec §20.7 step 4).
+
+        Every way out of the loop other than a well-formed ``Done`` releases
+        the vendor-side job on a best-effort basis before re-raising (code
+        review 2026-09-08, F-09): a job left behind occupies one of the
+        account's few slots, a paid side effect the user cannot see
+        (OVERVIEW principle 5). What is sent depends on what is known:
+
+        * a terminal status was read (``Done`` without a usable result,
+          ``Error``, ``Canceled``, anything unexpected) → ``DELETE`` only;
+        * the state is unknown (the poll request itself failed, the payload
+          was unusable, or an interrupt arrived) → ``POST .../jobs/cancel``
+          then ``DELETE``. Both are harmless whatever the job's state: the
+          vendor cancels only a *Waiting* job and deletes only a *completed*
+          one, answering 200 with the current status otherwise;
+        * the polling budget ran out → the cancel of §20.7 step 4 only.
+
+        The cleanup never replaces the error being raised: failures are
+        logged (redacted) by :meth:`_best_effort`, and ``BaseException``
+        (``KeyboardInterrupt``) is released too — a second interrupt during
+        the cleanup request propagates, it is not swallowed.
+        """
         what = f"Fujitsu DA job {job_id} status request failed"
         url = f"{base_url}/v4/async/jobs/result/{job_id}"
         budget = effective_time_limit + POLL_GRACE_SECONDS
         deadline = self._clock() + budget
-        while True:
-            payload = self._request_json(what, "GET", url, headers, None)
-            status = payload.get("status") if isinstance(payload, dict) else None
-            if status == "Done":
-                qubo_solution = payload.get("qubo_solution")
-                if not isinstance(qubo_solution, dict):
+        # What to send if the loop is left by an exception: ``"unknown"`` until a
+        # status has been read, ``"terminal"`` once the job is known to have
+        # stopped, ``None`` when nothing more should be sent (success, or the
+        # timeout path that has already cancelled inline).
+        release: str | None = "unknown"
+        try:
+            while True:
+                payload = self._request_json(what, "GET", url, headers, None)
+                status = payload.get("status") if isinstance(payload, dict) else None
+                if status in ("Waiting", "Running"):
+                    if self._clock() >= deadline:
+                        release = None
+                        self._best_effort(
+                            f"Fujitsu DA job {job_id} could not be cancelled",
+                            "POST",
+                            f"{base_url}/v4/async/jobs/cancel",
+                            headers,
+                            json.dumps({"job_id": job_id}).encode("utf-8"),
+                        )
+                        raise SolverExecutionError(
+                            f"Fujitsu DA job {job_id} did not finish within {budget:g} s "
+                            f"(time_limit_sec {effective_time_limit:g} plus "
+                            f"{POLL_GRACE_SECONDS:g} s grace); a cancel request was sent",
+                            code="REMOTE_TIMEOUT",
+                        )
+                    self._sleep(self._poll_interval)
+                    continue
+                if isinstance(status, str):
+                    release = "terminal"
+                if status == "Done":
+                    qubo_solution = payload.get("qubo_solution")
+                    if isinstance(qubo_solution, dict):
+                        release = None
+                        return qubo_solution
                     raise SolverExecutionError(
                         redact(f"Fujitsu DA job {job_id} is Done but has no qubo_solution"),
                         code=REMOTE_ERROR_FALLBACK_CODE,
                     )
-                return qubo_solution
-            if status == "Error":
-                # The failed job still occupies one of the account's slots.
-                self._best_effort(
-                    f"Fujitsu DA job {job_id} result could not be deleted",
-                    "DELETE",
-                    url,
-                    headers,
-                    None,
-                )
-                message = payload.get("message") or "no message reported"
-                raise SolverExecutionError(
-                    redact(f"Fujitsu DA job {job_id} failed: {message}"),
-                    code=REMOTE_ERROR_FALLBACK_CODE,
-                )
-            if status not in ("Waiting", "Running"):
+                if status == "Error":
+                    message = payload.get("message") or "no message reported"
+                    raise SolverExecutionError(
+                        redact(f"Fujitsu DA job {job_id} failed: {message}"),
+                        code=REMOTE_ERROR_FALLBACK_CODE,
+                    )
                 raise SolverExecutionError(
                     redact(f"Fujitsu DA job {job_id} reported unexpected status {status!r}"),
                     code=REMOTE_ERROR_FALLBACK_CODE,
                 )
-            if self._clock() >= deadline:
-                self._best_effort(
-                    f"Fujitsu DA job {job_id} could not be cancelled",
-                    "POST",
-                    f"{base_url}/v4/async/jobs/cancel",
-                    headers,
-                    json.dumps({"job_id": job_id}).encode("utf-8"),
-                )
-                raise SolverExecutionError(
-                    f"Fujitsu DA job {job_id} did not finish within {budget:g} s "
-                    f"(time_limit_sec {effective_time_limit:g} plus "
-                    f"{POLL_GRACE_SECONDS:g} s grace); a cancel request was sent",
-                    code="REMOTE_TIMEOUT",
-                )
-            self._sleep(self._poll_interval)
+        except BaseException:
+            if release is not None:
+                self._release_failed_job(base_url, headers, job_id, release)
+            raise
+
+    def _release_failed_job(
+        self,
+        base_url: str,
+        headers: Mapping[str, str],
+        job_id: str,
+        release: str,
+    ) -> None:
+        """Best-effort cleanup of a job whose solve failed (F-09; see
+        :meth:`_await_result`). ``release`` is ``"unknown"`` (cancel, then
+        DELETE) or ``"terminal"`` (DELETE only). Failures are only logged, so
+        the caller's exception is raised unchanged; the warnings say the job
+        may still occupy a slot so the user can free it by hand."""
+        if release == "unknown":
+            self._best_effort(
+                f"Fujitsu DA job {job_id} could not be cancelled after the solve "
+                "failed; it may still occupy a job slot on the vendor side",
+                "POST",
+                f"{base_url}/v4/async/jobs/cancel",
+                headers,
+                json.dumps({"job_id": job_id}).encode("utf-8"),
+            )
+        self._best_effort(
+            f"Fujitsu DA job {job_id} result could not be deleted after the solve "
+            "failed; the job may still occupy a job slot on the vendor side",
+            "DELETE",
+            f"{base_url}/v4/async/jobs/result/{job_id}",
+            headers,
+            None,
+        )
 
     def _best_effort(
         self,
