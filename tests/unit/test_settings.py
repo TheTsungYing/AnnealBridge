@@ -1,5 +1,6 @@
 """Unit tests for the environment-driven server settings (Phase 2 spec §9)."""
 
+import logging
 import os
 
 import pytest
@@ -8,6 +9,7 @@ from pydantic import ValidationError
 from pydantic_settings import SettingsError as PydanticSettingsError
 
 from annealbridge.config import ServerSettings, SettingsError, load_settings
+from annealbridge.config.settings import unknown_settings_variables
 from annealbridge.orchestration.policy import ExecutionPolicy
 
 ENV_PREFIX = "ANNEALBRIDGE_"
@@ -286,7 +288,10 @@ class TestLoadSettings:
         assert "Invalid server settings" in message
         assert "ANNEALBRIDGE_MAX_CONCURRENT_SOLVES" in message
         assert "greater than or equal to 1" in message
-        assert "-1" in message
+        # 2026-09-09 review (F-20): the variable is named, the value never
+        # echoed — an operator who typo'd a credential into a settings
+        # variable must not see it come back out on stderr or in a log.
+        assert "-1" not in message
 
     def test_every_invalid_field_is_listed(self, clean_env):
         clean_env.setenv("ANNEALBRIDGE_MAX_CONCURRENT_SOLVES", "0")
@@ -305,6 +310,20 @@ class TestLoadSettings:
         ):
             assert variable in message
 
+    def test_invalid_value_is_not_echoed(self, clean_env):
+        # 2026-09-09 review (F-20): a secret pasted into the wrong variable
+        # is still a rejected value; the report must name the variable only.
+        secret = "DEV-" + "a" * 24
+        clean_env.setenv("ANNEALBRIDGE_MAX_QPU_READS", secret)
+
+        with pytest.raises(SettingsError) as exc_info:
+            load_settings()
+
+        message = str(exc_info.value)
+        assert "ANNEALBRIDGE_MAX_QPU_READS" in message
+        assert secret not in message
+        assert "DEV-" not in message
+
     def test_settings_error_is_a_value_error_without_a_pydantic_chain(self, clean_env):
         clean_env.setenv("ANNEALBRIDGE_EXACT_MAX_VARIABLES", "-5")
 
@@ -313,6 +332,63 @@ class TestLoadSettings:
 
         assert isinstance(exc_info.value, SettingsError)
         assert exc_info.value.__cause__ is None
+
+
+class TestUnknownVariables:
+    """2026-09-09 review (F-20): an ``ANNEALBRIDGE_*`` variable nobody reads.
+
+    pydantic-settings never sees a typo'd name (its env source only looks up
+    the fields it knows), so a misspelt variable is silently ignored and the
+    operator keeps the default while believing the setting took effect. The
+    loader scans the environment itself and warns. It does *not* refuse: a
+    harmless leftover variable must not be able to kill the server. The name
+    is reported, never the value — the variable may well hold a secret.
+    """
+
+    LOGGER = "annealbridge.config.settings"
+
+    @staticmethod
+    def warnings(caplog) -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_unknown_variable_is_warned_about_without_its_value(
+        self, clean_env, caplog
+    ):
+        clean_env.setenv("ANNEALBRIDGE_FOO", "bar-value-xyz")
+
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER):
+            settings = load_settings()
+
+        # Warned about, not rejected: the defaults still load.
+        assert isinstance(settings, ServerSettings)
+        warnings = self.warnings(caplog)
+        assert len(warnings) == 1
+        assert "ANNEALBRIDGE_FOO" in warnings[0]
+        assert "bar-value-xyz" not in caplog.text
+
+    def test_known_variables_alone_warn_about_nothing(self, clean_env, caplog):
+        clean_env.setenv("ANNEALBRIDGE_MAX_QPU_READS", "5")
+
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER):
+            settings = load_settings()
+
+        assert settings.max_qpu_reads == 5
+        assert self.warnings(caplog) == []
+
+    def test_the_scan_is_a_pure_function_over_a_mapping(self):
+        # The scan takes the mapping it is given, so it needs no environment
+        # at all — hence no clean_env here.
+        #
+        # Lookups are case-insensitive, so the lower-case name counts as a
+        # settings variable too — and comes back spelled as the environment
+        # spells it. Anything without the prefix is none of our business.
+        assert unknown_settings_variables(
+            {
+                "annealbridge_foo": "x",
+                "ANNEALBRIDGE_MAX_QPU_READS": "5",
+                "OTHER": "y",
+            }
+        ) == ["annealbridge_foo"]
 
 
 class TestGenericLimits:

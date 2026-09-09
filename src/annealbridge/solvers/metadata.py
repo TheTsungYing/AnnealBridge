@@ -16,17 +16,42 @@ The D-Wave availability / Ocean-config helpers that used to live here are
 in ``solvers.ocean`` — the one module that may lazy-import
 ``dwave.cloud.config``. This module imports no vendor package, lazily or
 otherwise.
+
+Known limits of literal replacement (2026-09-09 review F-19)
+------------------------------------------------------------
+:func:`redact` masks a credential by replacing its *live value* literally,
+plus the declared header / value patterns. That has edges an operator
+should know:
+
+* A candidate value is stripped of surrounding whitespace first (a trailing
+  newline from a ``.env`` file must not disable the mask), and a value
+  shorter than :data:`MIN_LITERAL_SECRET_LENGTH` is not replaced literally
+  at all — replacing ``"1"`` everywhere would turn ``"12 samples"`` into
+  ``"***2 samples"``. Such a value is only masked by the patterns.
+* Besides the verbatim value, its JSON-escaped and URL-encoded forms are
+  masked. Any other transformation — base64, a key split across lines by
+  the sender, a key a vendor truncates inside its own error body — is out
+  of reach of literal replacement. Those cases are covered upstream: the
+  key is only ever sent as a header, never in a URL or body; a response
+  body is redacted *before* it is summarised or cut to length; and the
+  guarded call drops the original exception so no unredacted text survives
+  in a traceback.
+* Header and protocol patterns are case-insensitive; a backend's
+  ``value_patterns`` are applied exactly as declared.
 """
 
+import json
 import os
 import re
-from typing import Callable, TypeVar
+import urllib.parse
+from typing import Callable, Iterable, TypeVar
 
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models.capabilities import CredentialDeclaration
 from annealbridge.models.metadata import SolverExecutionMetadata
 
 __all__ = [
+    "MIN_LITERAL_SECRET_LENGTH",
     "REMOTE_ERROR_FALLBACK_CODE",
     "classify_exception",
     "credential_env_vars",
@@ -41,6 +66,12 @@ _T = TypeVar("_T")
 
 # Catalog code for a remote failure no classification table names.
 REMOTE_ERROR_FALLBACK_CODE = "REMOTE_SOLVER_ERROR"
+
+# A live credential value shorter than this (after stripping) is not
+# replaced literally — see the module docstring. Real API tokens are far
+# longer; the threshold only guards against a mis-set variable shredding
+# every number in a message.
+MIN_LITERAL_SECRET_LENGTH = 8
 
 # Spec §17: the only timing keys that may leave the solver layer.
 #
@@ -71,8 +102,8 @@ TIMING_WHITELIST = frozenset(
 # header. They are the only patterns this module owns; every vendor-shaped
 # pattern comes from a backend's declaration.
 _FALLBACK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"token=[^\s&]+"), "token=***"),
-    (re.compile(r"Authorization: [^\n]+"), "Authorization: ***"),
+    (re.compile(r"token=[^\s&]+", re.IGNORECASE), "token=***"),
+    (re.compile(r"Authorization:[ \t]*[^\n]+", re.IGNORECASE), "Authorization: ***"),
 ]
 
 
@@ -88,10 +119,17 @@ class _CompiledDeclaration:
             patterns.append((re.compile(source), "***"))
         for header in declaration.header_names:
             escaped = re.escape(header)
-            # ``X-Name: value`` line form and JSON ``"X-Name": "value"`` form.
-            patterns.append((re.compile(rf"{escaped}: [^\n]+"), f"{header}: ***"))
+            # ``X-Name: value`` line form and JSON ``"X-Name": "value"`` form,
+            # both case-insensitive (HTTP header names are; a proxy or the
+            # vendor may echo them lower-cased).
             patterns.append(
-                (re.compile(rf'"{escaped}":\s*"[^"]*"'), f'"{header}": "***"')
+                (re.compile(rf"{escaped}:[ \t]*[^\n]+", re.IGNORECASE), f"{header}: ***")
+            )
+            patterns.append(
+                (
+                    re.compile(rf'"{escaped}":\s*"[^"]*"', re.IGNORECASE),
+                    f'"{header}": "***"',
+                )
             )
         self.patterns = tuple(patterns)
 
@@ -101,7 +139,7 @@ class _CompiledDeclaration:
 # its own) replaces rather than accumulates. They are unions across every
 # registry ever built in this process: over-masking is always safe.
 _DECLARATIONS: dict[str, _CompiledDeclaration] = {}
-_SECRET_SOURCES: dict[str, Callable[[], str | None]] = {}
+_SECRET_SOURCES: dict[str, Callable[[], "str | Iterable[str] | None"]] = {}
 
 
 def declare_credentials(backend_name: str, declaration: CredentialDeclaration) -> None:
@@ -114,11 +152,16 @@ def declare_credentials(backend_name: str, declaration: CredentialDeclaration) -
     _DECLARATIONS[backend_name] = _CompiledDeclaration(declaration)
 
 
-def register_secret_source(name: str, source: Callable[[], str | None]) -> None:
-    """Register a live provider of one secret value that is not an env var.
+def register_secret_source(
+    name: str, source: Callable[[], "str | Iterable[str] | None"]
+) -> None:
+    """Register a live provider of secret values that are not env vars.
 
     ``source`` is called on every :func:`redact` and must never raise; it
-    returns the current value or None. Idempotent per ``name``.
+    returns the current value, an iterable of values (a config file with
+    several profiles) or None. Whether it re-reads its backing store on
+    every call or caches by that store's fingerprint is the source's own
+    business. Idempotent per ``name``.
     """
     _SECRET_SOURCES[name] = source
 
@@ -175,24 +218,54 @@ def sanitize_sampleset_info(info: dict, backend: str) -> SolverExecutionMetadata
     )
 
 
-def _live_secrets() -> list[str]:
-    """Current non-empty values of every declared env var and secret source.
+def _literal_forms(secret: str) -> list[str]:
+    """The strings to replace for one candidate value, or none.
 
-    Read live on every call — never cached — so tests and runtime config
-    changes are honoured (Phase 2 §19).
+    Stripped of surrounding whitespace, dropped below
+    :data:`MIN_LITERAL_SECRET_LENGTH`, and joined by the JSON-escaped and
+    URL-encoded spellings when they differ (a key holding ``/`` or ``"``
+    looks different inside a JSON body or a query string).
     """
-    values: list[str] = []
+    secret = secret.strip()
+    if len(secret) < MIN_LITERAL_SECRET_LENGTH:
+        return []
+    forms = [secret]
+    for variant in (json.dumps(secret)[1:-1], urllib.parse.quote(secret, safe="")):
+        if variant not in forms:
+            forms.append(variant)
+    return forms
+
+
+def _live_secrets() -> list[str]:
+    """Current values of every declared env var and secret source, expanded
+    by :func:`_literal_forms`.
+
+    The env vars are read live on every call — never cached — so tests and
+    runtime config changes are honoured (Phase 2 §19); a secret source
+    decides its own caching.
+    """
+    candidates: list[str] = []
     for name in credential_env_vars():
         value = os.environ.get(name)
-        if isinstance(value, str) and value:
-            values.append(value)
+        if isinstance(value, str):
+            candidates.append(value)
     for source in _SECRET_SOURCES.values():
         try:
             value = source()
         except Exception:
             value = None
-        if isinstance(value, str) and value:
-            values.append(value)
+        if isinstance(value, str):
+            candidates.append(value)
+        elif value is not None:
+            try:
+                candidates.extend(item for item in value if isinstance(item, str))
+            except TypeError:
+                pass
+    values: list[str] = []
+    for candidate in candidates:
+        for form in _literal_forms(candidate):
+            if form not in values:
+                values.append(form)
     return values
 
 
@@ -214,16 +287,26 @@ def classify_exception(exc: Exception, codes: dict[str, str]) -> str:
     return REMOTE_ERROR_FALLBACK_CODE
 
 
-def redact(text: str) -> str:
+def redact(text: object) -> str:
     """Mask credential material in ``text`` (spec §19).
 
     Every string headed for a SolveError, log line or metadata field must
     pass through here before leaving the solver layer. Candidate secrets —
     the live value of every declared credential env var and of every
     registered secret source — are resolved on every call and replaced
-    literally; then every declared value / header pattern and the two
-    protocol-level fallbacks are applied.
+    literally (see the module docstring for the edges of that); then every
+    declared value / header pattern and the two protocol-level fallbacks
+    are applied.
+
+    Defensive on its input: ``None`` becomes ``""`` and any other non-string
+    is rendered with ``str()`` first, so a caller that hands over an
+    exception object or a vendor payload never gets a ``TypeError`` in
+    place of a masked message.
     """
+    if text is None:
+        return ""
+    if not isinstance(text, str):
+        text = str(text)
     for secret in _live_secrets():
         text = text.replace(secret, "***")
     for compiled in _DECLARATIONS.values():

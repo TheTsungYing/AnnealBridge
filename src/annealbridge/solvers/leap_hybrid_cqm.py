@@ -100,9 +100,11 @@ class LeapHybridCQMBackend:
 
     ``sampler_factory`` is the single test seam: production uses the default
     (a real ``LeapHybridCQMSampler``), tests inject a fake. The sampler is
-    built lazily on first use and cached for the lifetime of the backend
-    instance (construction fetches solver metadata and starts worker
-    threads); a failed construction is never cached.
+    built lazily on first use and cached while the credential sources are
+    unchanged (construction fetches solver metadata and starts worker
+    threads); a rotated token or edited Ocean config, or an authentication
+    failure, makes the next solve rebuild it (review F-21); a failed
+    construction is never cached.
 
     ``num_reads`` / ``num_sweeps`` / ``seed`` / ``penalty_multiplier`` are
     meaningless for the hybrid CQM solver and are never forwarded; only
@@ -185,6 +187,7 @@ class LeapHybridCQMBackend:
             "Leap hybrid CQM solve failed",
             HYBRID_SAMPLE_EXCEPTION_CODES,
             lambda: resolved(sampler.sample_cqm(cqm, time_limit=effective_time_limit)),
+            holder=self._sampler,
         )
 
         bounds = {

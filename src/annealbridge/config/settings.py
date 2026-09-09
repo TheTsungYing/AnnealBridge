@@ -5,6 +5,9 @@ package (spec §4). D-Wave credentials deliberately stay out of these
 settings — Ocean's native config handles them (spec §18).
 """
 
+import logging
+import os
+from collections.abc import Mapping
 from typing import Annotated
 
 from pydantic import Field, ValidationError, field_validator
@@ -13,12 +16,17 @@ from pydantic_settings import SettingsError as PydanticSettingsError
 
 from annealbridge.orchestration.policy import ExecutionPolicy, validate_limits
 
+logger = logging.getLogger(__name__)
+
 
 class SettingsError(ValueError):
     """The environment holds an invalid ``ANNEALBRIDGE_*`` value.
 
     The message is already formatted for an operator (one line per field),
-    so an entry point can print it verbatim to stderr and exit.
+    so an entry point can print it verbatim to stderr and exit. It names
+    the variable and pydantic's reason but never echoes the value
+    (2026-09-09 review F-20): a credential mis-set into an ``ANNEALBRIDGE_*``
+    variable must not be printed back by the very message that rejects it.
     """
 
 
@@ -94,6 +102,27 @@ class ServerSettings(BaseSettings):
         )
 
 
+def unknown_settings_variables(environ: Mapping[str, str] = os.environ) -> list[str]:
+    """Names in ``environ`` that carry the ``ANNEALBRIDGE_`` prefix but match
+    no :class:`ServerSettings` field, sorted.
+
+    pydantic-settings only ever *looks up* the fields it knows, so a typo
+    such as ``ANNEALBRIDGE_MAX_QPU_READ`` is silently ignored and the default
+    applies (``extra="forbid"`` does not catch env vars); this scan is what
+    makes the mistake visible. Prefix and suffix are compared
+    case-insensitively, as the settings lookup itself is. Only names are
+    returned — never values.
+    """
+    prefix = str(ServerSettings.model_config["env_prefix"]).upper()
+    known = {name.upper() for name in ServerSettings.model_fields}
+    unknown = [
+        name
+        for name in environ
+        if name.upper().startswith(prefix) and name.upper()[len(prefix) :] not in known
+    ]
+    return sorted(unknown)
+
+
 def load_settings() -> ServerSettings:
     """Read :class:`ServerSettings` from the environment.
 
@@ -102,15 +131,32 @@ def load_settings() -> ServerSettings:
     A value that cannot even be parsed (an ``ANNEALBRIDGE_LIMITS`` that is
     not JSON) surfaces from pydantic-settings as its own ``SettingsError``
     — a ``ValueError`` without ``.errors()`` — and is converted the same way.
+    Neither message echoes the offending value (review F-20).
+
+    An unknown ``ANNEALBRIDGE_*`` variable is not an error — the process
+    starts with the default for whatever the operator meant — but it is
+    logged as a WARNING naming the variable, so a misspelt ceiling does not
+    silently stay at its default.
     """
     try:
-        return ServerSettings()
+        settings = ServerSettings()
     except ValidationError as exc:
-        lines = [f"Invalid server settings ({exc.error_count()} error(s)):"]
+        lines = [
+            f"Invalid server settings ({exc.error_count()} error(s)); "
+            "values are not echoed:"
+        ]
         for error in exc.errors():
             field = ".".join(str(part) for part in error["loc"])
             variable = f"{ServerSettings.model_config['env_prefix']}{field}".upper()
-            lines.append(f"  {variable}: {error['msg']} (got {error['input']!r})")
+            lines.append(f"  {variable}: {error['msg']}")
         raise SettingsError("\n".join(lines)) from None
     except PydanticSettingsError as exc:
         raise SettingsError(f"Invalid server settings: {exc}") from None
+    unknown = unknown_settings_variables()
+    if unknown:
+        logger.warning(
+            "Ignoring unknown ANNEALBRIDGE_* variable(s): %s (values not shown); "
+            "the corresponding defaults stay in effect",
+            ", ".join(unknown),
+        )
+    return settings

@@ -129,9 +129,11 @@ class DWaveQPUBackend:
 
     ``sampler_factory`` is the single test seam: production uses the default
     (``EmbeddingComposite(DWaveSampler())``), tests inject a fake. The
-    sampler is built lazily on first use and cached for the lifetime of the
-    backend instance (``DWaveSampler()`` fetches the whole working graph
-    and starts worker threads); a failed construction is never cached.
+    sampler is built lazily on first use and cached while the credential
+    sources are unchanged (``DWaveSampler()`` fetches the whole working
+    graph and starts worker threads); a rotated token or edited Ocean
+    config, or an authentication failure, makes the next solve rebuild it
+    (review F-21); a failed construction is never cached.
 
     Chain strength is the user-provided option or Ocean's default — never
     derived from the compiled hard penalty (spec §15.1). Chain breaks are
@@ -206,6 +208,7 @@ class DWaveQPUBackend:
             "D-Wave QPU solve failed",
             _SAMPLE_EXCEPTION_CODES,
             lambda: resolved(sampler.sample(bqm, **sample_kwargs)),
+            holder=self._sampler,
         )
 
         variables, samples, energies = sampleset_to_arrays(sampleset)

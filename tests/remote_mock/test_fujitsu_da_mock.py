@@ -620,6 +620,31 @@ class TestTransportExceptionClassification:
         assert FAKE_KEY not in str(error)
         assert FAKE_KEY not in "".join(traceback.format_exception(error))
 
+    @pytest.mark.parametrize(
+        ("submit_response", "warns"),
+        [
+            (TimeoutError("read timed out"), True),
+            (urllib.error.URLError(TimeoutError("connect timed out")), True),
+            (OSError("boom"), False),
+        ],
+        ids=["timeout", "url-timeout", "oserror"],
+    )
+    def test_submit_timeout_warns_about_an_orphaned_job(
+        self, monkeypatch, submit_response, warns
+    ):
+        # 2026-09-09 review (F-23): a submit that times out is the one failure
+        # the backend cannot clean up after — the vendor may well have created
+        # the job, but no job_id came back, so nothing can be cancelled or
+        # deleted. The operator is told to look at the account's job list.
+        # A submit that failed outright (no request got through) leaves
+        # nothing behind, so it must not raise that alarm.
+        fake = FakeDATransport(submit_response=submit_response)
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert ("may have created the job" in str(error)) is warns
+        assert FAKE_KEY not in str(error)
+
     def test_poll_exception_is_classified_too(self, monkeypatch):
         fake = FakeDATransport(poll_responses={0: TimeoutError("gone quiet")})
 
@@ -767,20 +792,37 @@ class TestMalformedResponses:
 
 
 class TestPollTimeout:
-    """§20.7: a job that never finishes is cancelled and reported."""
+    """§20.7: a job that never finishes is cancelled, deleted and reported.
+
+    2026-09-09 review (F-23): the deadline is now checked twice per round —
+    once *before* sending the GET and once more after a Waiting/Running
+    answer — so a job whose budget is already spent costs no further vendor
+    request. The clock is therefore a scripted sequence rather than a
+    monotonic step: which reading lands on which check is the behaviour
+    under test.
+    """
 
     def make_fake(self, **kwargs) -> FakeDATransport:
         return FakeDATransport(poll_statuses=("Running",), **kwargs)
 
-    def stepping_clock(self):
-        """A clock that jumps 100 s per call, so the deadline is hit at once."""
-        state = {"now": 0.0}
+    def make_clock(self, readings: list[float]):
+        """A clock handing out ``readings`` in order; the last one repeats."""
+        remaining = list(readings)
 
         def clock() -> float:
-            state["now"] += 100.0
-            return state["now"]
+            return remaining.pop(0) if len(remaining) > 1 else remaining[0]
 
         return clock
+
+    def stepping_clock(self):
+        """One poll, then the timeout.
+
+        0.0 is read when the deadline is computed (budget 70 s: the default
+        10 s ``time_limit_sec`` plus the 60 s grace), 40.0 by the pre-GET
+        check (inside the budget, so the GET goes out) and 120.0 by the
+        post-GET check (past it).
+        """
+        return self.make_clock([0.0, 40.0, 120.0])
 
     def test_timeout_cancels_the_job(self, monkeypatch):
         fake = self.make_fake()
@@ -788,6 +830,7 @@ class TestPollTimeout:
         error = expect_failure(monkeypatch, fake, clock=self.stepping_clock())
 
         assert error.code == "REMOTE_TIMEOUT"
+        assert fake.poll_calls == 1
         assert fake.cancel_calls == 1
         cancels = fake.requests_for("POST", CANCEL_PATH)
         assert len(cancels) == 1
@@ -799,7 +842,11 @@ class TestPollTimeout:
 
         error = expect_failure(monkeypatch, fake, clock=self.stepping_clock())
 
+        assert fake.poll_calls == 1
         assert "70" in str(error)
+        # F-23: the per-request timeout is part of the real worst case, so
+        # the operator is told about it in the same sentence.
+        assert "30" in str(error)
         assert FAKE_KEY not in str(error)
 
     def test_cancel_failure_does_not_hide_the_timeout(self, monkeypatch):
@@ -808,14 +855,40 @@ class TestPollTimeout:
         error = expect_failure(monkeypatch, fake, clock=self.stepping_clock())
 
         assert error.code == "REMOTE_TIMEOUT"
+        assert fake.poll_calls == 1
         assert fake.cancel_calls == 1
 
-    def test_no_result_is_deleted_on_timeout(self, monkeypatch):
+    def test_timeout_cancels_then_deletes(self, monkeypatch):
+        # F-23: a timed-out job's state is unknown — it may still be Waiting
+        # (cancellable) or may have finished while we gave up (deletable), so
+        # the timeout releases it exactly like the "unknown state" exits of
+        # F-09 do: cancel first, then DELETE, both best-effort.
         fake = self.make_fake()
 
         expect_failure(monkeypatch, fake, clock=self.stepping_clock())
 
-        assert fake.delete_calls == 0
+        assert fake.poll_calls == 1
+        assert fake.cancel_calls == 1
+        assert fake.delete_calls == 1
+        methods = [(r.method, r.url.rsplit("/", 1)[-1]) for r in fake.requests]
+        assert methods.index(("POST", "cancel")) < methods.index(
+            ("DELETE", FAKE_JOB_ID)
+        )
+
+    def test_deadline_before_first_poll_skips_the_get(self, monkeypatch):
+        # F-23: 100 s is already past the 70 s budget when the loop starts,
+        # so not even one status request is spent before giving up.
+        fake = self.make_fake()
+
+        error = expect_failure(
+            monkeypatch, fake, clock=self.make_clock([0.0, 100.0])
+        )
+
+        assert error.code == "REMOTE_TIMEOUT"
+        assert fake.poll_calls == 0
+        assert fake.requests_for("GET", RESULT_PATH) == []
+        assert fake.cancel_calls == 1
+        assert fake.delete_calls == 1
 
 
 class TestFailedJobCleanup:
@@ -830,7 +903,8 @@ class TestFailedJobCleanup:
     otherwise. So a failure whose job state is unknown (the poll itself
     failed) sends cancel then DELETE, and a failure at a terminal status
     (``Done`` / ``Error`` / ``Canceled`` / anything else) sends DELETE only.
-    The poll timeout keeps its own cancel-only handling (§20.7 step 4).
+    The poll timeout is an unknown-state exit too and sends both since the
+    2026-09-09 review (F-23); see :class:`TestPollTimeout`.
     """
 
     LOGGER = "annealbridge.solvers.fujitsu_da"

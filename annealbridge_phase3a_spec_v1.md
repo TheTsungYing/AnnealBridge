@@ -945,6 +945,8 @@ async def recommend_backend(problem: OptimizationProblem) -> BackendRecommendati
     return state.service.recommend(problem)
 ```
 
+**2026-09-09 review F-15 修正**：實作改為 `return await anyio.to_thread.run_sync(state.service.recommend, problem)`（`validate_optimization_problem` 同），與 `solve_optimization` 一致；同步跑在 event loop 上的 recommend 對大問題會凍住整個 server 對其他 client 的回應。
+
 `tools/list` 變成四個 tool；`solve_optimization` docstring 補一句「Use recommend_backend to compare backends; the choice remains yours.」
 
 ---

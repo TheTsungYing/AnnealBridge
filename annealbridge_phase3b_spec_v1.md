@@ -608,7 +608,7 @@ class UrllibTransport:
 1. `bqm = compiled.model`；變數索引：依 `bqm.variables` 順序 0..n-1（`index_of: dict[str, int]`）。
 2. 請求 body：`fujitsuDA3 = {"time_limit_sec": int(effective)}` + 使用者給的 `num_run` / `num_group` / `num_output_solution`；`binary_polynomial.terms`：每個 linear bias `{"coefficient": h_i, "polynomials": [i]}`、每個 quadratic `{"coefficient": J_ij, "polynomials": [i, j]}`、offset `{"coefficient": offset, "polynomials": []}`（offset 為 0 也送，讓 energy 可比對）。**不送** `penalty_binary_polynomial`、`inequalities`、one-hot、`guidance_config`、`fixed_config`；**不送**問題名稱或任何業務字串。
 3. `POST {url}/v4/async/qubo/solve`，headers `X-Api-Key`、`Content-Type: application/json`、`Accept: application/json`；timeout `request_timeout_seconds`。
-4. 輪詢 `GET .../jobs/result/{job_id}`：間隔 `poll_interval_seconds`，總等待上限 `effective_time_limit + 60`；`status` 為 `Done` → 取結果；`Error` → `REMOTE_SOLVER_ERROR`（訊息含 `message`，經 redact）；超時 → 嘗試 `POST .../jobs/cancel`（best effort，失敗只 log）後 `REMOTE_TIMEOUT`。
+4. 輪詢 `GET .../jobs/result/{job_id}`：間隔 `poll_interval_seconds`，總等待上限 `effective_time_limit + 60`；`status` 為 `Done` → 取結果；`Error` → `REMOTE_SOLVER_ERROR`（訊息含 `message`，經 redact）；超時 → 嘗試 `POST .../jobs/cancel`（best effort，失敗只 log）後 `REMOTE_TIMEOUT`。（**2026-09-09 review F-23**：deadline 在每次 GET 前後各檢查一次——GET 前已逾時就不再發請求；超時後改為 cancel 再 DELETE（皆 best-effort）；實際最壞總等待為 `effective_time_limit + 60` 再加 submit、最後一次 GET、cancel、DELETE 各至多一個 `request_timeout_seconds`；`urllib` 的 timeout 是每個 socket 操作的逾時，單次 GET 若對端持續慢速回應可超過該值，屬已知限制。）
 5. 取得結果後 `DELETE .../jobs/result/{job_id}`（best effort；失敗 log warning，不影響結果）——帳號的 job 位子有限。
 6. 轉換：每個 solution → 一列（`configuration["i"]` → 0/1）；**任何一個變數索引在 `configuration` 缺席、或值不是 bool → `REMOTE_SOLVER_ERROR`**（不補 0：替求解器捏造一個位元是偷偷做決定，原則 5）；`energies = energy`（不加 `penalty_energy`：我們沒送 penalty polynomial，DA 回 0）；`frequency` 不展開（§3）。`RawSolverResult(samples=int8)`。
 7. metadata：`sanitize_sampleset_info({"timing": {...}}, backend, remote=True)` 前先把 DA 的 `solve_time` / `total_elapsed_time`（毫秒字串）轉成 µs 浮點；`TIMING_WHITELIST` 加 `solve_time`、`total_elapsed_time`；`solver_id = "fujitsuDA3/v4"`；`num_reads_requested = num_output_solution × num_group`，未給者以 DA 預設（5、1）代入，所以永遠有值；`effective_time_limit_seconds`。
@@ -619,7 +619,7 @@ class UrllibTransport:
 |---|---|
 | 已讀到終止 status（`Done` 缺 `qubo_solution`、`Error`、`Canceled`、其他非預期字串） | `DELETE` 一次 |
 | 狀態未知（輪詢請求本身失敗：HTTP 非 2xx / transport 例外 / 非 JSON；payload 非 dict；`KeyboardInterrupt` 落在 request 或 sleep） | `POST cancel` 再 `DELETE` |
-| 輪詢超時 | 維持步驟 4 的 cancel-only（不另 DELETE；訊息語意屬 F-23） |
+| 輪詢超時 | cancel 再 DELETE（2026-09-09 review F-23 修正，與「狀態未知」列一致） |
 | `Done` 成功 | 維持步驟 5 由 `solve()` DELETE |
 
 清理失敗只留 WARNING（經 redact，job id 可出現、key 不可），訊息註明「the job may still occupy a job slot on the vendor side」；原本要 raise 的例外與 code 完全不變。`BaseException` 也清理（slot 是付費資源），但清理本身只 catch `Exception`，第二次中斷會直接穿出、不被吞掉。
@@ -757,7 +757,7 @@ class UrllibTransport:
 - 轉換：`configuration` → int8 列、順序保留；缺索引 / 非 bool 值 → `solver_error` / `REMOTE_SOLVER_ERROR`；`energies == energy`；`frequency` 不展開；metadata `solve_time` / `total_elapsed_time`（µs）、`solver_id`、`effective_time_limit_seconds`。
 - 上限：`time_limit_seconds=400` 且 policy 300 → `resource_limit_exceeded` / `REMOTE_TIME_LIMIT`，未 clamp；`num_run=2000` → schema 拒絕（pydantic ValidationError，MCP 為 tool error）。
 - 例外 §20.8 每列一個測試（transport 拋 `TimeoutError`、`URLError(reason=TimeoutError())`、`URLError(reason=ConnectionRefusedError())`、`http.client.RemoteDisconnected` 各一）；`BACKEND_CONFIG_INVALID` → `configuration_error`；400 問題層級拒絕 → `solver_error`；`REMOTE_BUSY.retryable is True`。
-- 輪詢超時 → cancel 被呼叫 → `REMOTE_TIMEOUT`。
+- 輪詢超時 → cancel 被呼叫 → `REMOTE_TIMEOUT`（**2026-09-09 review F-23**：deadline 在每次 GET 前後各檢查一次，序列 clock 驗證「GET 前已逾時就不發 GET」；超時後 cancel 再 DELETE 各一次、cancel 在前；訊息含 budget 70 與 request timeout 30，不含 key）。
 - 2026-09-09 F-09（`TestFailedJobCleanup`）：終止 status（`Done` 缺 `qubo_solution` / `Error` / `Canceled`）→ DELETE 恰一次、不 cancel；狀態未知（輪詢 HTTP 500 / transport 例外 / payload 非 dict / `KeyboardInterrupt`）→ cancel 再 DELETE 各一次、請求序列固定；清理失敗（DELETE 500、兩者皆拋例外、body 含 key）→ 原例外與 code 不變、WARNING 含 job id 與「may still occupy a job slot」且無 key；清理中第二次 `KeyboardInterrupt` 穿出、不送 DELETE；經 service 仍 `solver_error`；成功與超時路徑呼叫次數不變。
 - `is_available()` 兩種失敗 category（無 key、http URL）與 available；無網路（transport spy 未被呼叫）。
 - 整數問題經 DA mock：fake 回傳的位元列經 decode 成整數值、在 bounds 內。

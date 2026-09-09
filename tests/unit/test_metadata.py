@@ -12,6 +12,9 @@ source lives in ``tests/unit/test_ocean_config.py``.
 All tokens in this file are synthetic test values, never real credentials.
 """
 
+import json
+import urllib.parse
+
 import pytest
 
 from annealbridge.exceptions import SolverExecutionError
@@ -304,6 +307,136 @@ class TestRedact:
         text = f"auth failed for {FAKE_SHAPED_TOKEN}"
 
         assert redact(text) == text
+
+
+class TestDefenceInDepth:
+    """2026-09-09 review F-19: the sharp edges of literal masking.
+
+    Literal replacement can only mask what it can *recognise*. Four cheap
+    hardening steps close the gaps a real deployment hits: a credential
+    read from a file keeps its trailing newline; a short value (``"1"``)
+    would otherwise turn every number in a message into ``***``; headers
+    arrive lower-cased from real HTTP clients; and a value embedded in a
+    JSON body or a URL is escaped, so the raw bytes never appear.
+
+    All values here are synthetic; none is a real credential.
+    """
+
+    # 7 characters: below MIN_LITERAL_SECRET_LENGTH, so only patterns apply.
+    SHORT_VALUE = "abcdefg"
+    # 8 characters: exactly at the threshold, so it is masked literally.
+    THRESHOLD_VALUE = "abcdefgh"
+
+    def test_surrounding_whitespace_is_stripped_from_the_candidate(
+        self, fake_vendor, monkeypatch
+    ) -> None:
+        """A key read from a file keeps its newline; the value in the
+        message does not, so the raw candidate would never match."""
+        monkeypatch.setenv(FAKE_VENDOR_ENV, " " + FAKE_ENV_VALUE + "\n")
+
+        assert redact("rejected " + FAKE_ENV_VALUE) == "rejected ***"
+
+    def test_a_very_short_value_is_never_replaced_literally(
+        self, fake_vendor, monkeypatch
+    ) -> None:
+        """``FAKE_VENDOR_API_KEY=1`` must not turn every digit into ``***``."""
+        monkeypatch.setenv(FAKE_VENDOR_ENV, "1")
+        text = "job 12 finished with 10 samples in 1.5 s"
+
+        assert redact(text) == text
+
+    def test_a_value_below_the_threshold_survives(
+        self, fake_vendor, monkeypatch
+    ) -> None:
+        monkeypatch.setenv(FAKE_VENDOR_ENV, self.SHORT_VALUE)
+        text = f"k={self.SHORT_VALUE}"
+
+        assert redact(text) == text
+
+    def test_a_value_at_the_threshold_is_masked(
+        self, fake_vendor, monkeypatch
+    ) -> None:
+        monkeypatch.setenv(FAKE_VENDOR_ENV, self.THRESHOLD_VALUE)
+
+        assert redact(f"k={self.THRESHOLD_VALUE}") == "k=***"
+
+    def test_a_lower_cased_header_line_is_masked(self, fake_vendor) -> None:
+        """HTTP header names are case-insensitive; clients lower-case them."""
+        redacted = redact(f"{FAKE_VENDOR_HEADER.lower()}: abc123secret")
+
+        assert "abc123secret" not in redacted
+        assert redacted == f"{FAKE_VENDOR_HEADER}: ***"
+
+    def test_a_lower_cased_header_in_json_is_masked(self, fake_vendor) -> None:
+        redacted = redact(f'{{"{FAKE_VENDOR_HEADER.lower()}": "abc123secret"}}')
+
+        assert "abc123secret" not in redacted
+        assert redacted == f'{{"{FAKE_VENDOR_HEADER}": "***"}}'
+
+    def test_a_header_line_without_a_space_is_masked(self, fake_vendor) -> None:
+        redacted = redact(f"{FAKE_VENDOR_HEADER}:abc123secret")
+
+        assert "abc123secret" not in redacted
+        assert redacted == f"{FAKE_VENDOR_HEADER}: ***"
+
+    def test_the_token_fallback_is_case_insensitive(self, no_declarations) -> None:
+        redacted = redact("GET /solve?TOKEN=abc123secret")
+
+        assert "abc123secret" not in redacted
+        assert "token=***" in redacted
+
+    def test_the_authorization_fallback_is_case_insensitive(
+        self, no_declarations
+    ) -> None:
+        redacted = redact("authorization: Bearer abc.def")
+
+        assert "abc.def" not in redacted
+        assert "Authorization: ***" in redacted
+
+    def test_none_redacts_to_the_empty_string(self, fake_vendor) -> None:
+        """Callers pass exception ``args`` straight in; ``None`` must not raise."""
+        assert redact(None) == ""
+
+    def test_a_non_string_is_stringified_before_masking(self, fake_vendor) -> None:
+        assert redact(123) == "123"
+
+    def test_a_json_escaped_value_is_masked(self, fake_vendor, monkeypatch) -> None:
+        """A key with a quote in it is escaped inside a JSON body, so the
+        raw value never appears there."""
+        value = 'fake/secret"key-987654'
+        monkeypatch.setenv(FAKE_VENDOR_ENV, value)
+        body = json.dumps({"k": value})
+
+        # Proof the plain candidate cannot match: JSON escaped the quote.
+        assert value not in body
+
+        redacted = redact(body)
+
+        assert "secret" not in redacted
+        assert "***" in redacted
+
+    def test_a_url_encoded_value_is_masked(self, fake_vendor, monkeypatch) -> None:
+        value = 'fake/secret"key-987654'
+        monkeypatch.setenv(FAKE_VENDOR_ENV, value)
+        encoded = urllib.parse.quote(value, safe="")
+
+        assert value not in encoded
+
+        redacted = redact(encoded)
+
+        assert "secret" not in redacted
+        assert "***" in redacted
+
+    def test_a_secret_source_may_return_several_values(self, fake_vendor) -> None:
+        """One source, several live credentials (e.g. every token in a
+        config file) — all of them are masked."""
+        register_secret_source(
+            "multi", lambda: ["list-secret-one-1", "list-secret-two-2"]
+        )
+
+        redacted = redact("a=list-secret-one-1 b=list-secret-two-2")
+
+        assert redacted == "a=*** b=***"
 
 
 class TestDeclarationTable:

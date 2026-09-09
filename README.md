@@ -779,6 +779,14 @@ variable — `variables`, `reads`, `annealing_time_us`, `time_seconds`,
 `local_reads`, `sweeps`, `local_retries`, `remote_retries` and `top_k` are
 rejected, and have to be configured through their own variables.
 
+An `ANNEALBRIDGE_*` variable that is *not* in the table — a typo, or a
+leftover from an older release — is ignored: the setting keeps its default
+and the server logs one `WARNING` naming the variable at startup, so a
+misspelt name cannot silently look like it took effect. It is not a fatal
+error, so a harmless leftover cannot stop the server from starting. A
+variable whose *value* is invalid is still fatal, and that message names the
+variable only — values are never echoed back, in case one holds a secret.
+
 Vendor credentials are deliberately **not** `ANNEALBRIDGE_*` settings:
 
 | Variable              | Default                                    | Meaning                                              |
@@ -827,6 +835,19 @@ model.
   declaring its credential environment variables and header names in
   `SolverCapabilities.credentials`; the shared redaction knows no vendor, so
   a new backend is protected without touching the solver layer.
+  Redaction works by literal replacement of each live credential value
+  (stripped of surrounding whitespace, and also in its JSON-escaped and
+  URL-encoded forms) plus case-insensitive header and `token=` /
+  `Authorization:` patterns. Know its edges: a value shorter than 8
+  characters is masked only by the patterns (replacing `1` everywhere would
+  shred every number in a message); any other transformation of a key —
+  base64, a key split across lines by the sender, a key a vendor truncates
+  inside its own error body — cannot be matched literally. Those cases are
+  closed upstream instead: keys travel only in request headers, response
+  bodies are redacted *before* they are summarised or cut to length, and the
+  original exception is dropped so no unredacted text survives in a
+  traceback. The D-Wave config-file token is re-read only when the config
+  file or its selector variables change, not on every log line.
 - **The Fujitsu key is handled the same way.** `FUJITSU_DA_API_KEY` is read
   from the environment inside the backend only; it is never written to a log
   line, metadata, an error message, an exception chain, or a URL query
@@ -837,6 +858,17 @@ model.
   every case against `fujitsu_da` as well as the D-Wave backends. The request
   body carries only variable indices and coefficients — no problem name,
   description, or any other business string.
+- **Fujitsu polling has a hard budget.** A submitted job is polled for at
+  most `time_limit_sec + 60` seconds; past that the backend stops waiting,
+  sends a best-effort cancel and then a best-effort delete so the job does
+  not keep occupying one of the account's slots, and returns
+  `REMOTE_TIMEOUT`. Each individual HTTP request carries its own
+  `request_timeout_seconds` (30 s by default), so the real worst case is the
+  polling budget plus up to 30 s each for the submit, the last status
+  request, the cancel and the delete. The one job that cannot be released is
+  a submit that times out: the vendor may have created it, but no `job_id`
+  ever reached us, so the error says so and asks the operator to check the
+  account's job list.
 
 ## Examples
 

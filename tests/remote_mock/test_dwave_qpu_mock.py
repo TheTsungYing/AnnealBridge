@@ -37,6 +37,7 @@ from annealbridge.solvers.ocean import (
 from tests.remote_mock.conftest import (
     FAKE_EMBEDDING_CONTEXT,
     FAKE_TOKEN,
+    FAKE_UNPATTERNED_TOKEN,
     ConfigFileError,
     CountingFactory,
     EmbeddingError,
@@ -623,6 +624,48 @@ class TestSamplerCaching:
         DWaveQPUBackend(sampler_factory=factory).solve(compiled, make_preferences())
 
         assert factory.calls == 2
+
+    def test_rotated_token_rebuilds_the_sampler(self, monkeypatch):
+        """2026-09-09 review F-21: the cache is keyed on the credential
+        fingerprint, so a rotated ``DWAVE_API_TOKEN`` is picked up on the
+        next solve instead of living on in a client built from the old
+        one. Both values are synthetic."""
+        monkeypatch.setenv(ocean_module.TOKEN_ENV, FAKE_UNPATTERNED_TOKEN)
+        factory = CountingFactory(FakeQPUSampler())
+        backend = DWaveQPUBackend(sampler_factory=factory)
+        compiled = make_compiled_problem()
+
+        backend.solve(compiled, make_preferences())
+
+        assert factory.calls == 1
+
+        monkeypatch.setenv(
+            ocean_module.TOKEN_ENV, "DEV-FAKE-TOKEN-ROTATED-0987654321zyxwv"
+        )
+        backend.solve(compiled, make_preferences())
+
+        assert factory.calls == 2
+
+    def test_auth_failure_at_sampling_invalidates_the_cache(self):
+        """F-21: the cloud rejecting the client is the one signal a local
+        fingerprint cannot see, so the cached sampler is dropped there."""
+        sampler = FakeQPUSampler(
+            raise_on_sample=SolverAuthenticationError(f"denied, token={FAKE_TOKEN}")
+        )
+        factory = CountingFactory(sampler)
+        backend = DWaveQPUBackend(sampler_factory=factory)
+        compiled = make_compiled_problem()
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(compiled, make_preferences())
+        assert exc_info.value.code == "REMOTE_AUTH_FAILED"
+        assert factory.calls == 1
+
+        sampler.raise_on_sample = None
+        result = backend.solve(compiled, make_preferences())
+
+        assert factory.calls == 2
+        assert result.backend == "dwave_qpu"
 
 
 class TestResolveTimeLimit:

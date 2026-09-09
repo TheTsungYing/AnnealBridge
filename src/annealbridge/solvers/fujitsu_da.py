@@ -373,6 +373,21 @@ class FujitsuDABackend:
     waiting. Nothing is cached between calls: credentials are re-read from
     the environment on every ``is_available()`` / ``solve()``.
 
+    Time bounds (spec §20.7; 2026-09-09 review F-23). The *polling budget*
+    is ``time_limit_sec + POLL_GRACE_SECONDS``, checked before every status
+    request and again after one that reports the job still queued or
+    running. On top of it every single HTTP request may take up to
+    ``request_timeout_seconds``, so the worst-case wall time of one solve
+    is the budget plus that timeout for the submit, the last status
+    request, the cancel and the delete — with the defaults, 70 s becomes
+    at most about 190 s for a 10 s job. Two limits of that bound are
+    inherent to ``urllib``: its timeout applies per socket operation, so a
+    remote that keeps trickling bytes can hold a single request longer
+    than the timeout (the deadline can only be checked between requests);
+    and a submit that times out may already have created the job on the
+    vendor side without a ``job_id`` ever reaching this process, so it
+    cannot be released here — the error says so.
+
     ``num_reads`` / ``num_sweeps`` / ``seed`` are meaningless here and are
     never forwarded; only the ``fujitsu_da`` option block is.
     """
@@ -455,11 +470,11 @@ class FujitsuDABackend:
         submitted ``time_limit_sec`` is exactly :meth:`resolve_time_limit`;
         after the job is ``Done`` its result is deleted on a best-effort
         basis (the account has a small number of job slots); a job that
-        does not finish within ``time_limit + 60 s`` is cancelled (best
-        effort) and reported as ``REMOTE_TIMEOUT``; any other failure after
-        submission releases the job the same best-effort way (F-09, see
-        :meth:`_await_result`). Policy ceilings are enforced by the service
-        layer, not here.
+        does not finish within the ``time_limit + 60 s`` polling budget is
+        cancelled and deleted (best effort) and reported as
+        ``REMOTE_TIMEOUT``; any other failure after submission releases the
+        job the same best-effort way (F-09, see :meth:`_await_result`).
+        Policy ceilings are enforced by the service layer, not here.
         """
         key, base_url = self._require_settings()
         bqm = compiled_problem.model
@@ -564,10 +579,34 @@ class FujitsuDABackend:
         raise error
 
     def _submit(self, base_url: str, headers: Mapping[str, str], body: bytes) -> str:
+        """``POST .../qubo/solve`` → ``job_id`` (spec §20.7 step 3).
+
+        A submit that times out is the one failure this backend cannot
+        clean up after (review F-23): the request may have reached the
+        vendor and created the job, but without a ``job_id`` there is
+        nothing to cancel or delete, so the error tells the operator to
+        check the account's job list. The rebuilt error is raised outside
+        the ``except`` block for the same no-chain reason as
+        :func:`guarded_call`.
+        """
         what = "Fujitsu DA job submission failed"
-        payload = self._request_json(
-            what, "POST", f"{base_url}/v4/async/qubo/solve", headers, body
-        )
+        orphan_hint: SolverExecutionError | None = None
+        try:
+            payload = self._request_json(
+                what, "POST", f"{base_url}/v4/async/qubo/solve", headers, body
+            )
+        except SolverExecutionError as error:
+            if error.code != "REMOTE_TIMEOUT":
+                raise
+            orphan_hint = SolverExecutionError(
+                f"{error}; the vendor may have created the job anyway, but no job_id "
+                "was received so it cannot be released from here - check the "
+                "account's job list",
+                code=error.code,
+                status=error.status,
+            )
+        if orphan_hint is not None:
+            raise orphan_hint
         job_id = payload.get("job_id") if isinstance(payload, dict) else None
         if not isinstance(job_id, str) or not job_id:
             raise SolverExecutionError(
@@ -599,7 +638,16 @@ class FujitsuDABackend:
           then ``DELETE``. Both are harmless whatever the job's state: the
           vendor cancels only a *Waiting* job and deletes only a *completed*
           one, answering 200 with the current status otherwise;
-        * the polling budget ran out → the cancel of §20.7 step 4 only.
+        * the polling budget ran out → the same cancel-then-DELETE (review
+          F-23): a job already *Running* ignores the cancel and finishes
+          on its own, and only the DELETE keeps its result from occupying
+          a slot until someone removes it by hand.
+
+        The budget (``effective_time_limit + POLL_GRACE_SECONDS``) is
+        checked *before* every status request as well as after one that
+        reports ``Waiting`` / ``Running``, so a request is never started
+        once the budget is spent; a request already in flight is bounded
+        only by the transport timeout (see the class docstring).
 
         The cleanup never replaces the error being raised: failures are
         logged (redacted) by :meth:`_best_effort`, and ``BaseException``
@@ -611,30 +659,32 @@ class FujitsuDABackend:
         budget = effective_time_limit + POLL_GRACE_SECONDS
         deadline = self._clock() + budget
         # What to send if the loop is left by an exception: ``"unknown"`` until a
-        # status has been read, ``"terminal"`` once the job is known to have
-        # stopped, ``None`` when nothing more should be sent (success, or the
-        # timeout path that has already cancelled inline).
+        # terminal status has been read (a timeout therefore cancels *and*
+        # deletes, review F-23), ``"terminal"`` once the job is known to have
+        # stopped, ``None`` when nothing more should be sent (success).
         release: str | None = "unknown"
+
+        def timed_out() -> SolverExecutionError:
+            # Raised with ``release == "unknown"`` so the except block below
+            # cancels and deletes; the message states the real bound.
+            return SolverExecutionError(
+                f"Fujitsu DA job {job_id} did not finish within the {budget:g} s "
+                f"polling budget (time_limit_sec {effective_time_limit:g} plus "
+                f"{POLL_GRACE_SECONDS:g} s grace; each HTTP request may add up to "
+                f"{self._request_timeout:g} s); cancel and delete requests are sent "
+                "on a best-effort basis",
+                code="REMOTE_TIMEOUT",
+            )
+
         try:
             while True:
+                if self._clock() >= deadline:
+                    raise timed_out()
                 payload = self._request_json(what, "GET", url, headers, None)
                 status = payload.get("status") if isinstance(payload, dict) else None
                 if status in ("Waiting", "Running"):
                     if self._clock() >= deadline:
-                        release = None
-                        self._best_effort(
-                            f"Fujitsu DA job {job_id} could not be cancelled",
-                            "POST",
-                            f"{base_url}/v4/async/jobs/cancel",
-                            headers,
-                            json.dumps({"job_id": job_id}).encode("utf-8"),
-                        )
-                        raise SolverExecutionError(
-                            f"Fujitsu DA job {job_id} did not finish within {budget:g} s "
-                            f"(time_limit_sec {effective_time_limit:g} plus "
-                            f"{POLL_GRACE_SECONDS:g} s grace); a cancel request was sent",
-                            code="REMOTE_TIMEOUT",
-                        )
+                        raise timed_out()
                     self._sleep(self._poll_interval)
                     continue
                 if isinstance(status, str):

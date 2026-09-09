@@ -469,6 +469,28 @@ class TestSamplerCaching:
 
         assert factory.calls == 2
 
+    def test_auth_failure_at_sampling_invalidates_the_cache(self):
+        """2026-09-09 review F-21: a rejected client is known-bad, so the
+        guard that classifies ``REMOTE_AUTH_FAILED`` also drops the cached
+        sampler; the next solve builds a fresh one."""
+        sampler = FakeLeapHybridSampler(
+            raise_on_sample=SolverAuthenticationError(f"denied, token={FAKE_TOKEN}")
+        )
+        factory = CountingFactory(sampler)
+        backend = LeapHybridBQMBackend(sampler_factory=factory)
+        compiled = make_compiled_problem()
+
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(compiled, make_preferences(None))
+        assert exc_info.value.code == "REMOTE_AUTH_FAILED"
+        assert factory.calls == 1
+
+        sampler.raise_on_sample = None
+        result = backend.solve(compiled, make_preferences(None))
+
+        assert factory.calls == 2
+        assert result.backend == "leap_hybrid_bqm"
+
 
 class TestResolveTimeLimit:
     """Spec §16/§20: the service must be able to learn the effective time

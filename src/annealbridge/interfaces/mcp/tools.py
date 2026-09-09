@@ -3,6 +3,12 @@
 Each tool is a thin adapter: fetch the wired-up state, call into the core, and
 return the core's Pydantic model so the SDK derives the structured output from
 the return type annotation. No optimization logic here.
+
+Every core call that does real work (validate, recommend, solve) runs in a
+worker thread through ``anyio.to_thread.run_sync`` (2026-09-09 review F-15):
+they are synchronous and CPU-bound, and a large problem — ``recommend`` runs
+the full validation once per registered backend — would otherwise freeze the
+event loop and with it every other client of the server.
 """
 
 import anyio
@@ -59,7 +65,7 @@ async def validate_optimization_problem(
     lower_bound..upper_bound range costs more compiled variables. On a cqm
     backend integer variables are native and no encoding bits are counted.
     """
-    return get_state().service.validate(problem)
+    return await anyio.to_thread.run_sync(get_state().service.validate, problem)
 
 
 @mcp.tool()
@@ -80,7 +86,7 @@ async def recommend_backend(problem: OptimizationProblem) -> BackendRecommendati
     encoding also raises an INTEGER_QUADRATIC_BLOWUP warning — a backend carrying
     that code is ranked after the ones without it.
     """
-    return get_state().service.recommend(problem)
+    return await anyio.to_thread.run_sync(get_state().service.recommend, problem)
 
 
 @mcp.tool()

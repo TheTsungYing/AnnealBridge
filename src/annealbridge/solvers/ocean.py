@@ -12,6 +12,16 @@ shared redaction mask D-Wave material. They live here once instead of once
 per backend — and only here: since review F-10 the shared solver layer
 (``solvers.metadata``) knows no vendor at all.
 
+Two things are cached here, both keyed by a *fingerprint of the credential
+sources* (2026-09-09 review F-19 / F-21): the env token value plus the
+path, mtime and size of every Ocean config file. The config-file secrets
+handed to the redaction are re-read only when that fingerprint changes
+(``redact()`` runs on every log line, so re-parsing the config each time
+was needless I/O), and a :class:`LazySampler` rebuilds its sampler when
+the fingerprint changes, so a rotated credential is picked up without a
+process restart. ``is_available()`` is *not* cached: it re-reads the
+environment on every call, as its docstring promises.
+
 This module must import cleanly without any D-Wave package installed:
 ``dwave.cloud.config`` is only touched lazily inside
 :func:`_resolve_ocean_config` (the single architecture-boundary exemption),
@@ -22,9 +32,11 @@ factories (spec §4).
 
 import importlib.util
 import os
+import re
 import threading
-from typing import Any, Callable, Literal, TypeVar
+from typing import Any, Callable, Hashable, Literal, TypeVar
 
+from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models.capabilities import AvailabilityStatus, CredentialDeclaration
 from annealbridge.solvers.metadata import (
     classify_exception,
@@ -42,6 +54,7 @@ __all__ = [
     "TOKEN_ENV",
     "LazySampler",
     "call_ocean",
+    "credential_fingerprint",
     "dwave_availability",
     "dwave_system_installed",
     "ocean_config_status",
@@ -77,6 +90,19 @@ REASON_CREDENTIALS_MISSING = "D-Wave credentials not configured"
 REASON_CONFIG_INVALID = "D-Wave configuration invalid"
 
 OceanConfigStatus = Literal["ok", "missing", "invalid"]
+
+# Environment variables Ocean's ``load_config()`` honours for *which* config
+# is active; part of the fingerprint because changing either changes the
+# token without touching any file.
+_CONFIG_SELECTOR_ENVS = ("DWAVE_CONFIG_FILE", "DWAVE_PROFILE")
+
+# ``token = value`` line of an Ocean config file (INI syntax), used only
+# when the file cannot be parsed by Ocean itself.
+_TOKEN_LINE = re.compile(r"\s*token\s*=\s*(\S+)")
+
+# Single-entry cache: {fingerprint: config-file secrets}. Module-level so
+# tests can swap it out; a race between two threads merely recomputes.
+_CONFIG_SECRET_CACHE: dict[tuple, tuple[str, ...]] = {}
 
 
 def _env_token() -> str | None:
@@ -139,20 +165,121 @@ def ocean_config_status() -> OceanConfigStatus:
 def ocean_config_token() -> str | None:
     """The token from the Ocean config *file*, read live; None when absent.
 
-    This is the D-Wave backends' secret source for the shared redaction:
-    a config-file token is never in the environment, so the env-var
-    candidate cannot mask it.
+    A config-file token is never in the environment, so the env-var
+    candidate cannot mask it; :func:`_ocean_config_secrets` (the cached
+    secret source behind the shared redaction) builds on the same read.
     """
     return _resolve_ocean_config()[1]
 
 
+def _ocean_config_paths() -> list[str] | None:
+    """The Ocean config files that exist right now, or None when unknown.
+
+    Uses ``dwave.cloud.config.get_configfile_paths`` (lazy import, same
+    boundary exemption as :func:`_resolve_ocean_config`). None means the
+    helper is unavailable — dwave-cloud-client not installed, or too old
+    to have it — in which case nothing can be fingerprinted or scanned.
+    """
+    try:
+        from dwave.cloud.config import get_configfile_paths
+    except Exception:
+        return None
+    try:
+        return [str(path) for path in get_configfile_paths()]
+    except Exception:
+        return None
+
+
+def _config_fingerprint() -> tuple | None:
+    """What the active Ocean configuration depends on, as a hashable value.
+
+    The selector env vars and, per existing config file, its path, mtime
+    and size. Equal fingerprints mean ``load_config()`` would return the
+    same thing; None means it cannot be told (see :func:`_ocean_config_paths`).
+    """
+    paths = _ocean_config_paths()
+    if paths is None:
+        return None
+    stats: list[tuple[str, int | None, int | None]] = []
+    for path in paths:
+        try:
+            stat = os.stat(path)
+            stats.append((path, stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            stats.append((path, None, None))
+    selectors = tuple(os.environ.get(name) for name in _CONFIG_SELECTOR_ENVS)
+    return (selectors, tuple(stats))
+
+
+def _raw_config_tokens(paths: list[str]) -> tuple[str, ...]:
+    """Every ``token = …`` value found by scanning ``paths`` line by line.
+
+    The fallback for a config file Ocean cannot parse (``"invalid"``): the
+    token is still in that file and must still be masked. Unreadable files
+    are skipped; nothing here can raise.
+    """
+    tokens: list[str] = []
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    match = _TOKEN_LINE.match(line)
+                    if match:
+                        token = match.group(1).strip("\"'")
+                        if token and token not in tokens:
+                            tokens.append(token)
+        except OSError:
+            continue
+    return tuple(tokens)
+
+
+def _compute_config_secrets(paths: list[str] | None) -> tuple[str, ...]:
+    status, token = _resolve_ocean_config()
+    if status == "invalid":
+        return _raw_config_tokens(paths or [])
+    return (token,) if token else ()
+
+
+def _ocean_config_secrets() -> tuple[str, ...]:
+    """The D-Wave secret source for the shared redaction (F-19).
+
+    Config-file tokens, cached by :func:`_config_fingerprint`: the files are
+    re-read only when a file or a selector env var changed. Without a
+    fingerprint (helper unavailable) every call reads live, exactly as
+    before the cache existed. Never raises.
+    """
+    fingerprint = _config_fingerprint()
+    if fingerprint is None:
+        return _compute_config_secrets(None)
+    secrets = _CONFIG_SECRET_CACHE.get(fingerprint)
+    if secrets is None:
+        secrets = _compute_config_secrets([entry[0] for entry in fingerprint[1]])
+        _CONFIG_SECRET_CACHE.clear()
+        _CONFIG_SECRET_CACHE[fingerprint] = secrets
+    return secrets
+
+
 def register_ocean_config_token() -> None:
-    """Contribute the Ocean config-file token to the shared redaction.
+    """Contribute the Ocean config-file token(s) to the shared redaction.
 
     Every D-Wave backend calls this from its constructor; the registration
-    is idempotent, so three backends registering is the same as one.
+    is idempotent, so three backends registering is the same as one. The
+    source is :func:`_ocean_config_secrets`, which caches by config
+    fingerprint; :func:`ocean_config_token` itself stays a live read.
     """
-    register_secret_source("ocean_config", ocean_config_token)
+    register_secret_source("ocean_config", _ocean_config_secrets)
+
+
+def credential_fingerprint() -> Hashable:
+    """The state of every D-Wave credential source, for cache keys (F-21).
+
+    The env token's value and :func:`_config_fingerprint`. A
+    :class:`LazySampler` built under one fingerprint is rebuilt when the
+    next ``get()`` sees another, which is how a rotated token or edited
+    config file reaches a long-running process. Cheap: two env reads and
+    one ``stat`` per config file.
+    """
+    return (_env_token(), _config_fingerprint())
 
 
 def dwave_system_installed() -> bool:
@@ -219,7 +346,13 @@ HYBRID_SAMPLE_EXCEPTION_CODES: dict[str, str] = {
 }
 
 
-def call_ocean(what: str, codes: dict[str, str], fn: Callable[[], _T]) -> _T:
+def call_ocean(
+    what: str,
+    codes: dict[str, str],
+    fn: Callable[[], _T],
+    *,
+    holder: "LazySampler | None" = None,
+) -> _T:
     """Run ``fn`` and convert any Ocean failure into a redacted SolverExecutionError.
 
     Thin wrapper over the vendor-neutral
@@ -228,8 +361,19 @@ def call_ocean(what: str, codes: dict[str, str], fn: Callable[[], _T]) -> _T:
     name through ``codes`` (see :func:`classify_exception`). The wrapped
     error carries neither ``__cause__`` nor ``__context__``, so credential
     material in the original exception text cannot leak (Phase 2 §19).
+
+    ``holder`` is the backend's :class:`LazySampler` when ``fn`` uses the
+    cached sampler: a failure classified ``REMOTE_AUTH_FAILED`` invalidates
+    it (review F-21), so the next solve builds a fresh sampler from the
+    current credentials instead of reusing one whose token was revoked.
+    The error is re-raised unchanged.
     """
-    return guarded_call(what, lambda exc: classify_exception(exc, codes), fn)
+    try:
+        return guarded_call(what, lambda exc: classify_exception(exc, codes), fn)
+    except SolverExecutionError as error:
+        if holder is not None and error.code == "REMOTE_AUTH_FAILED":
+            holder.invalidate()
+        raise
 
 
 def resolved(sampleset: Any) -> Any:
@@ -245,7 +389,7 @@ def resolved(sampleset: Any) -> Any:
 
 
 class LazySampler:
-    """A sampler built on first use and cached for the owner's lifetime.
+    """A sampler built on first use and cached while its credentials stand.
 
     ``factory`` is the backend's single test seam (production passes
     ``None`` and gets ``default_factory``, which lazy-imports
@@ -254,25 +398,48 @@ class LazySampler:
     solve (or per retry) would be wasteful. Only a *successful*
     construction is cached: a transient failure never poisons the backend.
 
-    Raw factory exceptions propagate from :meth:`get`; callers wrap the
-    call in :func:`call_ocean` with :data:`SAMPLER_INIT_EXCEPTION_CODES`.
+    The cache is keyed by ``fingerprint()`` — by default
+    :func:`credential_fingerprint`, the env token plus the Ocean config
+    files' path / mtime / size (review F-21). A sampler built under one
+    fingerprint is discarded and rebuilt when :meth:`get` sees another,
+    so a rotated or revoked-then-replaced credential takes effect without
+    a restart, matching ``is_available()`` which re-reads the environment
+    every time. :meth:`invalidate` drops the cache explicitly; the
+    :func:`call_ocean` ``holder`` hook uses it after ``REMOTE_AUTH_FAILED``.
+
+    Construction happens inside the lock, so concurrent first callers
+    share one build. Raw factory exceptions propagate from :meth:`get`;
+    callers wrap the call in :func:`call_ocean` with
+    :data:`SAMPLER_INIT_EXCEPTION_CODES`.
     """
 
     def __init__(
         self,
         factory: Callable[[], Any] | None,
         default_factory: Callable[[], Any],
+        *,
+        fingerprint: Callable[[], Hashable] | None = None,
     ) -> None:
         self._factory = factory or default_factory
+        self._fingerprint = fingerprint or credential_fingerprint
         self._sampler: Any | None = None
+        self._built_for: Hashable = None
         self._lock = threading.Lock()
 
     def get(self) -> Any:
-        """Return the cached sampler, building it on first use."""
+        """Return the cached sampler, (re)building it when the fingerprint moved."""
         with self._lock:
-            if self._sampler is None:
+            current = self._fingerprint()
+            if self._sampler is None or current != self._built_for:
+                self._sampler = None
                 self._sampler = self._factory()
+                self._built_for = current
             return self._sampler
+
+    def invalidate(self) -> None:
+        """Forget the cached sampler; the next :meth:`get` builds a new one."""
+        with self._lock:
+            self._sampler = None
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +488,7 @@ def resolve_hybrid_time_limit(
         f"{label} minimum time limit could not be determined",
         HYBRID_SAMPLE_EXCEPTION_CODES,
         lambda: float(sampler.min_time_limit(model)),
+        holder=holder,
     )
     if user_time_limit is None:
         return min_time_limit
