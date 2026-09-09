@@ -162,7 +162,26 @@ class TestEnvToken:
 
 class TestConfigTokenReachesTheSharedRedaction:
     """A config-file token is in no environment variable, so the backend
-    registers it as a live secret source when it is constructed."""
+    registers it as a live secret source when it is constructed.
+
+    These tests patch ``_resolve_ocean_config`` directly, which bypasses
+    the config fingerprint that ``_ocean_config_secrets()`` caches on, so
+    each one starts from an empty cache (see the fixture below).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_config_secret_cache(self, monkeypatch):
+        """Swap ``_CONFIG_SECRET_CACHE`` for an empty dict per test.
+
+        With dwave-cloud-client installed ``_config_fingerprint()`` is a
+        real value, so a secret tuple cached by an earlier test (in this
+        file or another) under the same fingerprint would be returned
+        instead of the patched ``_resolve_ocean_config`` result — the
+        tests then pass alone but fail inside the whole ``tests/unit``
+        run. Without dwave-cloud-client nothing is cached and the swap is
+        a no-op. monkeypatch restores the module dict afterwards.
+        """
+        monkeypatch.setattr(ocean_module, "_CONFIG_SECRET_CACHE", {})
 
     def test_token_is_masked_once_a_dwave_backend_exists(self, monkeypatch) -> None:
         from annealbridge.solvers.dwave_qpu import DWaveQPUBackend

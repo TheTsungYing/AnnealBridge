@@ -4,9 +4,9 @@ Everything goes through :meth:`OptimizationService.solve`; no internal
 helper is called directly. Real D-Wave is never touched: fake samplers are
 injected through each backend's ``sampler_factory`` seam, and availability
 is forced by patching the ``dwave_availability`` name each backend module
-imports from ``solvers.ocean`` (the ``dwave`` extra is not installed in
-mock CI, so the real ``is_available()`` would report
-``REASON_NOT_INSTALLED``). Patching per module keeps the two backends
+imports from ``solvers.ocean`` (the real ``is_available()`` reports the
+backend unusable whether or not the ``dwave`` extra is installed: no
+package, or no credentials). Patching per module keeps the two backends
 independently controllable.
 """
 
@@ -205,12 +205,13 @@ class TestRemoteDisabledByPolicy:
         assert fake.sample_bqm is None
 
     def test_no_availability_patching_is_required(self):
-        # The gate fires even though the real is_available() would report
-        # "dwave-system not installed": REMOTE_DISABLED wins because it is
-        # checked first.
-        assert DWaveQPUBackend().is_available() == AvailabilityStatus(
-            category="not_installed", detail=REASON_NOT_INSTALLED
-        )
+        # The gate fires even though the real is_available() reports the
+        # backend unusable: "dwave-system not installed" in the mock venv,
+        # or "credentials missing" once the dwave extra is installed (the
+        # conftest clears DWAVE_API_TOKEN). REMOTE_DISABLED wins because
+        # it is checked first.
+        real = DWaveQPUBackend().is_available()
+        assert real.category in {"not_installed", "credentials_missing"}, real
 
         result = make_qpu_service(FakeQPUSampler(assignments=BEST), allow_remote=False).solve(
             make_problem()
