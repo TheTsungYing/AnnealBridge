@@ -3,7 +3,10 @@
 import pytest
 
 from annealbridge.models import OptimizationProblem
-from annealbridge.validation import EPSILON, validate_solution
+from annealbridge.validation import tolerance, validate_solution
+
+# At magnitude 1 the hybrid tolerance is exactly the absolute floor, 1e-8.
+TOL_AT_ONE = tolerance(1.0, 1.0)
 
 
 def make_problem(constraints: list[dict]) -> OptimizationProblem:
@@ -138,39 +141,42 @@ class TestSoftViolation:
 
 
 class TestTolerance:
-    """§23.1: EPSILON = 1e-8 on each operator's boundary."""
+    """§23.1 hybrid tolerance on each operator's boundary: at magnitude 1 the
+    relative part is far below the absolute floor, so ``TOL_AT_ONE`` is
+    exactly 1e-8 and these boundaries are the ones the original absolute
+    rule drew."""
 
     def test_eq_within_epsilon_satisfied(self):
-        problem = make_problem([hard("==", 1 + 0.5 * EPSILON, {"x1": 1})])
+        problem = make_problem([hard("==", 1 + 0.5 * TOL_AT_ONE, {"x1": 1})])
         result = validate_solution(problem, {"x1": 1, "x2": 0, "x3": 0})
         assert result.feasible is True
         assert result.evaluations[0].violation_amount == 0.0
 
     def test_eq_beyond_epsilon_violated(self):
-        problem = make_problem([hard("==", 1 + 3 * EPSILON, {"x1": 1})])
+        problem = make_problem([hard("==", 1 + 3 * TOL_AT_ONE, {"x1": 1})])
         result = validate_solution(problem, {"x1": 1, "x2": 0, "x3": 0})
         assert result.feasible is False
-        assert result.evaluations[0].violation_amount == pytest.approx(3 * EPSILON)
+        assert result.evaluations[0].violation_amount == pytest.approx(3 * TOL_AT_ONE)
 
     def test_le_within_epsilon_satisfied(self):
-        problem = make_problem([hard("<=", 1 - 0.5 * EPSILON, {"x1": 1})])
+        problem = make_problem([hard("<=", 1 - 0.5 * TOL_AT_ONE, {"x1": 1})])
         result = validate_solution(problem, {"x1": 1, "x2": 0, "x3": 0})
         assert result.feasible is True
         assert result.evaluations[0].violation_amount == 0.0
 
     def test_le_beyond_epsilon_violated(self):
-        problem = make_problem([hard("<=", 1 - 3 * EPSILON, {"x1": 1})])
+        problem = make_problem([hard("<=", 1 - 3 * TOL_AT_ONE, {"x1": 1})])
         result = validate_solution(problem, {"x1": 1, "x2": 0, "x3": 0})
         assert result.feasible is False
 
     def test_ge_within_epsilon_satisfied(self):
-        problem = make_problem([hard(">=", 1 + 0.5 * EPSILON, {"x1": 1})])
+        problem = make_problem([hard(">=", 1 + 0.5 * TOL_AT_ONE, {"x1": 1})])
         result = validate_solution(problem, {"x1": 1, "x2": 0, "x3": 0})
         assert result.feasible is True
         assert result.evaluations[0].violation_amount == 0.0
 
     def test_ge_beyond_epsilon_violated(self):
-        problem = make_problem([hard(">=", 1 + 3 * EPSILON, {"x1": 1})])
+        problem = make_problem([hard(">=", 1 + 3 * TOL_AT_ONE, {"x1": 1})])
         result = validate_solution(problem, {"x1": 1, "x2": 0, "x3": 0})
         assert result.feasible is False
 
@@ -202,3 +208,63 @@ class TestPurity:
         validate_solution(problem, sample)
         assert problem == snapshot
         assert sample == {"x1": 1, "x2": 1, "x3": 0}
+
+
+class TestHybridToleranceLargeScale:
+    """Review F-05 (2026-09-09): the tolerance grows with the magnitude of the
+    numbers being compared, so an assignment that satisfies ``==`` exactly in
+    real arithmetic is not rejected for float accumulation error."""
+
+    def test_exact_equality_at_1e9_is_feasible(self):
+        # 1e9 + 0.1 + 0.2 accumulates to 1000000000.3000001 (diff 1.19e-7),
+        # far above the old absolute 1e-8 but within 1e-12 * 1e9 = 1e-3.
+        problem = make_problem(
+            [hard("==", 1e9 + 0.3, {"x1": 1e9, "x2": 0.1, "x3": 0.2})]
+        )
+        result = validate_solution(problem, {"x1": 1, "x2": 1, "x3": 1})
+        assert result.feasible is True
+        assert result.evaluations[0].satisfied is True
+        assert result.evaluations[0].violation_amount == 0.0
+
+    def test_real_violation_at_1e9_is_still_caught(self):
+        problem = make_problem(
+            [hard("==", 1e9 + 1.3, {"x1": 1e9, "x2": 0.1, "x3": 0.2})]
+        )
+        result = validate_solution(problem, {"x1": 1, "x2": 1, "x3": 1})
+        assert result.feasible is False
+        assert result.evaluations[0].violation_amount == pytest.approx(1.0, abs=1e-6)
+
+    def test_le_within_relative_tolerance_at_1e9(self):
+        # tol = 1e-12 * 1e9 = 1e-3: an overshoot of 1e-4 is noise, 1 is not.
+        within = make_problem([hard("<=", 1e9 - 1e-4, {"x1": 1e9})])
+        assert validate_solution(within, {"x1": 1, "x2": 0, "x3": 0}).feasible is True
+        beyond = make_problem([hard("<=", 1e9 - 1, {"x1": 1e9})])
+        assert validate_solution(beyond, {"x1": 1, "x2": 0, "x3": 0}).feasible is False
+
+    def test_ge_within_relative_tolerance_at_1e9(self):
+        within = make_problem([hard(">=", 1e9 + 1e-4, {"x1": 1e9})])
+        assert validate_solution(within, {"x1": 1, "x2": 0, "x3": 0}).feasible is True
+        beyond = make_problem([hard(">=", 1e9 + 1, {"x1": 1e9})])
+        assert validate_solution(beyond, {"x1": 1, "x2": 0, "x3": 0}).feasible is False
+
+
+class TestSmallScaleUnchanged:
+    """At magnitude ~1 the hybrid tolerance is exactly the old 1e-8."""
+
+    def test_point_one_plus_point_two_equals_point_three(self):
+        problem = make_problem([hard("==", 0.3, {"x1": 0.1, "x2": 0.2})])
+        result = validate_solution(problem, {"x1": 1, "x2": 1, "x3": 0})
+        assert result.feasible is True
+        assert result.evaluations[0].violation_amount == 0.0
+
+    def test_miss_of_5e_minus_9_is_zero_violation(self):
+        problem = make_problem([hard("==", 1 + 5e-9, {"x1": 1})])
+        result = validate_solution(problem, {"x1": 1, "x2": 0, "x3": 0})
+        assert result.feasible is True
+        assert result.evaluations[0].violation_amount == 0.0
+
+    def test_miss_of_2e_minus_8_is_a_violation(self):
+        problem = make_problem([hard("==", 1 + 2e-8, {"x1": 1})])
+        result = validate_solution(problem, {"x1": 1, "x2": 0, "x3": 0})
+        assert result.feasible is False
+        assert result.evaluations[0].violation_amount == pytest.approx(2e-8)

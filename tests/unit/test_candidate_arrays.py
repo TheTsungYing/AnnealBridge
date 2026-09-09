@@ -30,7 +30,7 @@ from annealbridge.orchestration import (
 )
 from annealbridge.orchestration.optimizer import _lexsort, _pack_rows, _row_keys, _words
 from annealbridge.solvers import RawSolverResult
-from annealbridge.validation import validate_batch, validate_solution
+from annealbridge.validation import tolerance, validate_batch, validate_solution
 
 # --------------------------------------------------------------------------
 # helpers
@@ -123,6 +123,93 @@ def all_assignments(n_variables: int) -> np.ndarray:
     return np.array(
         list(itertools.product((0, 1), repeat=n_variables)), dtype=np.int8
     ).reshape(-1, n_variables)
+
+
+# Magnitudes on both sides of the hybrid tolerance's crossover (1e4): at
+# scale 1 the tolerance is still the absolute 1e-8, at 1e12 it is 1.0.
+_SCALES = (1.0, 1e8, 1e10, 1e12)
+_SMALL_COEFFICIENTS = (0.1, 0.2, 0.3, -0.1, -0.3)
+# Offsets from a reachable lhs value, in units of the tolerance at that
+# magnitude and in absolute units, so satisfied and violated both occur.
+_BAND_OFFSETS = ("zero", "5e-9", "2e-8", "-2e-8", "0.5tol", "1.5tol", "-1.5tol", "one")
+
+
+def band_constraint(
+    rng: random.Random,
+    variables: list[str],
+    samples: np.ndarray,
+    index: int,
+    kind: str | None = None,
+    weight: float | None = None,
+) -> Constraint:
+    """A constraint with huge coefficients whose rhs sits on the edge of the
+    hybrid tolerance band (review F-05).
+
+    ``tol = max(1e-8, 1e-12 * magnitude)``, so the band is 1e-8 wide at scale
+    1 and 1.0 wide at scale 1e12. Putting the rhs a fraction of a band away
+    from an lhs value the assignments can actually reach is what makes the
+    scalar and the numpy kernel disagree the moment they drift apart.
+    """
+    scale = rng.choice(_SCALES)
+    chosen = rng.sample(variables, k=rng.randint(2, len(variables)))
+    terms = [
+        LinearTerm(variable=name, coefficient=scale * rng.uniform(-1.0, 1.0))
+        for name in chosen
+    ]
+    # A couple of small coefficients as well: their low bits are exactly what
+    # a large-magnitude sum loses.
+    for name in rng.sample(chosen, k=min(2, len(chosen))):
+        terms.append(
+            LinearTerm(variable=name, coefficient=rng.choice(_SMALL_COEFFICIENTS))
+        )
+
+    assignment = dict(zip(variables, samples[rng.randrange(samples.shape[0])].tolist()))
+    lhs = 0.0
+    for term in terms:
+        lhs += term.coefficient * assignment[term.variable]
+    tol = tolerance(lhs, lhs)
+    offsets = {
+        "zero": 0.0,
+        "5e-9": 5e-9,
+        "2e-8": 2e-8,
+        "-2e-8": -2e-8,
+        "0.5tol": 0.5 * tol,
+        "1.5tol": 1.5 * tol,
+        "-1.5tol": -1.5 * tol,
+        "one": 1.0,
+    }
+    delta = offsets[rng.choice(_BAND_OFFSETS)]
+
+    if kind is None:
+        kind = rng.choice(["hard", "soft", "soft"])
+    if kind == "soft":
+        weight = rng.uniform(0.5, 3.0) if weight is None else weight
+    else:
+        weight = None
+    return Constraint(
+        id=f"c{index}",
+        type=kind,
+        terms=terms,
+        operator=rng.choice(["==", "<=", ">="]),
+        rhs=lhs + delta,
+        weight=weight,
+    )
+
+
+def band_problem(
+    rng: random.Random, variables: list[str], constraints: list[Constraint]
+) -> OptimizationProblem:
+    return OptimizationProblem(
+        name="hybrid tolerance",
+        variables=[Variable(name=name) for name in sorted(variables)],
+        objective=Objective(
+            direction="minimize",
+            linear_terms=[
+                LinearTerm(variable=rng.choice(variables), coefficient=1.0)
+            ],
+        ),
+        constraints=constraints,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -414,8 +501,9 @@ class TestBatchValidationConsistency:
 
     def test_epsilon_boundary_is_shared(self):
         # 0.1 + 0.2 != 0.3 in binary; both paths must accept it as "==" 0.3
-        # through the shared EPSILON and report identical violation scores
-        # for the soft constraint that misses by more than EPSILON.
+        # through the shared hybrid tolerance and report identical violation
+        # scores for the soft constraint that misses by more than that
+        # tolerance.
         problem = OptimizationProblem(
             name="eps",
             variables=[Variable(name="a"), Variable(name="b")],
@@ -454,6 +542,77 @@ class TestBatchValidationConsistency:
             assert float(batch.soft_violation_score[row]) == full.soft_violation_score
         assert batch.feasible.tolist() == [False, False, False, True]
         assert batch.soft_violation_score[3] > 0.0
+
+    def test_hybrid_tolerance_paths_agree_at_large_scale(self):
+        """Review F-05: the tolerance now depends on the magnitude of the
+        numbers compared, so the two kernels must still agree once the band
+        is 1e-3 or 1.0 wide instead of 1e-8 — including on the rhs values
+        that sit right on its edge."""
+        rng = random.Random(20260909)
+        seen_feasible = False
+        seen_infeasible = False
+        seen_soft_violation = False
+
+        for problem_index in range(40):
+            n_variables = rng.randint(4, 6)
+            variables = [f"v{index}" for index in range(n_variables)]
+            rng.shuffle(variables)
+            samples = all_assignments(n_variables)
+            constraints = [
+                band_constraint(rng, variables, samples, index)
+                for index in range(rng.randint(1, 3))
+            ]
+            problem = band_problem(rng, variables, constraints)
+
+            batch = validate_batch(problem, variables, samples)
+            for row in range(samples.shape[0]):
+                sample = dict(zip(variables, samples[row].tolist()))
+                full = validate_solution(problem, sample)
+                assert bool(batch.feasible[row]) is full.feasible, (
+                    problem_index,
+                    sample,
+                )
+                # Exact equality: the ranking uses the batch number and the
+                # report shows the full one.
+                assert float(batch.soft_violation_score[row]) == (
+                    full.soft_violation_score
+                ), (problem_index, sample)
+                seen_feasible = seen_feasible or full.feasible
+                seen_infeasible = seen_infeasible or not full.feasible
+                seen_soft_violation = (
+                    seen_soft_violation or full.soft_violation_score > 0.0
+                )
+
+        # A single soft constraint of weight 1: the batch score is then the
+        # squared violation amount itself, so violation_amount is pinned to
+        # the last bit too, not just the aggregate score.
+        seen_squared_violation = False
+        for problem_index in range(40):
+            n_variables = rng.randint(4, 6)
+            variables = [f"v{index}" for index in range(n_variables)]
+            rng.shuffle(variables)
+            samples = all_assignments(n_variables)
+            problem = band_problem(
+                rng,
+                variables,
+                [band_constraint(rng, variables, samples, 0, kind="soft", weight=1.0)],
+            )
+
+            batch = validate_batch(problem, variables, samples)
+            for row in range(samples.shape[0]):
+                sample = dict(zip(variables, samples[row].tolist()))
+                full = validate_solution(problem, sample)
+                violation = full.evaluations[0].violation_amount
+                assert float(batch.soft_violation_score[row]) == violation * violation, (
+                    problem_index,
+                    sample,
+                )
+                seen_squared_violation = seen_squared_violation or violation > 0.0
+
+        assert seen_feasible
+        assert seen_infeasible
+        assert seen_soft_violation
+        assert seen_squared_violation
 
     def test_missing_variable_raises_like_the_validator(self):
         problem = OptimizationProblem(

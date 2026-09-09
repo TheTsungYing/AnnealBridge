@@ -612,14 +612,20 @@ class ValidationResult(BaseModel):
 
 ### 23.1 Floating point tolerance
 
+> **2026-09-09 review F-05 修訂**：原本為絕對容差 `EPSILON = 1e-8`。係數量級 ≥ 1e8 時，數學上精確滿足 `==` 的指派會因 float 累加誤差（例如 `1e9 + 0.1 + 0.2` 與 `1e9 + 0.3` 相差 1.19e-7）被判 infeasible，違反 OVERVIEW 原則 2「重驗只信原始 JSON」的本意。改為**絕對 + 相對混合容差**，量級 ≤ 1e4 時等同原本的 1e-8，量級 1e9 時為 1e-3。實作在 `validation/tolerance.py`，scalar 與 batch（numpy）兩條路徑都呼叫同一函式。
+
 ```python
-EPSILON = 1e-8
-==  : abs(actual - rhs) <= EPSILON
-<=  : actual <= rhs + EPSILON
->=  : actual >= rhs - EPSILON
+ABSOLUTE_TOLERANCE = 1e-8      # 絕對下限（即原本的 EPSILON）
+RELATIVE_TOLERANCE = 1e-12
+tol = max(ABSOLUTE_TOLERANCE, RELATIVE_TOLERANCE * max(abs(actual), abs(rhs)))
+==  : abs(actual - rhs) <= tol
+<=  : actual <= rhs + tol
+>=  : actual >= rhs - tol
 ```
 
-`violation_amount`：`==` 為 `abs(actual − rhs)`，`<=` 為 `max(0, actual − rhs)`，`>=` 為 `max(0, rhs − actual)`。
+`violation_amount`：`==` 為 `abs(actual − rhs)`，`<=` 為 `max(0, actual − rhs)`，`>=` 為 `max(0, rhs − actual)`；判定為 satisfied 時 `violation_amount = 0`。
+
+Problem Validator 的 `TRIVIALLY_INFEASIBLE` 判定（§12）使用同一個 `tol`（2026-09-09 review F-25）：`<=` 在 `lhs_min > rhs + tol(lhs_min, rhs)`、`>=` 在 `lhs_max < rhs − tol(lhs_max, rhs)`、`==` 在 `rhs` 落在 `[lhs_min − tol(lhs_min, rhs), lhs_max + tol(lhs_max, rhs)]` 之外時才判不可行，確保前置驗證擋下的 constraint 恰好是任何指派都無法通過 solution validator 的那些。
 
 ---
 

@@ -738,3 +738,81 @@ class TestTriviallyInfeasibleWithBounds:
             "INTEGER_BOUNDS_MISSING",
             "TRIVIALLY_INFEASIBLE",
         ]
+
+
+class TestTriviallyInfeasibleSharesTheSolutionTolerance:
+    """Review F-25 (2026-09-09): the range check uses the same hybrid
+    tolerance as the solution validator, so no constraint is rejected here
+    that an assignment could still satisfy there, and vice versa."""
+
+    @staticmethod
+    def _eq_problem(rhs: float, coefficients: dict[str, float]) -> dict:
+        data = make_problem_dict()
+        data["constraints"][0] = {
+            "id": "band",
+            "type": "hard",
+            "terms": [
+                {"variable": name, "coefficient": value}
+                for name, value in coefficients.items()
+            ],
+            "operator": "==",
+            "rhs": rhs,
+        }
+        return data
+
+    def test_rhs_within_tolerance_of_lhs_max_is_accepted_by_both_layers(self):
+        from annealbridge.validation import validate_solution
+
+        data = self._eq_problem(2.000000005, {"x1": 1, "x2": 1})
+        assert validate_dict(data) == []
+        result = validate_solution(
+            OptimizationProblem.model_validate(data), {"x1": 1, "x2": 1, "x3": 1}
+        )
+        assert result.feasible is True
+
+    def test_rhs_beyond_tolerance_is_rejected_by_both_layers(self):
+        from annealbridge.validation import validate_solution
+
+        for rhs in (2.5, 2 + 2e-8):
+            data = self._eq_problem(rhs, {"x1": 1, "x2": 1})
+            assert codes(validate_dict(data)) == ["TRIVIALLY_INFEASIBLE"], rhs
+            result = validate_solution(
+                OptimizationProblem.model_validate(data), {"x1": 1, "x2": 1, "x3": 1}
+            )
+            assert result.feasible is False, rhs
+
+    def test_large_scale_equality_agrees_with_the_solution_validator(self):
+        from annealbridge.validation import validate_solution
+
+        # The F-05 case: lhs_max accumulates to 1000000000.3000001, which
+        # misses rhs by 1.19e-7 -- inside the 1e-3 tolerance at this scale.
+        big = {"x1": 1e9, "x2": 0.1, "x3": 0.2}
+        accepted = self._eq_problem(1e9 + 0.3, big)
+        assert validate_dict(accepted) == []
+        assert validate_solution(
+            OptimizationProblem.model_validate(accepted), {"x1": 1, "x2": 1, "x3": 1}
+        ).feasible is True
+
+        rejected = self._eq_problem(1e9 + 1.3, big)
+        assert codes(validate_dict(rejected)) == ["TRIVIALLY_INFEASIBLE"]
+        assert validate_solution(
+            OptimizationProblem.model_validate(rejected), {"x1": 1, "x2": 1, "x3": 1}
+        ).feasible is False
+
+    def test_large_scale_inequality_agrees_with_the_solution_validator(self):
+        # Integer rhs (inequalities require it): at 1e12 the tolerance is
+        # ~1.0, so "1e12 * x1 >= 1e12 + 1" is judged reachable by both layers.
+        from annealbridge.validation import validate_solution
+
+        data = make_problem_dict()
+        data["constraints"][0] = {
+            "id": "big",
+            "type": "hard",
+            "terms": [{"variable": "x1", "coefficient": 1e12}],
+            "operator": ">=",
+            "rhs": 1e12 + 1,
+        }
+        assert validate_dict(data) == []
+        assert validate_solution(
+            OptimizationProblem.model_validate(data), {"x1": 1, "x2": 0, "x3": 1}
+        ).feasible is True

@@ -49,6 +49,7 @@ from annealbridge.validation.estimates import (
     lhs_bounds,
     variable_bounds,
 )
+from annealbridge.validation.tolerance import tolerance
 
 logger = logging.getLogger(__name__)
 
@@ -926,6 +927,15 @@ def _check_trivially_infeasible(
     skipped: that variable already carries its own error (3b §9.2). The
     message reports the user's own operator and rhs, never the compiler's
     normalized form.
+
+    The comparison uses the solution validator's hybrid tolerance (review
+    F-25): a constraint is infeasible only when even the most favourable
+    end of the lhs range would fail the §23.1 test. ``actual - tol(actual)``
+    and ``actual + tol(actual)`` are monotone in ``actual`` (the relative
+    part is 1e-12), so checking ``lhs_min`` for ``<=``, ``lhs_max`` for
+    ``>=`` and both ends for ``==`` is exact: what is rejected here is
+    exactly what ``validate_solution`` would reject for every assignment,
+    and what passes here has at least one lhs value it would accept.
     """
     if constraint.type != "hard" or not constraint.terms:
         return
@@ -943,11 +953,14 @@ def _check_trivially_infeasible(
     rhs = constraint.rhs
 
     if constraint.operator == "<=":
-        infeasible = lhs_min > rhs
+        infeasible = lhs_min > rhs + tolerance(lhs_min, rhs)
     elif constraint.operator == ">=":
-        infeasible = lhs_max < rhs
+        infeasible = lhs_max < rhs - tolerance(lhs_max, rhs)
     else:
-        infeasible = rhs < lhs_min or rhs > lhs_max
+        infeasible = (
+            rhs < lhs_min - tolerance(lhs_min, rhs)
+            or rhs > lhs_max + tolerance(lhs_max, rhs)
+        )
 
     if infeasible:
         errors.append(

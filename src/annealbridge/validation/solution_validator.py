@@ -17,7 +17,8 @@ Two entry points share one arithmetic:
   evaluations of the top-k.
 
 Both paths accumulate the constraint's left-hand side term by term in
-term order, compare with the same ``EPSILON`` rule, and compute
+term order, compare with the same hybrid tolerance rule of
+:mod:`annealbridge.validation.tolerance` (spec §23.1, review F-05), and compute
 ``weight * violation * violation`` in the same association, so their
 results are bit-identical — not merely close. ``tests/unit`` asserts that
 equality on random problems; keep the two kernels in lock-step when
@@ -35,10 +36,11 @@ from annealbridge.models import (
     OptimizationProblem,
     ValidationResult,
 )
+from annealbridge.validation.tolerance import EPSILON, tolerance, tolerance_array
 
 logger = logging.getLogger(__name__)
 
-EPSILON = 1e-8
+__all__ = ["EPSILON", "BatchValidation", "validate", "validate_batch"]
 
 
 def validate(problem: OptimizationProblem, sample: dict[str, int]) -> ValidationResult:
@@ -75,15 +77,16 @@ def _evaluate(constraint: Constraint, sample: dict[str, int]) -> ConstraintEvalu
     for term in constraint.terms:
         actual += term.coefficient * sample[term.variable]
     rhs = constraint.rhs
+    tol = tolerance(actual, rhs)
 
     if constraint.operator == "==":
-        satisfied = abs(actual - rhs) <= EPSILON
+        satisfied = abs(actual - rhs) <= tol
         violation = abs(actual - rhs)
     elif constraint.operator == "<=":
-        satisfied = actual <= rhs + EPSILON
+        satisfied = actual <= rhs + tol
         violation = max(0.0, actual - rhs)
     else:
-        satisfied = actual >= rhs - EPSILON
+        satisfied = actual >= rhs - tol
         violation = max(0.0, rhs - actual)
 
     violation_amount = 0.0 if satisfied else violation
@@ -144,15 +147,16 @@ def validate_batch(
             except KeyError:
                 raise KeyError(term.variable) from None
         rhs = constraint.rhs
+        tol = tolerance_array(actual, rhs)
 
         if constraint.operator == "==":
-            satisfied = np.abs(actual - rhs) <= EPSILON
+            satisfied = np.abs(actual - rhs) <= tol
             violation = np.abs(actual - rhs)
         elif constraint.operator == "<=":
-            satisfied = actual <= rhs + EPSILON
+            satisfied = actual <= rhs + tol
             violation = np.maximum(0.0, actual - rhs)
         else:
-            satisfied = actual >= rhs - EPSILON
+            satisfied = actual >= rhs - tol
             violation = np.maximum(0.0, rhs - actual)
 
         if constraint.type == "hard":

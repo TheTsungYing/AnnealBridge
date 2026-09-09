@@ -1,0 +1,61 @@
+"""The one floating-point tolerance every constraint comparison uses (spec §23.1).
+
+Constraint satisfaction is decided against the *original* problem with
+float arithmetic, so a small tolerance is unavoidable. Since review F-05
+(2026-09-09) it is a *hybrid* of an absolute floor and a relative part::
+
+    tol(actual, rhs) = max(ABSOLUTE_TOLERANCE,
+                           RELATIVE_TOLERANCE * max(|actual|, |rhs|))
+
+    ==  : abs(actual - rhs) <= tol
+    <=  : actual <= rhs + tol
+    >=  : actual >= rhs - tol
+
+Up to magnitude ``1e4`` the relative part is below the floor and the rule is
+exactly the old absolute ``EPSILON = 1e-8``; at magnitude ``1e9`` the
+tolerance is ``1e-3``, which absorbs the accumulation error of summing
+coefficients of that size (``1e9 + 0.1 + 0.2`` lands 1.19e-7 away from
+``1e9 + 0.3``) without accepting a real violation of one unit.
+
+Two callers share this rule and must never drift apart:
+
+- :mod:`annealbridge.validation.solution_validator` judges every candidate
+  with it, in both its scalar and its numpy kernel.
+- :mod:`annealbridge.validation.problem_validator` uses the same rule to
+  decide ``TRIVIALLY_INFEASIBLE`` (review F-25), so a constraint that is
+  rejected before compilation is exactly one that no assignment could have
+  passed afterwards.
+
+:func:`tolerance` is pure Python and :func:`tolerance_array` is the numpy
+version; they perform the same IEEE operations in the same order, so their
+results are bit-identical (``tests/unit/test_tolerance.py`` asserts it).
+This module depends on nothing but numpy so that any layer — including the
+compilers — can import it.
+"""
+
+import numpy as np
+
+ABSOLUTE_TOLERANCE = 1e-8
+"""Floor of the tolerance; the whole tolerance at small magnitudes."""
+
+RELATIVE_TOLERANCE = 1e-12
+"""Fraction of ``max(|actual|, |rhs|)`` added at large magnitudes."""
+
+EPSILON = ABSOLUTE_TOLERANCE
+"""Spec §23.1's original name for the absolute floor, kept for callers."""
+
+
+def tolerance(actual: float, rhs: float) -> float:
+    """Return the tolerance for comparing ``actual`` with ``rhs`` (scalar)."""
+    return max(ABSOLUTE_TOLERANCE, RELATIVE_TOLERANCE * max(abs(actual), abs(rhs)))
+
+
+def tolerance_array(actual: np.ndarray, rhs: float) -> np.ndarray:
+    """Vectorised :func:`tolerance`: one value per element of ``actual``.
+
+    Same operations in the same order as the scalar version, so each element
+    equals ``tolerance(actual[i], rhs)`` bit for bit.
+    """
+    return np.maximum(
+        ABSOLUTE_TOLERANCE, RELATIVE_TOLERANCE * np.maximum(np.abs(actual), abs(rhs))
+    )
