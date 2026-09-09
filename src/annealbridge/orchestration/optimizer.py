@@ -10,6 +10,7 @@ never on the concrete compiled model type (spec §17).
 import logging
 import math
 import threading
+import traceback
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 
@@ -31,6 +32,7 @@ from annealbridge.models import (
     SolveAttempt,
     SolveError,
     SolveResult,
+    SolveStatus,
     SolverCapabilities,
     SolverExecutionMetadata,
     SolverPreferences,
@@ -39,6 +41,7 @@ from annealbridge.models import (
 from annealbridge.orchestration.limits import (
     gate_errors,
     preference_limit_errors,
+    read_preference,
     select_model_type,
 )
 from annealbridge.orchestration.policy import ExecutionPolicy
@@ -48,6 +51,7 @@ from annealbridge.solvers import (
     RawSolverResult,
     SolverBackend,
     SolverRegistry,
+    redact,
 )
 from annealbridge.validation import (
     BackendRecommendationResult,
@@ -343,11 +347,14 @@ class OptimizationService:
         self._solve_slots = threading.BoundedSemaphore(policy.max_concurrent_solves)
 
     def _check_declared_limits(self) -> None:
-        """Spec §11.3: every declared limit key must have a policy value.
+        """Spec §11.3: every declared limit is checkable before any solve.
 
-        A backend that declares a ceiling the policy cannot supply would
-        otherwise run unlimited; that is a composition-root error, raised
-        at construction rather than reported per solve.
+        Two things can be wrong with a ``ParameterLimit``: the policy has
+        no value for its limit key (the backend would run unlimited), or
+        its preference path names nothing on ``SolverPreferences`` (every
+        solve and recommend would raise from ``read_preference``; 2026-09-09
+        review F-03). Both are composition-root errors, so both fail here,
+        at construction, rather than on each request.
         """
         for name in self._registry.names():
             caps = self._registry.get(name).capabilities
@@ -357,6 +364,16 @@ class OptimizationService:
                         f"backend '{name}' declares limit '{declaration.limit}' "
                         f"but the policy has no value for it"
                     )
+                try:
+                    read_preference(SolverPreferences(), declaration.preference)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"backend '{name}' declares a limit on preference "
+                        f"'{declaration.preference}' (limit "
+                        f"'{declaration.limit}', error code "
+                        f"'{declaration.error_code}') but that path does not "
+                        f"exist on SolverPreferences: {exc}"
+                    ) from exc
 
     def _select_model_type(self, caps: SolverCapabilities) -> ModelType | None:
         """3a §16.1: the first declared model type the service can compile.
@@ -492,7 +509,7 @@ class OptimizationService:
 
     def _failure(
         self,
-        status: str,
+        status: SolveStatus,
         backend: str | None,
         direction: str | None,
         errors: list[SolveError],
@@ -624,32 +641,14 @@ class OptimizationService:
         backend: SolverBackend,
         direction: str,
     ) -> SolveResult:
-        """3a §16.2 steps 7–19: the compile/solve/validate loop."""
-        compiler = self._select_compiler(backend.capabilities)
-        if compiler is None:
-            declared = ", ".join(backend.capabilities.supported_model_types)
-            return self._failure(
-                "configuration_error",
-                backend.name,
-                direction,
-                [
-                    catalog_error(
-                        "NO_COMPILER_FOR_MODEL_TYPE",
-                        f"Backend '{backend.name}' accepts model types "
-                        f"[{declared}] but the server has no compiler for "
-                        f"any of them",
-                    )
-                ],
-            )
-        preference_errors = self._preference_limit_errors(backend, problem.solver)
-        if preference_errors:
-            return self._failure(
-                "resource_limit_exceeded",
-                backend.name,
-                direction,
-                preference_errors,
-            )
+        """3a §16.2 steps 7–19: the compile/solve/validate loop.
 
+        Everything from compiler selection onward runs under one ``try``
+        whose last handler catches any ``Exception`` (2026-09-09 review
+        F-03), so the ``solve`` docstring's promise — never raise, report
+        ``solver_error`` — is kept by the service itself rather than
+        delegated to every backend's own wrapping.
+        """
         attempts: list[SolveAttempt] = []
         # Declared outside the try so a failure on a later attempt can still
         # report the last completed attempt's metadata.
@@ -658,6 +657,31 @@ class OptimizationService:
         # can tell the hard-penalty path from a penalty-free one.
         penalty: float | None = None
         try:
+            compiler = self._select_compiler(backend.capabilities)
+            if compiler is None:
+                declared = ", ".join(backend.capabilities.supported_model_types)
+                return self._failure(
+                    "configuration_error",
+                    backend.name,
+                    direction,
+                    [
+                        catalog_error(
+                            "NO_COMPILER_FOR_MODEL_TYPE",
+                            f"Backend '{backend.name}' accepts model types "
+                            f"[{declared}] but the server has no compiler for "
+                            f"any of them",
+                        )
+                    ],
+                )
+            preference_errors = self._preference_limit_errors(backend, problem.solver)
+            if preference_errors:
+                return self._failure(
+                    "resource_limit_exceeded",
+                    backend.name,
+                    direction,
+                    preference_errors,
+                )
+
             max_attempts = self._max_attempts(backend, compiler, problem.solver)
             # §16.2 step 9: a native-constraint model has no hard penalty.
             penalty = (
@@ -876,6 +900,40 @@ class OptimizationService:
                 backend.name,
                 direction,
                 [catalog_error(code, str(exc))],
+                attempts=attempts,
+                metadata=raw.metadata if raw is not None else None,
+            )
+        except Exception as exc:
+            # 2026-09-09 review F-03: the service-level guarantee (Phase 2
+            # §14 step 10, Phase 1 §36). Anything the handlers above did not
+            # recognise — a third-party backend raising its vendor's
+            # exception, a result missing a business column, a bug of our
+            # own — is still reported as a structured solver_error rather
+            # than escaping to the MCP/CLI caller. The text never passed
+            # through a backend's redaction, so it is redacted here; the
+            # class name stays because it is categorical, not secret. Only
+            # ``Exception``: KeyboardInterrupt / SystemExit must propagate.
+            message = redact(f"unexpected {type(exc).__name__}: {exc}")
+            # The innermost frame keeps our own bugs traceable without
+            # logging an unredacted traceback (spec §19).
+            frames = traceback.extract_tb(exc.__traceback__)
+            where = (
+                f"{frames[-1].filename}:{frames[-1].lineno} in {frames[-1].name}"
+                if frames
+                else "unknown location"
+            )
+            logger.warning(
+                "Problem %s backend %s: %s (at %s)",
+                problem.name,
+                backend.name,
+                message,
+                where,
+            )
+            return self._failure(
+                "solver_error",
+                backend.name,
+                direction,
+                [catalog_error("SOLVER_ERROR", message)],
                 attempts=attempts,
                 metadata=raw.metadata if raw is not None else None,
             )

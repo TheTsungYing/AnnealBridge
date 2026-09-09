@@ -14,6 +14,7 @@ from annealbridge.compiler.base import ModelCompiler
 from annealbridge.models import (
     ModelType,
     SolveError,
+    SolveStatus,
     SolverCapabilities,
     SolverPreferences,
     catalog_error,
@@ -26,7 +27,7 @@ from annealbridge.solvers.base import SolverBackend
 # text. A backend may name a more specific ``error_code`` on its status
 # (e.g. the D-Wave backends report DWAVE_CONFIG_INVALID); the default here
 # only applies when it does not.
-AVAILABILITY_MAP: dict[str, tuple[str, str]] = {
+AVAILABILITY_MAP: dict[str, tuple[SolveStatus, str]] = {
     "not_installed": ("backend_unavailable", "BACKEND_NOT_INSTALLED"),
     "credentials_missing": ("backend_unavailable", "REMOTE_CREDENTIALS_MISSING"),
     "config_invalid": ("configuration_error", "BACKEND_CONFIG_INVALID"),
@@ -154,7 +155,7 @@ def preference_limit_errors(
 
 def gate_errors(
     backend_name: str, backend: SolverBackend, policy: ExecutionPolicy
-) -> tuple[str, str, list[SolveError]] | None:
+) -> tuple[SolveStatus, str, list[SolveError]] | None:
     """§16.2 steps 3–5: enabled_backends → allow_remote → availability.
 
     The gates short-circuit in that order, so ``is_available()`` is only

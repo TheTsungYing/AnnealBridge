@@ -18,7 +18,10 @@ import copy
 import pytest
 from mcp import Client
 
-from annealbridge.interfaces.mcp import mcp
+from annealbridge.interfaces.mcp import mcp, server
+from annealbridge.orchestration import ExecutionPolicy
+from annealbridge.solvers import SolverRegistry
+from tests.fakes.declared_backend import FAKE_LIMIT_KEY, FakeDeclaredBackend
 
 pytestmark = pytest.mark.anyio
 
@@ -151,3 +154,41 @@ async def test_non_finite_penalty_multiplier_never_reaches_the_solver(
 
     assert result.is_error is True
     assert "penalty_multiplier" in result.content[0].text
+
+
+class VendorCrashBackend(FakeDeclaredBackend):
+    """A backend whose ``solve()`` raises a bare vendor exception.
+
+    2026-09-09 review F-03: before the service-level fallback this escaped
+    ``solve_optimization`` as an SDK tool error, so the agent lost the
+    structured result (and the raw text was never redacted).
+    """
+
+    def solve(self, compiled_problem, preferences):
+        self.solve_calls += 1
+        raise RuntimeError("vendor sdk blew up")
+
+
+async def test_backend_crash_is_a_structured_solver_error(load_example):
+    # Registered under a shipped name: `solver.backend` is a Literal, so the
+    # SDK's pydantic layer would refuse an unknown key before the tool runs.
+    backend = VendorCrashBackend()
+    server.reset_state(
+        server.build_state_from_policy(
+            ExecutionPolicy(allow_remote=True, limits={FAKE_LIMIT_KEY: 1000}),
+            SolverRegistry({"simulated_annealing": backend}),
+        )
+    )
+    problem = load_example("knapsack.json", backend="simulated_annealing")
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("solve_optimization", {"problem": problem})
+        assert result.is_error is False
+        content = result.structured_content
+
+    assert backend.solve_calls == 1
+    assert content["status"] == "solver_error"
+    assert content["solutions"] == []
+    (error,) = content["errors"]
+    assert error["code"] == "SOLVER_ERROR"
+    assert "RuntimeError" in error["message"]

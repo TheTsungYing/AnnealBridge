@@ -14,11 +14,16 @@ core has never heard of, whose ``solve()`` raises. Nothing in
 
 import json
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
-from annealbridge.exceptions import OptimizerError, SolverExecutionError
-from annealbridge.models import OptimizationProblem, SolverPreferences
+from annealbridge.exceptions import (
+    OptimizerError,
+    SolverErrorStatus,
+    SolverExecutionError,
+)
+from annealbridge.models import OptimizationProblem, SolveStatus, SolverPreferences
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.solvers import SolverRegistry
 from tests.fakes.declared_backend import (
@@ -44,6 +49,21 @@ class TestSolverExecutionError:
 
         assert error.code == "X"
         assert error.status == "configuration_error"
+
+    # 2026-09-09 review F-03: a status outside the SolveResult vocabulary
+    # used to surface only when the service built the SolveResult — a
+    # pydantic ValidationError thrown from inside the except handler, which
+    # nothing could catch. It must fail where the backend constructs it.
+    def test_an_unknown_status_is_refused_at_construction(self):
+        with pytest.raises(ValueError, match="oops"):
+            SolverExecutionError("boom", status="oops")
+
+    @pytest.mark.parametrize("status", ["solver_error", "configuration_error", None])
+    def test_every_authorised_status_is_accepted(self, status):
+        assert SolverExecutionError("m", status=status).status == status
+
+    def test_authorised_statuses_are_a_subset_of_solve_result_statuses(self):
+        assert set(get_args(SolverErrorStatus)) <= set(get_args(SolveStatus))
 
 
 class RaisingBackend(FakeDeclaredBackend):

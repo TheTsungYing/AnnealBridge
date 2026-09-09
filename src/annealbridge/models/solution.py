@@ -68,18 +68,24 @@ class SolveError(BaseModel):
 ProblemError = SolveError
 
 
+# The result vocabulary (spec §27). Named so the service's failure helpers
+# and the availability map can be typed against it instead of ``str``
+# (2026-09-09 review F-03).
+SolveStatus = Literal[
+    "success",
+    "infeasible",
+    "invalid_problem",
+    "solver_error",
+    "backend_unavailable",
+    "resource_limit_exceeded",
+    "configuration_error",
+]
+
+
 class SolveResult(BaseModel):
     """The final outcome of solving an optimization problem."""
 
-    status: Literal[
-        "success",
-        "infeasible",
-        "invalid_problem",
-        "solver_error",
-        "backend_unavailable",
-        "resource_limit_exceeded",
-        "configuration_error",
-    ]
+    status: SolveStatus
     backend: str | None
     objective_direction: Literal["minimize", "maximize"] | None
     solutions: list[Solution]

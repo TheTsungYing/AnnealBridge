@@ -35,6 +35,7 @@ from annealbridge.models.solution import (
     SolveAttempt,
     SolveError,
     SolveResult,
+    SolveStatus,
     ValidationResult,
 )
 from annealbridge.models.variable import Variable
@@ -65,6 +66,7 @@ __all__ = [
     "SolveAttempt",
     "SolveError",
     "SolveResult",
+    "SolveStatus",
     "SolverCapabilities",
     "SolverExecutionMetadata",
     "SolverPreferences",
