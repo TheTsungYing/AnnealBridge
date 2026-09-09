@@ -140,12 +140,7 @@ def _timing_value(value: object) -> float | None:
     return float(value)
 
 
-def sanitize_sampleset_info(
-    info: dict,
-    backend: str,
-    *,
-    remote: bool = True,
-) -> SolverExecutionMetadata:
+def sanitize_sampleset_info(info: dict, backend: str) -> SolverExecutionMetadata:
     """Extract whitelisted timing facts from a raw ``sampleset.info`` dict.
 
     Only the spec §17 whitelist keys survive, taken from the nested
@@ -154,9 +149,11 @@ def sanitize_sampleset_info(
     there).  Values must be plain numbers and are coerced to float; any
     other type is dropped.  The raw info dict is never passed through.
 
-    ``remote`` is not part of the spec signature; callers that sanitize a
-    local sampleset pass ``remote=False`` so the solver layer never needs a
-    hardcoded list of remote backend names.
+    The result is always ``remote=True``: only the remote backends produce
+    execution metadata (the local backends return ``metadata=None``), and
+    the former ``remote=`` keyword had no production caller (2026-09-09
+    review F-18). A test double for a local backend that wants metadata
+    overrides the flag with ``model_copy``.
     """
     timing_us: dict[str, float] = {}
 
@@ -173,7 +170,7 @@ def sanitize_sampleset_info(
 
     return SolverExecutionMetadata(
         backend=str(backend),
-        remote=remote,
+        remote=True,
         timing_us=timing_us,
     )
 

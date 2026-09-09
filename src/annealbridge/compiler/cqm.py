@@ -41,8 +41,8 @@ problem never compiles on one path and fails on the other.
 
 The objective is built by :func:`build_objective_qm` (maximize negates
 everything, constant included) and the squared penalties are expanded by
-:func:`expand_square_qm`, which shares its expansion core with the BQM
-path. Nothing here degrades the model to a BQM (that conversion is a
+:func:`expand_square_qm`, a thin adapter over the same ``expand_square``
+the BQM penalty terms use (review F-13a). Nothing here degrades the model to a BQM (that conversion is a
 test-only cross-check, never production code) and the compiler takes no
 options (§15.2).
 """
@@ -64,11 +64,11 @@ from annealbridge.models import (
     OptimizationProblem,
     Variable,
 )
-from annealbridge.penalty.strategy import compute_objective_scale
 from annealbridge.validation.estimates import (
     Bounds,
-    accumulate_terms,
     analyze_inequality,
+    compute_objective_scale,
+    nonzero_coefficients,
     variable_bounds,
 )
 from annealbridge.validation.tolerance import satisfies
@@ -187,11 +187,7 @@ class CQMCompiler:
         if constraint.type == "soft" and constraint.weight is None:
             raise CompilationError(f"Soft constraint {constraint.id} has no weight")
 
-        coefficients = {
-            variable: value
-            for variable, value in accumulate_terms(constraint.terms).items()
-            if value != 0.0
-        }
+        coefficients = nonzero_coefficients(constraint.terms)
 
         if not coefficients:
             # A constant constraint: ``0 <op> rhs``, judged with the

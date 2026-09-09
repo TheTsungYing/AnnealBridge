@@ -12,10 +12,11 @@ from annealbridge.compiler.base import select_business_columns
 from annealbridge.compiler.integer_encoding import (
     AffineForm,
     encode_integer_variables,
+    expand_square,
     substitute_linear,
 )
 from annealbridge.compiler.objective import build_objective_bqm
-from annealbridge.compiler.slack import accumulate_terms, encode_slack
+from annealbridge.compiler.slack import encode_slack, nonzero_coefficients
 from annealbridge.exceptions import CompilationError, NonFiniteModelError
 from annealbridge.models import (
     CompiledProblem,
@@ -25,8 +26,11 @@ from annealbridge.models import (
     Objective,
     OptimizationProblem,
 )
-from annealbridge.penalty.strategy import compute_objective_scale
-from annealbridge.validation.estimates import Bounds, variable_bounds
+from annealbridge.validation.estimates import (
+    Bounds,
+    compute_objective_scale,
+    variable_bounds,
+)
 
 if TYPE_CHECKING:
     from annealbridge.solvers.base import RawSolverResult
@@ -44,17 +48,18 @@ def _add_squared_penalty(
 ) -> None:
     """Add ``lam * (sum(c_i * y_i) + constant)^2`` to ``bqm``.
 
-    For binary variables ``y^2 == y``, so the diagonal of the expansion folds
-    into the linear bias. All contributions accumulate (dimod ``add_*``
-    semantics), never overwrite.
+    A thin adapter over :func:`expand_square` (2026-09-09 review F-13a: the
+    same expansion the CQM path's ``expand_square_qm`` uses). Every
+    compiled variable is a bit here, so ``y^2 == y`` and the whole diagonal
+    folds into the linear bias. All contributions accumulate (dimod
+    ``add_*`` semantics), never overwrite.
     """
-    items = list(coefficients.items())
-    for variable, value in items:
-        bqm.add_linear(variable, lam * (value * value + 2.0 * constant * value))
-    for i, (var_i, value_i) in enumerate(items):
-        for var_j, value_j in items[i + 1 :]:
-            bqm.add_quadratic(var_i, var_j, 2.0 * lam * value_i * value_j)
-    bqm.offset += lam * constant * constant
+    linear, quadratic, offset = expand_square(coefficients, constant, lam)
+    for variable, value in linear.items():
+        bqm.add_linear(variable, value)
+    for (var_i, var_j), value in quadratic.items():
+        bqm.add_quadratic(var_i, var_j, value)
+    bqm.offset += offset
 
 
 def _check_finite(
@@ -242,11 +247,7 @@ class BQMCompiler:
         # and moves ``sum(c * lower)`` into the penalty's constant. Identity
         # forms (binary variables) leave both exactly as they were.
         if constraint.operator == "==":
-            coefficients = {
-                variable: value
-                for variable, value in accumulate_terms(constraint.terms).items()
-                if value != 0.0
-            }
+            coefficients = nonzero_coefficients(constraint.terms)
             bit_coefficients, shift = substitute_linear(coefficients, forms)
             _add_squared_penalty(bqm, bit_coefficients, shift - constraint.rhs, lam)
         else:

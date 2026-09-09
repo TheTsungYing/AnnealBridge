@@ -9,7 +9,8 @@ from annealbridge.models.quantities import Quantity
 
 
 class Constraint(BaseModel):
-    """A linear constraint over binary variables.
+    """A linear constraint over the problem's variables (binary or bounded
+    integer, IR 1.1).
 
     Hard constraints must be satisfied; soft constraints carry a weight
     expressing business preference importance.

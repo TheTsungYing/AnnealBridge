@@ -64,7 +64,9 @@ class SolveError(BaseModel):
     recommended_action: str | None = None
 
 
-# Phase 1 name kept as an alias; SolveError is a field superset.
+# Phase 1 name kept as an alias; SolveError is a field superset. Kept for
+# Phase 1 compatibility only — no production code path uses this name, only
+# tests reference it.
 ProblemError = SolveError
 
 

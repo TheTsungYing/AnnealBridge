@@ -273,3 +273,55 @@ class LazySampler:
             if self._sampler is None:
                 self._sampler = self._factory()
             return self._sampler
+
+
+# ---------------------------------------------------------------------------
+# Shared backend steps (2026-09-09 review F-13c)
+#
+# The three D-Wave backends build their sampler the same way, and the two
+# Leap hybrid backends resolve their time limit by the same rule; the code
+# lived once per backend and only differed in the message label.
+# ---------------------------------------------------------------------------
+
+
+def create_sampler(holder: LazySampler, label: str) -> Any:
+    """Build (or fetch the cached) sampler, classifying construction failures.
+
+    ``label`` names the backend in the error message (``"Leap hybrid"``,
+    ``"Leap hybrid CQM"``, ``"D-Wave QPU"``): the wrapped error reads
+    ``"<label> sampler could not be created"`` and carries the
+    :data:`SAMPLER_INIT_EXCEPTION_CODES` classification.
+    """
+    return call_ocean(
+        f"{label} sampler could not be created",
+        SAMPLER_INIT_EXCEPTION_CODES,
+        holder.get,
+    )
+
+
+def resolve_hybrid_time_limit(
+    holder: LazySampler,
+    model: Any,
+    user_time_limit: float | None,
+    *,
+    label: str,
+) -> float:
+    """Effective ``time_limit`` (seconds) a Leap hybrid solve would submit.
+
+    The one rule of both hybrid backends (Phase 2 §16, 3a §17.2): the
+    user's value if given, floored at the sampler's ``min_time_limit(model)``;
+    the sampler minimum alone when the user gave none. Nothing is
+    submitted — ``min_time_limit`` is a local interpolation over solver
+    properties fetched at construction. Construction failures are
+    classified by :func:`create_sampler`, the ``min_time_limit`` call by
+    :data:`HYBRID_SAMPLE_EXCEPTION_CODES`; ``label`` prefixes both messages.
+    """
+    sampler = create_sampler(holder, label)
+    min_time_limit = call_ocean(
+        f"{label} minimum time limit could not be determined",
+        HYBRID_SAMPLE_EXCEPTION_CODES,
+        lambda: float(sampler.min_time_limit(model)),
+    )
+    if user_time_limit is None:
+        return min_time_limit
+    return max(float(user_time_limit), min_time_limit)

@@ -426,6 +426,14 @@ def expand_square_qm(qm: dimod.QuadraticModel, coefficients: Mapping[str, float]
 
 `__slack_` 命名、redundant、soft clamp 規則全部不變。
 
+### 14.4 2026-09-09 review 修正（F-13a / F-13e）：兩個展開核心
+
+實作與 §14 / §15.3 的「共用展開核心」文字有兩處出入，審查後定案如下：
+
+- **平方展開**：`_add_squared_penalty`（BQM）與 `expand_square_qm`（CQM）原本是兩份實作，且浮點運算順序不同（`lam·(a² + 2·c0·a)` / `2·lam·a_i·a_j` vs `expand_product(form, form)` 的兩個半乘積相加；整數資料相同，非二進位小數資料約 8 成位元不同）。golden 鎖定的是 BQM 那份順序，所以新增 `expand_square(coefficients, constant, weight, *, fold_square)` 採 **BQM 的運算順序**，兩邊改為薄 adapter。CQM 含整數的 soft（3a golden 不經過）在非二進位小數權重下可能差最後幾個 ulp，數學相同；整數 snapshot（71 題、52 條含整數 soft）比對 0 差異。
+- **二次項代換**：`substitute_quadratic` 生產零呼叫，`build_objective_bqm` 自己對每個 term 做 `expand_product` 後直接 `add_*`；若改走 `substitute_quadratic` 會把 `(L+q1)+q2` 變成 `L+(q1+q2)`。**刪除 `substitute_quadratic`**，其測試改為直接驗證 `build_objective_bqm`（生產路徑）。§14 簽名清單與 §14.2「二次項 → `substitute_quadratic`」以此為準。
+- `accumulate_terms` + 丟零係數的 dict comprehension 原本逐字出現 4 次（兩個 compiler、`estimates.py` 兩處），抽成 `validation/estimates.py::nonzero_coefficients(terms)`（F-13b）。
+
 ---
 
 ## 15. `CQMCompiler` 整數版
@@ -651,6 +659,12 @@ class UrllibTransport:
 
 `SolverExecutionMetadata` 不加欄位。`TIMING_WHITELIST` 加 `solve_time`、`total_elapsed_time`（DA）；`sanitize_sampleset_info` 的數值規則不變（呼叫端先轉 float µs）。
 
+### 21.1 2026-09-09 review 修正（F-18）
+
+- **刪除** Phase 2 §17 的 `logical_variables` / `logical_interactions`：六個 backend 沒有任何一個寫入，全庫零讀者，卻在 MCP 的 `solve_optimization` 輸出 schema 中永遠是 `null`。MCP 輸出 schema 因此少兩個欄位（README 未列過這兩個欄位）。
+- `sanitize_sampleset_info(info, backend)` 回到 Phase 2 §17 的兩參數簽名：`remote=` 關鍵字生產端無人傳（本機 backend 不產 metadata，`SolveResult.metadata` 恆 `None`），刪除；測試用的本機 CQM fake 以 `model_copy(update={"remote": False})` 覆寫。
+- `ExecutionPolicy.enabled_backends` 補環境變數入口 `ANNEALBRIDGE_ENABLED_BACKENDS`（逗號分隔的 registry 名稱；未設或空 = 全部），讓既有的 `BACKEND_DISABLED_BY_POLICY` 在 CLI / MCP 部署中可達（Phase 2 §9 的 env 清單原本沒有它）。
+
 ---
 
 ## 22. Logging 與 Security
@@ -808,6 +822,13 @@ class UrllibTransport:
 | 3a §32.1 / outline §2.4「有整數變數且二次項 → CQM 優先」 | 不加 tier 規則，只加 reason 與 blowup 降序（§17） | 遠端消耗 quota，免費本機 heuristic 仍應排前；blowup 才是該往後排的訊號 |
 | 3a `ModelCompiler` Protocol | 加 `decode`；既有 fake compiler 補方法 | 整數編碼的 decode 是 compiler 的事 |
 | Phase 2 §14 / 3a `process_candidates(problem, raw, internal_variables, top_k)` | `internal_variables` 改可選（預設空），service 傳空集合 | decode 已剔除 internal；保留參數讓既有測試不改 |
+| 3b §14 / §14.2 `substitute_quadratic`；§15.3「與 `substitute_quadratic` 共用展開核心」 | 刪除 `substitute_quadratic`；平方展開改共用 `expand_square`（BQM 運算順序），`expand_product` 只服務 objective 的二次項 | 2026-09-09 review F-13a / F-13e，見 §14.4 |
+| Phase 2 §17 `logical_variables` / `logical_interactions` | 刪除 | review F-18：零寫零讀，MCP schema 永遠 null；見 §21.1 |
+| Phase 2 §17 `sanitize_sampleset_info(info, backend)` 的 `remote=` 擴充（3a 加） | 移除，回到 spec 簽名 | review F-18：生產無人傳；見 §21.1 |
+| Phase 2 §9 env 清單 | 加 `ANNEALBRIDGE_ENABLED_BACKENDS` | review F-18：`enabled_backends` 原本無 env 入口，`BACKEND_DISABLED_BY_POLICY` 不可達 |
+| Phase 1 §17 `CompiledProblem.constraint_trace`（含 `ConstraintTrace.source_description` / `native`）與 `CompiledProblem.objective_scale` | 保留，但**目前無生產讀者**：兩個 compiler 寫入，只有測試與 golden 讀；CLI 顯示的是 `ProblemValidationResult.objective_scale` | review F-18：spec 明定的 explainability 欄位，依原則 7 不新增消費者，只記錄現況 |
+| Phase 2 §21 `build_service(settings)` | 保留（`build_state(settings).service` 的單行 wrapper），生產零呼叫 | review F-18：CLI / MCP 用 `build_state` 因還需要 registry |
+| 3b §11 `RawSolverResult.from_dicts` / `as_dicts`、`CandidateSet.as_pairs`、`ProblemError` | 保留，docstring 標為 test-facing | review F-18：只有測試使用 |
 
 ---
 

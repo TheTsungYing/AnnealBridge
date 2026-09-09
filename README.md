@@ -39,7 +39,7 @@ optimization logic lives in either of them.
                                     │  OptimizationService.solve(problem)
   ┌─────────────────────────────────▼──────────────── core ───────────────┐
   │                                                                       │
-  │     models → validation → compiler {bqm, cqm} → penalty → solvers     │
+  │     models → validation → penalty → compiler {bqm, cqm} → solvers     │
   │                                                              │        │
   │                                                        orchestration  │
   │                                                                       │
@@ -59,13 +59,16 @@ optimization logic lives in either of them.
 Layering (lower layers never depend on higher ones):
 
 ```text
-models ← validation ← compiler ← solvers ← orchestration ← CLI / MCP
+models ← validation ← penalty ← compiler ← solvers ← orchestration ← CLI / MCP
 ```
 
 These boundaries are not a convention — they are enforced by
 `tests/architecture/`, which fails the build if `models/`, `validation/`,
 `compiler/`, `penalty/`, `solvers/`, or `orchestration/` ever import `mcp`,
-`dwave.cloud`, or `annealbridge.config`.
+`dwave.cloud`, or `annealbridge.config`. The same tests also fail if
+`validation/` imports any higher layer, or if `compiler/` imports `penalty/` —
+penalty is a sibling consumer of `validation.estimates`, applied on the bqm
+path by orchestration.
 
 Key principles:
 
@@ -321,9 +324,10 @@ Rules, each enforced by the validator with its own error code:
   `upper_bound > lower_bound` (`INTEGER_BOUNDS_INVALID` — equal bounds are a
   constant, not a variable). A negative `lower_bound` is fine.
 - Each bound must satisfy `|bound| <= 2³¹ − 1` (`INTEGER_RANGE_TOO_LARGE`).
-  Inside that range every decoded value and every product of two values is
-  exact in 64-bit integer and float arithmetic; unbounded integers are not
-  supported.
+  Inside that range every decoded value, every sum and every product of two
+  values fits 64-bit *integer* arithmetic without overflow — the guarantee 3b
+  relies on. The compiled model's biases are float64, so a product larger than
+  2⁵³ can still be rounded there. Unbounded integers are not supported.
 - A problem that declares any integer variable must say `"version": "1.1"`;
   with `"version": "1.0"` it is rejected with `INTEGER_REQUIRES_VERSION_1_1`.
   Version `1.1` is a superset of `1.0`: a `1.1` problem with only binary
@@ -755,6 +759,7 @@ All settings use the `ANNEALBRIDGE_` prefix:
 | `ANNEALBRIDGE_MAX_QPU_ANNEALING_TIME_US` | `2000` | Upper bound on QPU annealing time (µs)         |
 | `ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS`   | `300`  | Upper bound on hybrid solver time              |
 | `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES`     | `4`    | Concurrent solves allowed                      |
+| `ANNEALBRIDGE_ENABLED_BACKENDS`    | unset       | Comma-separated registry names allowed to run (e.g. `exact,simulated_annealing`); unset or empty = every registered backend. A backend outside the list is refused with `BACKEND_DISABLED_BY_POLICY` |
 | `ANNEALBRIDGE_MAX_LOCAL_READS`      | `100000`    | Upper bound on `simulated_annealing` `num_reads` |
 | `ANNEALBRIDGE_MAX_SWEEPS`           | `100000`    | Upper bound on `simulated_annealing` `num_sweeps` |
 | `ANNEALBRIDGE_MAX_LOCAL_RETRIES`    | `10`        | Upper bound on `max_retries` for local backends |

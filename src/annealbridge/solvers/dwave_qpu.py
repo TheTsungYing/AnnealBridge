@@ -23,9 +23,9 @@ from annealbridge.solvers.base import (
 from annealbridge.solvers.metadata import sanitize_sampleset_info
 from annealbridge.solvers.ocean import (
     OCEAN_CREDENTIALS,
-    SAMPLER_INIT_EXCEPTION_CODES,
     LazySampler,
     call_ocean,
+    create_sampler,
     dwave_availability,
     register_ocean_config_token,
     resolved,
@@ -201,11 +201,7 @@ class DWaveQPUBackend:
         if options.chain_strength is not None:
             sample_kwargs["chain_strength"] = options.chain_strength
 
-        sampler = call_ocean(
-            "D-Wave QPU sampler could not be created",
-            SAMPLER_INIT_EXCEPTION_CODES,
-            self._sampler.get,
-        )
+        sampler = create_sampler(self._sampler, "D-Wave QPU")
         sampleset = call_ocean(
             "D-Wave QPU solve failed",
             _SAMPLE_EXCEPTION_CODES,

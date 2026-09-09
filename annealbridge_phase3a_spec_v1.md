@@ -618,7 +618,10 @@ class ModelCompiler(Protocol):
 2. Objective：與 `BQMCompiler._compile_objective` 相同的符號規則（maximize 全數取負、含 constant）建成 `dimod.BinaryQuadraticModel`，`cqm.set_objective(bqm)`。這段抽成 `compiler/objective.py` 的 `build_objective_bqm(objective) -> BinaryQuadraticModel` 供兩個 compiler 共用（兩個實作共用 → 允許新模組）。
 3. 每條 constraint：
    - `coefficients = accumulate_terms(constraint.terms)`，去除 0 係數。
-   - 若無非零係數：constraint 是常數。`0 <op> rhs` 成立 → trace `redundant=True`、不加入；不成立 → `CompilationError`（validator 的 `TRIVIALLY_INFEASIBLE` 應已擋下，這是一致性防線，比照 `COMPILATION_FAILED` 語意）。
+   - 若無非零係數：constraint 是常數，`0 <op> rhs` 以 validator 的容差（`satisfies`）判斷，分三支（2026-09-09 review F-04 / F-12 後的現況；原文只有兩支「成立 → redundant、不成立 → raise」）：
+     - **成立** → trace `redundant=True, native=True`、不加入 CQM。注意不對稱：validator 只對「不等式」與「soft 的 `==`」發 `REDUNDANT_CONSTRAINT` warning，**hard 的 `==` 零係數且成立時不發 warning**（3a golden 錄有這種 1.0 問題，其完整 validator 輸出是契約）。
+     - **hard 且不成立** → `CompilationError`（validator 的 `TRIVIALLY_INFEASIBLE` 應已擋下，這是一致性防線，比照 `COMPILATION_FAILED` 語意）。
+     - **soft 且不成立** → 合法問題，**不 raise**：把常數懲罰 `w·rhs²` 寫進 objective（BQM 路徑的 offset 項），trace `native=False`（`==` 時 `slack_range=None`，不等式時 `0`），compiler 只 log warning；validator 端發 `SOFT_ALWAYS_VIOLATED`。
    - 否則 `lhs = dimod.BinaryQuadraticModel(coefficients, {}, 0.0, "BINARY")`，
      `cqm.add_constraint_from_model(lhs, sense=constraint.operator, rhs=constraint.rhs, label=constraint.id, weight=None | constraint.weight, penalty="quadratic")`。
    - hard：`weight=None`（dimod 語意：必須滿足）；trace `penalty=None, native=True`。

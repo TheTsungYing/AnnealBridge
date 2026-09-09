@@ -24,15 +24,18 @@ the Phase 1/2/3a compiled output bit-for-bit stable.
 import itertools
 import random
 
+import dimod
 import pytest
 
 from annealbridge.compiler.integer_encoding import (
     AffineForm,
     encode_integer_variables,
     expand_product,
+    expand_square,
+    expand_square_qm,
     substitute_linear,
-    substitute_quadratic,
 )
+from annealbridge.compiler.objective import build_objective_bqm
 from annealbridge.models import (
     IntegerEncoding,
     LinearTerm,
@@ -306,8 +309,21 @@ class TestSubstituteLinear:
 
 
 # --------------------------------------------------------------------------
-# 3. substitute_quadratic
+# 3. Quadratic terms through build_objective_bqm
+#
+# 2026-09-09 review (F-13e): the former ``substitute_quadratic`` duplicated
+# the per-term ``expand_product`` accumulation of ``build_objective_bqm``
+# with a different float association and had no production caller, so the
+# production builder is what these tests now exercise directly.
 # --------------------------------------------------------------------------
+
+
+def quadratic_objective(terms: list[QuadraticTerm]) -> Objective:
+    return Objective(direction="minimize", linear_terms=[], quadratic_terms=terms)
+
+
+def bqm_energy(bqm: dimod.BinaryQuadraticModel, assignment: dict[str, int]) -> float:
+    return float(bqm.energy({name: assignment[name] for name in bqm.variables}))
 
 
 def quadratic_case_variables() -> list[Variable]:
@@ -320,7 +336,7 @@ def quadratic_case_variables() -> list[Variable]:
     ]
 
 
-class TestSubstituteQuadratic:
+class TestQuadraticTermsInObjectiveBqm:
     @pytest.mark.parametrize(
         "first,second",
         [("x", "x"), ("x", "y"), ("y", "y"), ("x", "b"), ("b", "x"), ("b", "d")],
@@ -331,15 +347,16 @@ class TestSubstituteQuadratic:
         forms, encodings = encode_integer_variables(make_problem(variables))
         term = QuadraticTerm(variable1=first, variable2=second, coefficient=-1.5)
 
-        linear, quadratic, constant = substitute_quadratic([term], forms)
+        bqm = build_objective_bqm(quadratic_objective([term]), forms)
 
-        assert all(left != right for left, right in quadratic), quadratic
+        # Every compiled variable is a bit, so a square always folds into
+        # the linear part (a BINARY BQM cannot even hold ``(v, v)``).
+        assert all(left != right for left, right in bqm.quadratic), bqm.quadratic
         for _ in range(CASES):
             values = random_assignment(rng, variables)
             assignment = compiled_assignment(encodings, values)
             expected = -1.5 * values[first] * values[second]
-            actual = evaluate_substitution(linear, quadratic, constant, assignment)
-            assert actual == pytest.approx(expected), values
+            assert bqm_energy(bqm, assignment) == pytest.approx(expected), values
 
     def test_a_pair_and_its_reverse_share_one_entry(self):
         variables = quadratic_case_variables()
@@ -349,39 +366,41 @@ class TestSubstituteQuadratic:
             QuadraticTerm(variable1="y", variable2="x", coefficient=2.0),
         ]
 
-        linear, quadratic, constant = substitute_quadratic(terms, forms)
+        bqm = build_objective_bqm(quadratic_objective(terms), forms)
 
-        # Both orientations of every pair never coexist.
-        for left, right in quadratic:
-            assert (right, left) not in quadratic or left == right
-            assert left != right
-        # ... and the merged result is the same as one term with c = 3.
-        merged_linear, merged_quadratic, merged_constant = substitute_quadratic(
-            [QuadraticTerm(variable1="x", variable2="y", coefficient=3.0)], forms
+        # The merged model is the same as one term with c = 3.
+        merged = build_objective_bqm(
+            quadratic_objective(
+                [QuadraticTerm(variable1="x", variable2="y", coefficient=3.0)]
+            ),
+            forms,
         )
-        assert linear == pytest.approx(merged_linear)
-        assert quadratic == pytest.approx(merged_quadratic)
-        assert constant == pytest.approx(merged_constant)
+        assert dict(bqm.linear) == pytest.approx(dict(merged.linear))
+        assert {frozenset(k): v for k, v in bqm.quadratic.items()} == pytest.approx(
+            {frozenset(k): v for k, v in merged.quadratic.items()}
+        )
+        assert bqm.offset == pytest.approx(merged.offset)
 
         rng = random.Random(SEED)
         for _ in range(CASES):
             values = random_assignment(rng, variables)
             assignment = compiled_assignment(encodings, values)
             expected = 3.0 * values["x"] * values["y"]
-            assert evaluate_substitution(
-                linear, quadratic, constant, assignment
-            ) == pytest.approx(expected)
+            assert bqm_energy(bqm, assignment) == pytest.approx(expected)
 
     def test_a_nonzero_constant_appears_for_products_of_shifted_variables(self):
         # x in -2..3 and y in 1..4: the constant is (-2) * 1 * coefficient.
         variables = quadratic_case_variables()
         forms, _ = encode_integer_variables(make_problem(variables))
 
-        _, _, constant = substitute_quadratic(
-            [QuadraticTerm(variable1="x", variable2="y", coefficient=2.0)], forms
+        bqm = build_objective_bqm(
+            quadratic_objective(
+                [QuadraticTerm(variable1="x", variable2="y", coefficient=2.0)]
+            ),
+            forms,
         )
 
-        assert constant == 2.0 * -2 * 1
+        assert bqm.offset == 2.0 * -2 * 1
 
     def test_random_term_lists_evaluate_to_the_business_expression(self):
         rng = random.Random(SEED + 1)
@@ -413,19 +432,128 @@ class TestSubstituteQuadratic:
             if not terms:
                 continue
 
-            linear, quadratic, constant = substitute_quadratic(terms, forms)
+            bqm = build_objective_bqm(quadratic_objective(terms), forms)
 
             # On the BQM path every compiled variable is a bit, so a square
             # always folds into the linear part.
-            assert all(left != right for left, right in quadratic), quadratic
+            assert all(left != right for left, right in bqm.quadratic), bqm.quadratic
             values = random_assignment(rng, variables)
             assignment = compiled_assignment(encodings, values)
             expected = sum(
                 term.coefficient * values[term.variable1] * values[term.variable2]
                 for term in terms
             )
-            actual = evaluate_substitution(linear, quadratic, constant, assignment)
-            assert actual == pytest.approx(expected), (terms, values)
+            assert bqm_energy(bqm, assignment) == pytest.approx(expected), (terms, values)
+
+
+# --------------------------------------------------------------------------
+# 3b. expand_square: the one squared-penalty expansion (review F-13a)
+# --------------------------------------------------------------------------
+
+
+def bqm_penalty_formula(
+    coefficients: dict[str, float], constant: float, weight: float
+) -> tuple[dict[str, float], dict[tuple[str, str], float], float]:
+    """The Phase 1 ``_add_squared_penalty`` arithmetic, spelled out verbatim.
+
+    Written the way the BQM compiler always wrote it (and the 3a golden
+    test pins): ``lam * (a*a + 2.0*c0*a)``, ``2.0 * lam * a_i * a_j``,
+    ``lam * c0 * c0``. ``expand_square`` must reproduce these floats exactly,
+    not approximately.
+    """
+    items = list(coefficients.items())
+    linear = {v: weight * (a * a + 2.0 * constant * a) for v, a in items}
+    quadratic = {}
+    for i, (var_i, value_i) in enumerate(items):
+        for var_j, value_j in items[i + 1 :]:
+            quadratic[(var_i, var_j)] = 2.0 * weight * value_i * value_j
+    return linear, quadratic, weight * constant * constant
+
+
+def random_square_inputs(rng: random.Random) -> tuple[dict[str, float], float, float]:
+    """Non-dyadic floats on purpose: rounding differences must show up."""
+    names = [f"v{i}" for i in range(rng.randint(1, 5))]
+    coefficients = {name: rng.uniform(-7.0, 7.0) for name in names}
+    return coefficients, rng.uniform(-9.0, 9.0), rng.uniform(0.01, 1000.0)
+
+
+class TestExpandSquare:
+    def test_is_bit_identical_to_the_bqm_penalty_formula(self):
+        rng = random.Random(SEED + 2)
+        for _ in range(CASES):
+            coefficients, constant, weight = random_square_inputs(rng)
+
+            linear, quadratic, offset = expand_square(coefficients, constant, weight)
+
+            expected = bqm_penalty_formula(coefficients, constant, weight)
+            # Exact equality (no approx): this is the golden-pinned order.
+            assert (linear, quadratic, offset) == expected
+            assert list(linear) == list(coefficients)
+
+    def test_every_pair_appears_exactly_once_in_coefficient_order(self):
+        coefficients = {"a": 1.5, "b": -2.0, "c": 0.25}
+
+        _, quadratic, _ = expand_square(coefficients, 0.0, 1.0)
+
+        assert list(quadratic) == [("a", "b"), ("a", "c"), ("b", "c")]
+
+    def test_unfolded_square_stays_a_quadratic_entry(self):
+        coefficients = {"x": 3.0, "b": 1.0}
+
+        linear, quadratic, offset = expand_square(
+            coefficients, -2.0, 0.5, fold_square=lambda name: name == "b"
+        )
+
+        # x keeps its square: linear part is only the cross term with the
+        # constant, the square is the (x, x) entry.
+        assert linear["x"] == 0.5 * (2.0 * -2.0 * 3.0)
+        assert quadratic[("x", "x")] == 0.5 * (3.0 * 3.0)
+        # b folds: the full diagonal goes to the linear part.
+        assert linear["b"] == 0.5 * (1.0 * 1.0 + 2.0 * -2.0 * 1.0)
+        assert ("b", "b") not in quadratic
+        assert quadratic[("x", "b")] == 2.0 * 0.5 * 3.0 * 1.0
+        assert offset == 0.5 * -2.0 * -2.0
+
+    def test_evaluates_to_the_weighted_square(self):
+        rng = random.Random(SEED + 3)
+        for _ in range(CASES):
+            coefficients, constant, weight = random_square_inputs(rng)
+            unfolded = {name for name in coefficients if rng.random() < 0.5}
+            linear, quadratic, offset = expand_square(
+                coefficients, constant, weight, fold_square=lambda n: n not in unfolded
+            )
+            # Folded names are bits (0/1); unfolded ones may take any integer.
+            assignment = {
+                name: rng.randint(-5, 5) if name in unfolded else rng.randint(0, 1)
+                for name in coefficients
+            }
+            affine = constant + sum(a * assignment[n] for n, a in coefficients.items())
+
+            actual = evaluate_substitution(linear, quadratic, offset, assignment)
+
+            assert actual == pytest.approx(weight * affine * affine)
+
+    def test_qm_adapter_uses_the_same_floats(self):
+        rng = random.Random(SEED + 4)
+        for _ in range(CASES):
+            coefficients, constant, weight = random_square_inputs(rng)
+            qm = dimod.QuadraticModel()
+            unfolded = set()
+            for name in coefficients:
+                if rng.random() < 0.5:
+                    qm.add_variable("INTEGER", name, lower_bound=-5, upper_bound=5)
+                    unfolded.add(name)
+                else:
+                    qm.add_variable("BINARY", name)
+
+            expand_square_qm(qm, coefficients, constant, weight)
+
+            linear, quadratic, offset = expand_square(
+                coefficients, constant, weight, fold_square=lambda n: n not in unfolded
+            )
+            assert {name: qm.get_linear(name) for name in coefficients} == linear
+            assert {pair: qm.get_quadratic(*pair) for pair in quadratic} == quadratic
+            assert qm.offset == offset
 
 
 # --------------------------------------------------------------------------

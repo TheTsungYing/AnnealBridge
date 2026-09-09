@@ -5,8 +5,10 @@ package (spec §4). D-Wave credentials deliberately stay out of these
 settings — Ocean's native config handles them (spec §18).
 """
 
+from typing import Annotated
+
 from pydantic import Field, ValidationError, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from pydantic_settings import SettingsError as PydanticSettingsError
 
 from annealbridge.orchestration.policy import ExecutionPolicy, validate_limits
@@ -26,7 +28,11 @@ class ServerSettings(BaseSettings):
     The limit fields mirror :class:`ExecutionPolicy`, bounds included, so an
     invalid environment is rejected here — before a policy is built and long
     before the first solve. ``limits`` is read from ``ANNEALBRIDGE_LIMITS``
-    as a JSON object (e.g. ``'{"iterations": 100000}'``).
+    as a JSON object (e.g. ``'{"iterations": 100000}'``);
+    ``enabled_backends`` from ``ANNEALBRIDGE_ENABLED_BACKENDS`` as a
+    comma-separated list of registry names (unset or empty: every
+    registered backend), the value being the only way an operator can reach
+    the policy's ``enabled_backends`` gate (2026-09-09 review F-18).
     """
 
     model_config = SettingsConfigDict(env_prefix="ANNEALBRIDGE_")
@@ -45,9 +51,21 @@ class ServerSettings(BaseSettings):
     max_local_retries: int = Field(default=10, ge=0)
     max_remote_retries: int = Field(default=3, ge=0)
     max_top_k: int = Field(default=1000, ge=1)
+    # ``NoDecode``: pydantic-settings would otherwise parse a set as JSON;
+    # the operator writes ``exact,simulated_annealing`` instead.
+    enabled_backends: Annotated[set[str] | None, NoDecode] = None
     limits: dict[str, float] = Field(default_factory=dict)
     http_host: str = "127.0.0.1"
     http_port: int = 8000
+
+    @field_validator("enabled_backends", mode="before")
+    @classmethod
+    def _split_enabled_backends(cls, value: object) -> object:
+        """Comma-separated names → set; blank entries dropped; empty → None."""
+        if isinstance(value, str):
+            names = {part.strip() for part in value.split(",") if part.strip()}
+            return names or None
+        return value
 
     @field_validator("limits")
     @classmethod
@@ -71,6 +89,7 @@ class ServerSettings(BaseSettings):
             max_local_retries=self.max_local_retries,
             max_remote_retries=self.max_remote_retries,
             max_top_k=self.max_top_k,
+            enabled_backends=self.enabled_backends,
             limits=self.limits,
         )
 

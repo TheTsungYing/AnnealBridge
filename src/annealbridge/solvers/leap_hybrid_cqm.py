@@ -33,11 +33,12 @@ from annealbridge.solvers.metadata import sanitize_sampleset_info
 from annealbridge.solvers.ocean import (
     OCEAN_CREDENTIALS,
     HYBRID_SAMPLE_EXCEPTION_CODES,
-    SAMPLER_INIT_EXCEPTION_CODES,
     LazySampler,
     call_ocean,
+    create_sampler,
     dwave_availability,
     register_ocean_config_token,
+    resolve_hybrid_time_limit,
     resolved,
 )
 
@@ -139,33 +140,21 @@ class LeapHybridCQMBackend:
     ) -> float:
         """Effective ``time_limit`` (seconds) a solve would submit (§17.2).
 
-        The user's value if given, floored at the sampler's
-        ``min_time_limit(cqm)``; the sampler minimum alone when the user
-        gave none — the same rule as the BQM hybrid backend. Nothing is
-        submitted: ``min_time_limit`` is a local interpolation over solver
-        properties fetched at construction. The service compares this
-        value with policy before :meth:`solve` runs; :meth:`solve` calls
-        this same method so both see the same number.
+        The shared hybrid rule (:func:`resolve_hybrid_time_limit`, the very
+        same code as the BQM hybrid backend): the user's value if given,
+        floored at the sampler's ``min_time_limit(cqm)``; the sampler
+        minimum alone when the user gave none. Nothing is submitted. The
+        service compares this value with policy before :meth:`solve` runs;
+        :meth:`solve` calls this same method so both see the same number.
         """
-        cqm = compiled_problem.model
         user_time_limit = (
             preferences.leap_hybrid_cqm.time_limit_seconds
             if preferences.leap_hybrid_cqm is not None
             else None
         )
-        sampler = call_ocean(
-            "Leap hybrid CQM sampler could not be created",
-            SAMPLER_INIT_EXCEPTION_CODES,
-            self._sampler.get,
+        return resolve_hybrid_time_limit(
+            self._sampler, compiled_problem.model, user_time_limit, label="Leap hybrid CQM"
         )
-        min_time_limit = call_ocean(
-            "Leap hybrid CQM minimum time limit could not be determined",
-            HYBRID_SAMPLE_EXCEPTION_CODES,
-            lambda: float(sampler.min_time_limit(cqm)),
-        )
-        if user_time_limit is None:
-            return min_time_limit
-        return max(float(user_time_limit), min_time_limit)
 
     def solve(
         self,
@@ -191,11 +180,7 @@ class LeapHybridCQMBackend:
         """
         cqm = compiled_problem.model
         effective_time_limit = self.resolve_time_limit(compiled_problem, preferences)
-        sampler = call_ocean(
-            "Leap hybrid CQM sampler could not be created",
-            SAMPLER_INIT_EXCEPTION_CODES,
-            self._sampler.get,
-        )
+        sampler = create_sampler(self._sampler, "Leap hybrid CQM")
         sampleset = call_ocean(
             "Leap hybrid CQM solve failed",
             HYBRID_SAMPLE_EXCEPTION_CODES,

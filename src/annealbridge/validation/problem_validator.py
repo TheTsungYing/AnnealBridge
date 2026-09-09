@@ -259,7 +259,10 @@ class ProblemValidationResult(BaseModel):
     valid: bool
     errors: list[SolveError] = []
     warnings: list[SolveError] = []
-    estimated_compiled_variables: int | None = None  # 原始變數 + slack bits，純算術
+    # BQM 路徑：binary 變數 + integer 編碼位元 + slack bits；
+    # CQM 路徑：變數 + integer slack（3b §9.4，依 model_type 決定用哪條）。
+    # 兩者都是純算術，不建模型。
+    estimated_compiled_variables: int | None = None
     objective_scale: float | None = None
     model_type: ModelType | None = None
 

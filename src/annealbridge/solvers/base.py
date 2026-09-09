@@ -75,10 +75,19 @@ class RawSolverResult(BaseModel):
 
     Lists are accepted on construction and converted, so small hand-built
     results (tests, fakes) stay easy to write: a list whose values all fit
-    in ``int8`` becomes ``int8`` (the ``from_dicts`` default), anything
-    wider stays ``int64``; an empty list is an ``int8`` matrix with zero
-    rows. :meth:`from_dicts` and :meth:`as_dicts` convert to and from the
-    per-row dict form.
+    in ``int8`` becomes ``int8``, anything wider stays ``int64``; an empty
+    list is an ``int8`` matrix with zero rows. This widening happens only on
+    the constructor's list path (``_coerce_samples``).
+
+    :meth:`from_dicts` and :meth:`as_dicts` convert to and from the per-row
+    dict form and are **test-facing** helpers only (their signatures are
+    fixed by 3b spec §11); production backends build the matrix with
+    ``sampleset_to_arrays`` and pass it to the constructor, so neither
+    helper has a production caller. Unlike the constructor,
+    :meth:`from_dicts` does *not* widen: it builds the matrix with the
+    ``dtype`` argument (``np.int8`` by default), and a value outside that
+    dtype's range raises ``OverflowError`` -- pass ``dtype=np.int64`` for
+    integer-valued rows.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -136,13 +145,18 @@ class RawSolverResult(BaseModel):
         metadata: SolverExecutionMetadata | None = None,
         dtype: Any = np.int8,
     ) -> "RawSolverResult":
-        """Build a result from per-row dicts (tests and small-scale use).
+        """Build a result from per-row dicts (test-facing; 3b spec §11).
+
+        No production caller: backends go through ``sampleset_to_arrays``
+        and the constructor instead.
 
         ``variables`` defaults to the key order of the first sample; every
         sample must assign exactly that variable set. ``dtype`` is the
         integer dtype of the sample matrix (``int8`` by default, matching
         the bit-valued output of the BQM backends; pass ``np.int64`` for
-        integer-valued rows).
+        integer-valued rows). The matrix is built with that dtype as given
+        -- it is never widened, so a value outside its range raises
+        ``OverflowError`` rather than being promoted.
         """
         if variables is None:
             variables = list(samples[0]) if samples else []
@@ -165,6 +179,7 @@ class RawSolverResult(BaseModel):
     def as_dicts(self) -> list[dict[str, int]]:
         """Per-row ``{variable: value}`` view of ``samples``.
 
+        Test-facing helper (3b spec §11) with no production caller.
         Materialises one dict per read -- fine for tests and small results,
         not for an exhaustive backend's output.
         """

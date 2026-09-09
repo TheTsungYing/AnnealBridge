@@ -22,6 +22,7 @@ from annealbridge.validation.estimates import (
     accumulate_terms,
     analyze_inequality,
     compute_slack_coefficients,
+    nonzero_coefficients,
 )
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "accumulate_terms",
     "compute_slack_coefficients",
     "encode_slack",
+    "nonzero_coefficients",
 ]
 
 logger = logging.getLogger(__name__)

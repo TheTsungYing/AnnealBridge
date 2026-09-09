@@ -6,6 +6,7 @@ No optimization logic lives here (spec §45).
 """
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Optional, get_args
 
@@ -15,7 +16,12 @@ from pydantic import ValidationError
 from annealbridge.config import SettingsError
 from annealbridge.interfaces.capabilities import BackendCapability, build_capabilities
 from annealbridge.interfaces.composition import AppState, build_state
-from annealbridge.models import OptimizationProblem, SolveResult, SolverPreferences
+from annealbridge.models import (
+    OptimizationProblem,
+    SolveError,
+    SolveResult,
+    SolverPreferences,
+)
 from annealbridge.validation import (
     BackendRecommendationResult,
     ProblemValidationResult,
@@ -83,6 +89,23 @@ def _override_backend(problem: OptimizationProblem, backend: str) -> Optimizatio
     return problem.model_copy(update={"solver": preferences})
 
 
+def _render_errors(items: Sequence[SolveError], lines: list[str], title: str) -> None:
+    """Append an ``[CODE] path: message`` block with recommended actions.
+
+    The single renderer for structured errors and warnings shared by all three
+    commands: ``solve`` (:func:`_render_human`), ``validate``
+    (:func:`_render_validation`) and ``recommend``
+    (:func:`_render_recommendation`).
+    """
+    lines.append("")
+    lines.append(f"{title} ({len(items)}):")
+    for item in items:
+        location = f" {item.path}" if item.path else ""
+        lines.append(f"  [{item.code}]{location}: {item.message}")
+        if item.recommended_action:
+            lines.append(f"    recommended action: {item.recommended_action}")
+
+
 def _render_human(problem: OptimizationProblem, result: SolveResult) -> str:
     """Format a SolveResult as the human-readable report from spec §29."""
     lines = [
@@ -115,16 +138,12 @@ def _render_human(problem: OptimizationProblem, result: SolveResult) -> str:
         lines.append(f"Soft constraints: {soft_violated} violations")
 
     elif result.status in ("invalid_problem", "resource_limit_exceeded"):
-        lines.append("")
-        header = (
-            "Validation errors:"
+        title = (
+            "Validation errors"
             if result.status == "invalid_problem"
-            else "Resource limit errors:"
+            else "Resource limit errors"
         )
-        lines.append(header)
-        for error in result.errors:
-            location = f" {error.path}" if error.path else ""
-            lines.append(f"  [{error.code}]{location}: {error.message}")
+        _render_errors(result.errors, lines, title)
 
     elif result.status == "infeasible":
         lines.append("")
@@ -143,22 +162,22 @@ def _render_human(problem: OptimizationProblem, result: SolveResult) -> str:
             lines.append(result.message)
 
     elif result.status in ("backend_unavailable", "configuration_error"):
-        lines.append("")
-        header = (
-            "Backend unavailable:"
+        title = (
+            "Backend unavailable"
             if result.status == "backend_unavailable"
-            else "Configuration error:"
+            else "Configuration error"
         )
-        lines.append(header)
-        for error in result.errors:
-            location = f" {error.path}" if error.path else ""
-            lines.append(f"  [{error.code}]{location}: {error.message}")
-            if error.recommended_action:
-                lines.append(f"    recommended action: {error.recommended_action}")
+        _render_errors(result.errors, lines, title)
 
     elif result.status == "solver_error":
-        lines.append("")
-        lines.append(f"Solver error: {result.message or 'unknown error'}")
+        if result.errors:
+            _render_errors(result.errors, lines, "Solver error")
+        else:
+            lines.append("")
+            lines.append(f"Solver error: {result.message or 'unknown error'}")
+
+    if result.warnings:
+        _render_errors(result.warnings, lines, "Warnings")
 
     return "\n".join(lines)
 
@@ -209,15 +228,8 @@ def _render_validation(
         lines.append(f"Objective scale: {_format_number(result.objective_scale)}")
 
     for title, items in (("Errors", result.errors), ("Warnings", result.warnings)):
-        if not items:
-            continue
-        lines.append("")
-        lines.append(f"{title} ({len(items)}):")
-        for item in items:
-            location = f" {item.path}" if item.path else ""
-            lines.append(f"  [{item.code}]{location}: {item.message}")
-            if item.recommended_action:
-                lines.append(f"    recommended action: {item.recommended_action}")
+        if items:
+            _render_errors(items, lines, title)
     return "\n".join(lines)
 
 
@@ -248,17 +260,6 @@ def validate(
 
     if not result.valid:
         raise typer.Exit(code=1)
-
-
-def _render_errors(items, lines: list[str], title: str) -> None:
-    """Append an ``[CODE] path: message`` block with recommended actions."""
-    lines.append("")
-    lines.append(f"{title} ({len(items)}):")
-    for item in items:
-        location = f" {item.path}" if item.path else ""
-        lines.append(f"  [{item.code}]{location}: {item.message}")
-        if item.recommended_action:
-            lines.append(f"    recommended action: {item.recommended_action}")
 
 
 def _render_recommendation(

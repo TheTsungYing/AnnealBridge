@@ -6,7 +6,13 @@ import pytest
 from typer.testing import CliRunner
 
 from annealbridge.interfaces.cli.main import _render_human, app
-from annealbridge.models import OptimizationProblem, SolveAttempt, SolveResult
+from annealbridge.models import (
+    OptimizationProblem,
+    Solution,
+    SolveAttempt,
+    SolveError,
+    SolveResult,
+)
 from tests.conftest import EXAMPLES_DIR
 
 runner = CliRunner()
@@ -399,3 +405,127 @@ class TestRenderInfeasibleAttempts:
         text = self._render(62.0)
 
         assert "attempt 1: penalty=62, samples=10, unique=4, feasible=0" in text
+
+
+class TestRenderHumanErrorsAndWarnings:
+    """Review F-13d / F-22: every human-mode status renders its structured
+    errors through the single ``_render_errors`` helper, and warnings are
+    never silently dropped."""
+
+    @staticmethod
+    def _problem() -> OptimizationProblem:
+        return OptimizationProblem.model_validate_json(
+            (EXAMPLES_DIR / "knapsack.json").read_text(encoding="utf-8")
+        )
+
+    def _render(self, **overrides) -> str:
+        fields = {
+            "backend": "simulated_annealing",
+            "objective_direction": "maximize",
+            "solutions": [],
+            "attempts": [],
+        }
+        fields.update(overrides)
+        return _render_human(self._problem(), SolveResult(**fields))
+
+    def test_solver_error_renders_code_and_recommended_action(self):
+        text = self._render(
+            status="solver_error",
+            message="sampler exploded",
+            errors=[
+                SolveError(
+                    code="SOLVER_ERROR",
+                    message="sampler exploded",
+                    recommended_action="retry with fewer reads",
+                )
+            ],
+        )
+
+        assert "Solver error (1):" in text
+        assert "[SOLVER_ERROR]: sampler exploded" in text
+        assert "recommended action: retry with fewer reads" in text
+
+    def test_solver_error_without_errors_keeps_the_message_fallback(self):
+        text = self._render(status="solver_error", message="sampler exploded")
+
+        assert "Solver error: sampler exploded" in text
+        assert "Solver error (" not in text
+
+    def test_solver_error_without_errors_or_message_says_unknown(self):
+        text = self._render(status="solver_error")
+
+        assert "Solver error: unknown error" in text
+
+    def test_invalid_problem_renders_the_recommended_action(self):
+        text = self._render(
+            status="invalid_problem",
+            backend=None,
+            errors=[
+                SolveError(
+                    code="UNKNOWN_VARIABLE",
+                    path="constraints[0].terms[0].variable",
+                    message="unknown variable 'ghost'",
+                    recommended_action="declare the variable or fix the name",
+                )
+            ],
+        )
+
+        assert "Validation errors (1):" in text
+        assert (
+            "[UNKNOWN_VARIABLE] constraints[0].terms[0].variable: "
+            "unknown variable 'ghost'" in text
+        )
+        assert "recommended action: declare the variable or fix the name" in text
+
+    def test_resource_limit_exceeded_keeps_its_own_title(self):
+        text = self._render(
+            status="resource_limit_exceeded",
+            errors=[
+                SolveError(code="TOO_MANY_VARIABLES", message="24 variables max")
+            ],
+        )
+
+        assert "Resource limit errors (1):" in text
+        assert "[TOO_MANY_VARIABLES]: 24 variables max" in text
+
+    def test_warnings_are_rendered_after_a_successful_solve(self):
+        text = self._render(
+            status="success",
+            backend="exact",
+            solutions=[
+                Solution(
+                    rank=1,
+                    variables={"x": 1},
+                    objective_value=3.0,
+                    soft_violation_score=0.0,
+                    ranking_score=3.0,
+                    energy=None,
+                    hard_constraints_satisfied=True,
+                    constraint_evaluations=[],
+                )
+            ],
+            warnings=[
+                SolveError(
+                    code="SEED_IGNORED",
+                    path="solver.seed",
+                    message="seed is ignored",
+                    recommended_action="drop solver.seed",
+                )
+            ],
+        )
+
+        assert "Warnings (1):" in text
+        assert "[SEED_IGNORED] solver.seed: seed is ignored" in text
+        assert "recommended action: drop solver.seed" in text
+
+    def test_warnings_are_rendered_for_an_infeasible_result(self):
+        text = self._render(
+            status="infeasible",
+            message="No feasible solution found",
+            warnings=[
+                SolveError(code="PENALTY_CAPPED", message="penalty hit the ceiling")
+            ],
+        )
+
+        assert "Warnings (1):" in text
+        assert "[PENALTY_CAPPED]: penalty hit the ceiling" in text

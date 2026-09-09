@@ -46,8 +46,9 @@ __all__ = ["EPSILON", "BatchValidation", "validate", "validate_batch"]
 def validate(problem: OptimizationProblem, sample: dict[str, int]) -> ValidationResult:
     """Evaluate every constraint of ``problem`` against a business sample.
 
-    ``sample`` maps each business variable name to its 0/1 assignment,
-    with internal variables already stripped.
+    ``sample`` maps each business variable name to its value (0/1 for a
+    binary variable, an integer within its bounds for an integer one), with
+    internal variables already stripped.
     """
     evaluations = [_evaluate(constraint, sample) for constraint in problem.constraints]
     hard_violations = [
@@ -123,8 +124,10 @@ def validate_batch(
     """Evaluate every constraint against every row of ``samples`` at once.
 
     ``samples`` is an integer matrix of shape ``(candidates, len(variables))``
-    whose column ``j`` holds the 0/1 value of business variable
-    ``variables[j]``; internal variables must already be stripped. Returns
+    whose column ``j`` holds the value of business variable
+    ``variables[j]`` (0/1 for a binary variable, an integer within its
+    bounds for an integer one); internal variables must already be
+    stripped. Returns
     the same ``feasible`` verdict and ``soft_violation_score`` that
     :func:`validate` would produce for each row, computed with identical
     arithmetic, without building per-constraint report objects.

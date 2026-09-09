@@ -124,6 +124,22 @@ def accumulate_terms(terms: Iterable[LinearTerm]) -> dict[str, float]:
     return coefficients
 
 
+def nonzero_coefficients(terms: Iterable[LinearTerm]) -> dict[str, float]:
+    """``accumulate_terms`` with the variables whose sum is exactly ``0.0`` dropped.
+
+    The one definition of "the effective coefficients of a constraint"
+    (2026-09-09 review F-13b): both compilers and both estimate paths
+    (``max_soft_energy``, ``analyze_inequality``) go through it, so a
+    constraint whose terms cancel is a constant constraint everywhere.
+    Order is first appearance, as in ``accumulate_terms``.
+    """
+    return {
+        variable: value
+        for variable, value in accumulate_terms(terms).items()
+        if value != 0.0
+    }
+
+
 def lhs_bounds(
     coefficients: dict[str, float], bounds: Bounds | None = None
 ) -> tuple[float, float]:
@@ -252,11 +268,7 @@ def compute_soft_energy_bound(constraint: Constraint, bounds: Bounds | None = No
     weight = constraint.weight
 
     if constraint.operator == "==":
-        coefficients = {
-            variable: value
-            for variable, value in accumulate_terms(constraint.terms).items()
-            if value != 0.0
-        }
+        coefficients = nonzero_coefficients(constraint.terms)
         deviation = _max_abs_affine(coefficients, -constraint.rhs, bounds)
         return weight * deviation * deviation
 
@@ -327,11 +339,7 @@ def analyze_inequality(
             f"{constraint.operator!r} for constraint {constraint.id}"
         )
 
-    coefficients = {
-        variable: value
-        for variable, value in accumulate_terms(constraint.terms).items()
-        if value != 0.0
-    }
+    coefficients = nonzero_coefficients(constraint.terms)
     rhs = constraint.rhs
     if constraint.operator == ">=":
         coefficients = {variable: -value for variable, value in coefficients.items()}

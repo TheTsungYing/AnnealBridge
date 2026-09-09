@@ -32,6 +32,7 @@ from annealbridge.models import (
 from annealbridge.validation import estimates
 from annealbridge.validation.estimates import (
     accumulate_terms,
+    nonzero_coefficients,
     analyze_inequality,
     compute_objective_scale,
     compute_slack_coefficients,
@@ -637,3 +638,49 @@ def phase1_magnitude_scale(objective: Objective, bounds: dict[str, tuple[int, in
         for term in objective.quadratic_terms
     )
     return max(1.0, total)
+
+
+# --------------------------------------------------------------------------
+# nonzero_coefficients: the one "effective coefficients" rule (review F-13b)
+# --------------------------------------------------------------------------
+
+
+class TestNonzeroCoefficients:
+    def test_duplicates_accumulate_and_exact_zero_sums_are_dropped(self):
+        terms = [
+            LinearTerm(variable="x", coefficient=2.0),
+            LinearTerm(variable="y", coefficient=1.0),
+            LinearTerm(variable="x", coefficient=3.0),
+            LinearTerm(variable="y", coefficient=-1.0),
+            LinearTerm(variable="z", coefficient=4.0),
+        ]
+
+        assert nonzero_coefficients(terms) == {"x": 5.0, "z": 4.0}
+        # First-appearance order, exactly as ``accumulate_terms``.
+        assert list(nonzero_coefficients(terms)) == ["x", "z"]
+
+    def test_only_an_exact_zero_is_dropped(self):
+        # 0.1 + 0.2 - 0.3 is not 0.0 in floats and stays, like the compilers
+        # (and the estimates) have always treated it.
+        terms = [
+            LinearTerm(variable="x", coefficient=0.1),
+            LinearTerm(variable="x", coefficient=0.2),
+            LinearTerm(variable="x", coefficient=-0.3),
+        ]
+
+        assert nonzero_coefficients(terms) == {"x": 0.1 + 0.2 - 0.3}
+
+    def test_agrees_with_accumulate_terms_on_random_terms(self):
+        rng = random.Random(5150)
+        for _ in range(200):
+            names = [f"v{i}" for i in range(rng.randint(1, 4))]
+            terms = random_terms(rng, names)
+            expected = {
+                name: value
+                for name, value in accumulate_terms(terms).items()
+                if value != 0.0
+            }
+            assert nonzero_coefficients(terms) == expected
+
+    def test_empty_terms_give_a_constant_constraint(self):
+        assert nonzero_coefficients([]) == {}

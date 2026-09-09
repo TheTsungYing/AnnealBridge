@@ -46,8 +46,8 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "to use the QPU default."
     ),
     "REMOTE_TIME_LIMIT": (
-        "time_limit_seconds exceeds the server's limit for hybrid solving; "
-        "lower it or omit it to use the sampler minimum."
+        "time_limit_seconds exceeds the server's limit for remote solving; "
+        "lower it or omit it to use the backend's default."
     ),
     "LOCAL_READS_LIMIT": (
         "num_reads exceeds the server's limit for local sampling; lower "
@@ -179,21 +179,21 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "units, or make the constraint hard if it must always hold."
     ),
     "INVALID_SOLVER_PREFERENCE": (
-        "A solver preference is outside its allowed range (values such as "
-        "top_k, num_reads, num_sweeps, annealing_time_us, chain_strength and "
-        "time_limit_seconds must be positive, penalty_multiplier must be a "
-        "finite number greater than zero, and max_retries must not be "
-        "negative); correct the value, or omit it to use the default."
+        "A solver preference is outside its allowed range: every numeric "
+        "preference must be a finite number greater than zero (a retry "
+        "count may also be zero); correct the value, or omit it to use the "
+        "default."
     ),
     "TRIVIALLY_INFEASIBLE": (
         "A hard constraint cannot be satisfied by any assignment of the "
-        "binary variables, judged from the reachable range of its combined "
-        "left-hand side; correct the rhs, the operator or the coefficients, "
-        "or make the constraint soft if it is only a preference."
+        "variables within their bounds, judged from the reachable range of "
+        "its combined left-hand side; correct the rhs, the operator or the "
+        "coefficients, or make the constraint soft if it is only a "
+        "preference."
     ),
     "NO_VARIABLES": (
         "The problem declares no variables, so there is nothing to optimize; "
-        "declare at least one binary variable."
+        "declare at least one variable."
     ),
     # Problem validator codes for integer variables (Phase 3b spec §9.1)
     "INTEGER_BOUNDS_MISSING": (

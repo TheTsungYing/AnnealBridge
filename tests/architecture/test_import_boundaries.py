@@ -101,8 +101,10 @@ def test_core_packages_do_not_import_banned_modules() -> None:
     )
 
 
-# Layers above validation in the §4 dependency direction (penalty sits between
-# validation and compiler: it may import validation, never the reverse).
+# Dependency direction (README "Layering"): models ← validation ← penalty ←
+# compiler ← solvers ← orchestration.  penalty may import validation and models
+# only; compiler may not import penalty (it gets ``compute_objective_scale``
+# straight from ``validation.estimates``).
 VALIDATION_UPPER_LAYERS = [
     "annealbridge.penalty",
     "annealbridge.compiler",
@@ -131,6 +133,45 @@ def test_validation_does_not_import_upper_layers() -> None:
 
     assert scanned_files > 0, "no validation .py files scanned"
     assert not violations, "validation imports upper layers:\n" + "\n".join(violations)
+
+
+# 2026-09-09 review (F-16): the README architecture diagram used to draw
+# penalty *after* compiler, which contradicted both the layering line and the
+# code.  penalty is a sibling consumer of ``validation.estimates`` that
+# orchestration applies on the bqm path; the compiler reads
+# ``compute_objective_scale`` from ``validation.estimates`` directly, so the
+# direction is now pinned by a test instead of by a comment.
+#
+# Only ``annealbridge.penalty`` is listed.  ``solvers`` cannot be added:
+# ``compiler/base.py``, ``bqm.py`` and ``cqm.py`` import
+# ``annealbridge.solvers.base`` inside an ``if TYPE_CHECKING:`` block, and
+# ``_imported_modules`` reports those as ordinary module-level imports (the
+# block is not a function scope).  Banning solvers would need an exemption
+# mechanism, which is not worth it for this rule.
+COMPILER_FORBIDDEN = ("annealbridge.penalty",)
+
+
+def test_compiler_does_not_import_penalty() -> None:
+    """§4: compiler sits below penalty, so it may never import it."""
+    scanned_files = 0
+    violations: list[str] = []
+
+    for py_file in sorted((SRC_ROOT / "compiler").rglob("*.py")):
+        scanned_files += 1
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        for lineno, module, _in_function in _imported_modules(tree):
+            if any(
+                module == banned or module.startswith(banned + ".")
+                for banned in COMPILER_FORBIDDEN
+            ):
+                relative = py_file.relative_to(SRC_ROOT.parent.parent)
+                violations.append(f"{relative}:{lineno} -> {module}")
+
+    assert scanned_files > 0, "no compiler .py files scanned"
+    assert not violations, (
+        "compiler imports penalty (take compute_objective_scale from "
+        "annealbridge.validation.estimates instead):\n" + "\n".join(violations)
+    )
 
 
 # ---------------------------------------------------------------------------

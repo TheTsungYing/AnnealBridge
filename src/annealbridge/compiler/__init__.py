@@ -7,9 +7,9 @@ from annealbridge.compiler.integer_encoding import (
     AffineForm,
     encode_integer_variables,
     expand_product,
+    expand_square,
     expand_square_qm,
     substitute_linear,
-    substitute_quadratic,
 )
 from annealbridge.compiler.objective import (
     add_model_variable,
@@ -35,7 +35,7 @@ __all__ = [
     "encode_integer_variables",
     "encode_slack",
     "expand_product",
+    "expand_square",
     "expand_square_qm",
     "substitute_linear",
-    "substitute_quadratic",
 ]

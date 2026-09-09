@@ -147,9 +147,11 @@ class FakeLocalCQMBackend:
         # decided downstream against the original problem, never here.
         variables, samples, energies = sampleset_to_arrays(sampleset, dtype=np.int64)
         reported = int(np.count_nonzero(sampleset.record.is_feasible))
-        metadata = sanitize_sampleset_info(
-            dict(sampleset.info), self.name, remote=False
-        ).model_copy(update={"sampler_reported_feasible": reported})
+        # A local backend that reports metadata: the sanitizer only knows
+        # remote backends (review F-18), so the flag is overridden here.
+        metadata = sanitize_sampleset_info(dict(sampleset.info), self.name).model_copy(
+            update={"remote": False, "sampler_reported_feasible": reported}
+        )
         return RawSolverResult(
             variables=variables,
             samples=samples,

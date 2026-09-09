@@ -183,7 +183,11 @@ class CandidateSet:
         return dict(zip(self.variables, self.samples[index].tolist()))
 
     def as_pairs(self) -> list[tuple[dict[str, int], float]]:
-        """``[(business_sample, energy), ...]`` — small-scale/test helper."""
+        """``[(business_sample, energy), ...]``.
+
+        Test-facing helper; no production caller. It materialises one dict
+        per candidate, so it is only for small-scale use.
+        """
         return [
             (self.sample_dict(index), float(self.energies[index]))
             for index in range(len(self))

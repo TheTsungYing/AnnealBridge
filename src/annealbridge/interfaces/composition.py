@@ -43,5 +43,11 @@ def build_state(settings: ServerSettings | None = None) -> AppState:
 
 
 def build_service(settings: ServerSettings | None = None) -> OptimizationService:
-    """Composition root: settings → policy → registry → service."""
+    """Composition root: settings → policy → registry → service.
+
+    The Phase 2 §21 name, kept as the library-facing entry point. The CLI
+    and the MCP server call :func:`build_state` instead because they also
+    need the registry for the capabilities view, so this wrapper has no
+    production caller inside the package (2026-09-09 review F-18).
+    """
     return build_state(settings).service

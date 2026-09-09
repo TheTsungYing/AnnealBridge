@@ -125,11 +125,16 @@ class TestSanitizeSamplesetInfo:
         assert "secret_field" not in dumped
         assert metadata.model_dump() != info
 
-    def test_local_backend_can_mark_remote_false(self) -> None:
-        metadata = sanitize_sampleset_info({}, backend="exact", remote=False)
+    def test_result_is_always_remote(self) -> None:
+        # Review F-18: only remote backends produce metadata, and the former
+        # ``remote=`` keyword is gone; a local test double overrides the
+        # flag through ``model_copy`` instead.
+        metadata = sanitize_sampleset_info({}, backend="leap_hybrid_bqm")
 
-        assert metadata.remote is False
+        assert metadata.remote is True
         assert metadata.timing_us == {}
+        with pytest.raises(TypeError):
+            sanitize_sampleset_info({}, backend="exact", remote=False)  # type: ignore[call-arg]
 
     def test_fujitsu_timing_keys_are_whitelisted(self) -> None:
         """3b §21: the DA's two timing facts survive, as floats."""

@@ -27,6 +27,8 @@ ENV_SUFFIXES = [
     "MAX_LOCAL_RETRIES",
     "MAX_REMOTE_RETRIES",
     "MAX_TOP_K",
+    # 2026-09-09 review (F-18): the enabled-backends gate's env entry.
+    "ENABLED_BACKENDS",
     "LIMITS",
     "HTTP_HOST",
     "HTTP_PORT",
@@ -178,8 +180,49 @@ class TestToPolicy:
         assert policy.max_remote_retries == settings.max_remote_retries
         assert policy.max_top_k == settings.max_top_k
 
-    def test_enabled_backends_stays_none(self, clean_env):
+    def test_enabled_backends_defaults_to_none(self, clean_env):
         assert ServerSettings().to_policy().enabled_backends is None
+
+
+class TestEnabledBackends:
+    """``ANNEALBRIDGE_ENABLED_BACKENDS`` (2026-09-09 review F-18).
+
+    Comma-separated registry names rather than the JSON list
+    pydantic-settings would expect for a set; unset or empty means every
+    registered backend, exactly like a policy built without the field.
+    """
+
+    def test_unset_means_every_backend(self, clean_env):
+        assert ServerSettings().enabled_backends is None
+
+    def test_comma_separated_names_become_a_set(self, clean_env):
+        clean_env.setenv("ANNEALBRIDGE_ENABLED_BACKENDS", "exact,simulated_annealing")
+
+        assert ServerSettings().enabled_backends == {"exact", "simulated_annealing"}
+
+    def test_whitespace_and_blank_entries_are_dropped(self, clean_env):
+        clean_env.setenv("ANNEALBRIDGE_ENABLED_BACKENDS", " exact , ,simulated_annealing,")
+
+        assert ServerSettings().enabled_backends == {"exact", "simulated_annealing"}
+
+    @pytest.mark.parametrize("value", ["", "   ", ",", " , "])
+    def test_empty_value_means_every_backend(self, clean_env, value):
+        clean_env.setenv("ANNEALBRIDGE_ENABLED_BACKENDS", value)
+
+        assert ServerSettings().enabled_backends is None
+        assert ServerSettings().to_policy().enabled_backends is None
+
+    def test_reaches_the_policy(self, clean_env):
+        clean_env.setenv("ANNEALBRIDGE_ENABLED_BACKENDS", "exact")
+
+        assert ServerSettings().to_policy().enabled_backends == {"exact"}
+
+    def test_is_not_parsed_as_json(self, clean_env):
+        # A JSON list would be the pydantic-settings default for a set; the
+        # documented format is the comma list, so the brackets are literal.
+        clean_env.setenv("ANNEALBRIDGE_ENABLED_BACKENDS", '["exact"]')
+
+        assert ServerSettings().enabled_backends == {'["exact"]'}
 
     def test_http_fields_do_not_leak_into_the_policy(self, clean_env):
         clean_env.setenv("ANNEALBRIDGE_HTTP_HOST", "0.0.0.0")
