@@ -30,6 +30,15 @@ its penalty type:
   holds for every business assignment (proven by
   ``test_cqm_compiler_integer.py``).
 
+A constraint whose accumulated coefficients are all zero is a constant
+``0 <op> rhs``, judged with the validator's tolerance (:func:`satisfies`).
+When it holds it is redundant and adds nothing; a *hard* one that fails is
+a ``CompilationError`` (the validator's ``TRIVIALLY_INFEASIBLE`` rejects it
+first, this is the last defence); a *soft* one that fails is a legal
+problem (review F-04) and becomes the constant penalty ``w * rhs**2`` in
+the objective, exactly what the BQM path puts in its offset, so the same
+problem never compiles on one path and fails on the other.
+
 The objective is built by :func:`build_objective_qm` (maximize negates
 everything, constant included) and the squared penalties are expanded by
 :func:`expand_square_qm`, which shares its expansion core with the BQM
@@ -62,6 +71,7 @@ from annealbridge.validation.estimates import (
     analyze_inequality,
     variable_bounds,
 )
+from annealbridge.validation.tolerance import satisfies
 
 if TYPE_CHECKING:
     from annealbridge.solvers.base import RawSolverResult
@@ -72,12 +82,13 @@ _COMPILER_NAME = "CQMCompiler"
 
 
 def _constant_constraint_holds(operator: str, rhs: float) -> bool:
-    """Whether ``0 <operator> rhs`` holds for a constraint with no variables."""
-    if operator == "==":
-        return rhs == 0.0
-    if operator == "<=":
-        return 0.0 <= rhs
-    return 0.0 >= rhs
+    """Whether ``0 <operator> rhs`` holds for a constraint with no variables.
+
+    Judged with the §23.1 tolerance, the same test the problem validator
+    applies to the constant lhs range ``[0, 0]`` (review F-04): an exact
+    ``rhs == 0.0`` used to refuse ``rhs = 1e-9`` that the validator accepts.
+    """
+    return satisfies(operator, 0.0, rhs)
 
 
 class CQMCompiler:
@@ -183,15 +194,36 @@ class CQMCompiler:
         }
 
         if not coefficients:
-            # A constant constraint: ``0 <op> rhs``. The validator's
-            # TRIVIALLY_INFEASIBLE check should already have rejected the
-            # failing case; this is the consistency defence (COMPILATION_FAILED).
-            if not _constant_constraint_holds(constraint.operator, constraint.rhs):
+            # A constant constraint: ``0 <op> rhs``, judged with the
+            # validator's tolerance.
+            if _constant_constraint_holds(constraint.operator, constraint.rhs):
+                return self._trace(constraint, redundant=True, native=True)
+            if constraint.type == "hard":
+                # The validator's TRIVIALLY_INFEASIBLE rejects this with the
+                # same test; this is the consistency defence (COMPILATION_FAILED).
                 raise CompilationError(
                     f"Constraint {constraint.id} has no non-zero coefficients and "
                     f"0 {constraint.operator} {constraint.rhs} does not hold"
                 )
-            return self._trace(constraint, redundant=True, native=True)
+            # Soft (review F-04): a legal problem whose weight is always paid.
+            # The validator warns SOFT_ALWAYS_VIOLATED; the penalty is the
+            # constant ``w * rhs**2`` in the objective, the BQM path's offset
+            # term, and the trace mirrors its clamped inequality (slack 0).
+            weight = constraint.weight
+            assert weight is not None  # checked above
+            logger.warning(
+                "Soft constraint %s has no non-zero coefficients and 0 %s %s never "
+                "holds; writing its constant penalty into the objective",
+                constraint.id,
+                constraint.operator,
+                constraint.rhs,
+            )
+            self._add_squared(objective, {}, -constraint.rhs, weight, declared)
+            return self._trace(
+                constraint,
+                native=False,
+                slack_range=None if constraint.operator == "==" else 0,
+            )
 
         # The writing is decided here, before anything touches the CQM:
         # dimod records a soft constraint and only then rejects

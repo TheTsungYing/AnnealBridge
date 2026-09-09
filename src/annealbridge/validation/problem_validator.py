@@ -9,7 +9,10 @@ and only produce a DUPLICATE_TERM_MERGED warning plus one log line (spec §8).
 ``validate_problem_full`` wraps the same error pass and adds the Phase 2 §20
 advisory layer: non-blocking warnings, ``estimated_compiled_variables`` and
 ``objective_scale``, so an agent can fix a problem or switch backend before
-spending quota. Warnings never affect ``valid``.
+spending quota. Warnings never affect ``valid``. A soft constraint that no
+assignment can satisfy is legal but warned about (``SOFT_ALWAYS_VIOLATED``,
+review F-04 / F-12) with the very judgement ``TRIVIALLY_INFEASIBLE`` uses
+for hard ones, so the compilers never disagree with this module.
 
 Backend-dependent advice is driven purely by the injected
 ``SolverCapabilities`` declaration (3a §9): this module never names a
@@ -49,7 +52,7 @@ from annealbridge.validation.estimates import (
     lhs_bounds,
     variable_bounds,
 )
-from annealbridge.validation.tolerance import tolerance
+from annealbridge.validation.tolerance import satisfies, tolerance
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +215,15 @@ _WARNING_RECOMMENDED_ACTIONS: dict[str, str] = {
         "interactions on a BQM backend; prefer a backend that accepts "
         "integer variables natively (model type cqm), or reduce the ranges."
     ),
+    # 2026-09-09 review (F-04 / F-12): the soft counterpart of
+    # TRIVIALLY_INFEASIBLE. Legal (the weight is simply always paid), so a
+    # warning; judged with the same tolerance, on both compiler paths alike.
+    "SOFT_ALWAYS_VIOLATED": (
+        "This soft constraint can never be satisfied within the variables' "
+        "bounds: every solution pays its penalty and the weight only rewards "
+        "the smallest violation; remove it, or fix its bound or coefficients "
+        "if it was meant to be attainable."
+    ),
 }
 
 
@@ -322,6 +334,7 @@ def validate_problem_full(
     warnings: list[SolveError] = []
     _warn_soft_weights(problem, objective_scale, warnings)
     _warn_inequalities(problem, bounds, warnings)
+    _warn_constraint_ranges(problem, bounds, warnings)
     _warn_integer_encoding(problem, bounds, model_type, warnings)
     if capabilities is not None:
         _warn_backend_fit(
@@ -408,6 +421,78 @@ def _warn_inequalities(
                         f"{slack_bits} slack bits on a BQM backend (more than "
                         f"{LARGE_SLACK_BITS_THRESHOLD}); the compiled model "
                         "grows accordingly"
+                    ),
+                )
+            )
+
+
+def _warn_constraint_ranges(
+    problem: OptimizationProblem, bounds: Bounds, warnings: list[SolveError]
+) -> None:
+    """Range verdicts the error pass leaves to advice (review F-04 / F-12).
+
+    A *soft* constraint no assignment within the bounds can satisfy is a
+    legal problem: its weight is simply always paid and both compilers write
+    the squared minimal violation (clamping any slack to zero). The agent
+    must still hear about it, so it gets ``SOFT_ALWAYS_VIOLATED``, decided by
+    the same :func:`_never_satisfiable` as ``TRIVIALLY_INFEASIBLE`` -- the
+    zero-coefficient case (``x:+1, x:-1 == 5``) included, which is what the
+    CQM compiler's constant branch judges with the same tolerance.
+
+    A *soft* equality whose coefficients cancel to zero and whose rhs is
+    zero within tolerance is always satisfied; it gets
+    ``REDUNDANT_CONSTRAINT`` like the always-true inequalities of
+    :func:`_warn_inequalities` (which already covers the zero-coefficient
+    inequality with ``0 <= rhs``). The hard equality of the same shape stays
+    silent as before: the Phase 3a golden recording
+    (``tests/golden/phase3a_compile.json``) pins the full validator output of
+    a 1.0 problem containing one, and that recording is a contract.
+    """
+    for index, constraint in enumerate(problem.constraints):
+        coefficients = accumulate_terms(constraint.terms)
+        lhs_min, lhs_max = lhs_bounds(coefficients, bounds)
+        constant = not any(value != 0.0 for value in coefficients.values())
+        rhs = constraint.rhs
+        path = f"constraints[{index}]"
+
+        if constraint.type == "soft" and _never_satisfiable(
+            constraint.operator, lhs_min, lhs_max, rhs
+        ):
+            if constant:
+                detail = (
+                    "its coefficients sum to zero for every variable, so the "
+                    "lhs is always 0"
+                )
+            else:
+                detail = (
+                    "lhs range (after summing repeated variables) is "
+                    f"[{lhs_min}, {lhs_max}]"
+                )
+            warnings.append(
+                _warning(
+                    "SOFT_ALWAYS_VIOLATED",
+                    path,
+                    (
+                        f"Soft constraint {constraint.id} can never be satisfied: "
+                        f"{detail} but requires {constraint.operator} {rhs}; "
+                        f"every solution pays weight {constraint.weight}"
+                    ),
+                )
+            )
+        elif (
+            constraint.type == "soft"
+            and constant
+            and constraint.operator == "=="
+            and satisfies("==", 0.0, rhs)
+        ):
+            warnings.append(
+                _warning(
+                    "REDUNDANT_CONSTRAINT",
+                    path,
+                    (
+                        f"Equality constraint {constraint.id} is always satisfied: "
+                        f"its coefficients sum to zero for every variable and "
+                        f"0 == {rhs} holds"
                     ),
                 )
             )
@@ -928,14 +1013,10 @@ def _check_trivially_infeasible(
     message reports the user's own operator and rhs, never the compiler's
     normalized form.
 
-    The comparison uses the solution validator's hybrid tolerance (review
-    F-25): a constraint is infeasible only when even the most favourable
-    end of the lhs range would fail the §23.1 test. ``actual - tol(actual)``
-    and ``actual + tol(actual)`` are monotone in ``actual`` (the relative
-    part is 1e-12), so checking ``lhs_min`` for ``<=``, ``lhs_max`` for
-    ``>=`` and both ends for ``==`` is exact: what is rejected here is
-    exactly what ``validate_solution`` would reject for every assignment,
-    and what passes here has at least one lhs value it would accept.
+    The comparison is :func:`_never_satisfiable`, shared with the soft
+    ``SOFT_ALWAYS_VIOLATED`` warning: what is rejected here is exactly what
+    ``validate_solution`` would reject for every assignment, and what passes
+    here has at least one lhs value it would accept.
     """
     if constraint.type != "hard" or not constraint.terms:
         return
@@ -952,17 +1033,7 @@ def _check_trivially_infeasible(
     lhs_min, lhs_max = lhs_bounds(accumulate_terms(constraint.terms), bounds)
     rhs = constraint.rhs
 
-    if constraint.operator == "<=":
-        infeasible = lhs_min > rhs + tolerance(lhs_min, rhs)
-    elif constraint.operator == ">=":
-        infeasible = lhs_max < rhs - tolerance(lhs_max, rhs)
-    else:
-        infeasible = (
-            rhs < lhs_min - tolerance(lhs_min, rhs)
-            or rhs > lhs_max + tolerance(lhs_max, rhs)
-        )
-
-    if infeasible:
+    if _never_satisfiable(constraint.operator, lhs_min, lhs_max, rhs):
         errors.append(
             _error(
                 code="TRIVIALLY_INFEASIBLE",
@@ -975,6 +1046,27 @@ def _check_trivially_infeasible(
                 ),
             )
         )
+
+
+def _never_satisfiable(operator: str, lhs_min: float, lhs_max: float, rhs: float) -> bool:
+    """Whether no lhs value in ``[lhs_min, lhs_max]`` passes the §23.1 test.
+
+    The one judgement behind ``TRIVIALLY_INFEASIBLE`` (hard, an error) and
+    ``SOFT_ALWAYS_VIOLATED`` (soft, a warning), so the two can never drift.
+    It uses the solution validator's hybrid tolerance (review F-25):
+    ``actual - tol(actual)`` and ``actual + tol(actual)`` are monotone in
+    ``actual`` (the relative part is 1e-12), so the most favourable end of
+    the range decides -- ``lhs_min`` for ``<=``, ``lhs_max`` for ``>=`` --
+    and for ``==`` the rhs must fall outside the range widened by the
+    tolerance at each end. With ``lhs_min == lhs_max == 0`` (no non-zero
+    coefficient) this is exactly ``not satisfies(operator, 0.0, rhs)``, the
+    CQM compiler's constant-constraint test.
+    """
+    if operator == "<=":
+        return not satisfies("<=", lhs_min, rhs)
+    if operator == ">=":
+        return not satisfies(">=", lhs_max, rhs)
+    return rhs < lhs_min - tolerance(lhs_min, rhs) or rhs > lhs_max + tolerance(lhs_max, rhs)
 
 
 def _check_solver_preferences(

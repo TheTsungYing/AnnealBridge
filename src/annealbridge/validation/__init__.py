@@ -16,6 +16,7 @@ from annealbridge.validation.tolerance import (
     ABSOLUTE_TOLERANCE,
     EPSILON,
     RELATIVE_TOLERANCE,
+    satisfies,
     tolerance,
     tolerance_array,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "EPSILON",
     "ProblemValidationResult",
     "RELATIVE_TOLERANCE",
+    "satisfies",
     "tolerance",
     "tolerance_array",
     "validate_problem",

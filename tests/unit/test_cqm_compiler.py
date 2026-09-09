@@ -24,7 +24,11 @@ from annealbridge.exceptions import CompilationError
 from annealbridge.models import OptimizationProblem
 from annealbridge.orchestration import evaluate_objective
 from annealbridge.penalty.strategy import compute_objective_scale
-from annealbridge.validation import validate_solution
+from annealbridge.validation import (
+    validate_problem,
+    validate_problem_full,
+    validate_solution,
+)
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 
@@ -266,6 +270,86 @@ class TestConstraints:
         )
         with pytest.raises(CompilationError, match="bad"):
             compile_problem(problem)
+
+    # Review F-04 (2026-09-09): a *soft* constant constraint that fails is a
+    # legal problem (its weight is always paid). The BQM path puts
+    # ``w * rhs**2`` in the offset; the CQM path must do the same in the
+    # objective instead of refusing with COMPILATION_FAILED.
+    @pytest.mark.parametrize(
+        ("operator", "rhs", "expected_slack_range"),
+        [("<=", -3, 0), (">=", 4, 0), ("==", 5, None)],
+    )
+    def test_soft_constant_constraint_that_fails_is_a_constant_penalty(
+        self, operator, rhs, expected_slack_range
+    ):
+        problem = make_problem(
+            linear=[lin("x1", 1)],
+            constraints=[soft("paid", operator, rhs, [lin("x2", 1), lin("x2", -1)], 2.0)],
+        )
+        compiled = compile_problem(problem)
+        cqm = compiled.model
+        assert list(cqm.constraint_labels) == []
+        assert cqm.objective.offset == pytest.approx(2.0 * rhs * rhs)
+        assert compiled.num_variables == 3
+        assert compiled.internal_variables == set()
+        (trace,) = compiled.constraint_trace
+        assert trace.native is False
+        assert trace.redundant is False
+        assert trace.penalty == 2.0
+        assert trace.slack_range == expected_slack_range
+        assert trace.generated_variables == []
+
+    def test_soft_constant_penalty_matches_the_validator_score_on_every_assignment(self):
+        problem = make_problem(
+            linear=[lin("x1", 1)],
+            constraints=[soft("paid", "==", 5, [lin("x2", 1), lin("x2", -1)], 2.0)],
+        )
+        cqm = compile_problem(problem).model
+        for sample, energy, _ in enumerate_cqm(cqm):
+            expected = evaluate_objective(problem.objective, sample) + validate_solution(
+                problem, sample
+            ).soft_violation_score
+            assert energy == pytest.approx(expected)
+            assert validate_solution(problem, sample).soft_violation_score == 50.0
+
+    def test_hard_constant_equality_within_tolerance_is_redundant(self):
+        # The validator accepts ``0 == 1e-9`` under the §23.1 tolerance, so
+        # the compiler must not refuse it with an exact comparison.
+        problem = make_problem(
+            constraints=[hard("tiny", "==", 1e-9, [lin("x1", 1), lin("x1", -1)])]
+        )
+        assert validate_problem(problem) == []
+        compiled = compile_problem(problem)
+        assert list(compiled.model.constraint_labels) == []
+        assert compiled.constraint_trace[0].redundant is True
+
+    @pytest.mark.parametrize("rhs", [0.0, 1e-9, 9e-9, 1.5e-8, 1e-7, 1.0])
+    def test_hard_constant_verdict_agrees_with_the_validator(self, rhs):
+        problem = make_problem(
+            constraints=[hard("c", "==", rhs, [lin("x1", 1), lin("x1", -1)])]
+        )
+        rejected = any(error.code == "TRIVIALLY_INFEASIBLE" for error in validate_problem(problem))
+        if rejected:
+            with pytest.raises(CompilationError, match="c"):
+                compile_problem(problem)
+        else:
+            assert compile_problem(problem).constraint_trace[0].redundant is True
+
+    @pytest.mark.parametrize("rhs", [0.0, 1e-9, 9e-9, 1.5e-8, 1e-7, 1.0])
+    def test_soft_constant_verdict_agrees_with_the_validator(self, rhs):
+        problem = make_problem(
+            constraints=[soft("c", "==", rhs, [lin("x1", 1), lin("x1", -1)], 3.0)]
+        )
+        warned = any(
+            warning.code == "SOFT_ALWAYS_VIOLATED"
+            for warning in validate_problem_full(problem).warnings
+        )
+        compiled = compile_problem(problem)
+        (trace,) = compiled.constraint_trace
+        assert trace.redundant is (not warned)
+        assert compiled.model.objective.offset == pytest.approx(
+            3.0 * rhs * rhs if warned else 0.0
+        )
 
 
 class TestPurity:

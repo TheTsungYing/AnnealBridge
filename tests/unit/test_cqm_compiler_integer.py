@@ -27,7 +27,6 @@ import numpy as np
 import pytest
 
 from annealbridge.compiler import CQMCompiler, expand_square_qm
-from annealbridge.exceptions import CompilationError
 from annealbridge.models import (
     Constraint,
     LinearTerm,
@@ -371,12 +370,10 @@ def valid_random_problems(count: int, *, seed: int = 20260908) -> list[Optimizat
         problem = random_problem(rng)
         if validate_problem(problem):
             continue
-        try:
-            compiled = compile_problem(problem)
-        except CompilationError:
-            # A soft constraint whose terms cancel to an impossible constant
-            # passes the validator (hard-only check) but not the compiler.
-            continue
+        # Review F-04: a validated problem always compiles; a soft constraint
+        # whose terms cancel to an impossible constant is now a constant
+        # penalty, so a CompilationError here is a test failure.
+        compiled = compile_problem(problem)
         if not integer_soft_traces(compiled):
             continue
         if model_size(problem, compiled) > 3000:

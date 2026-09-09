@@ -7,13 +7,17 @@ the full validator reports them with the other.
 """
 
 import numpy as np
+import pytest
 
+from annealbridge.models import OptimizationProblem
 from annealbridge.validation import (
     ABSOLUTE_TOLERANCE,
     EPSILON,
     RELATIVE_TOLERANCE,
+    satisfies,
     tolerance,
     tolerance_array,
+    validate_solution,
 )
 
 
@@ -159,3 +163,71 @@ class TestScalarAndArrayAgree:
         assert np.array_equal(
             result.ravel(), np.array([tolerance(actual, 1e9) for actual in actuals])
         )
+
+
+# --------------------------------------------------------------------------
+# satisfies(): the scalar verdict shared by the problem validator and the
+# CQM compiler's constant branch (review F-04)
+# --------------------------------------------------------------------------
+
+
+class TestSatisfies:
+    @pytest.mark.parametrize("operator", ["==", "<=", ">="])
+    def test_exact_hit_holds(self, operator):
+        assert satisfies(operator, 3.0, 3.0) is True
+
+    def test_equality_within_and_beyond_the_floor(self):
+        assert satisfies("==", 0.0, 1e-9) is True
+        assert satisfies("==", 0.0, -9e-9) is True
+        assert satisfies("==", 0.0, 1.5e-8) is False
+        assert satisfies("==", 0.0, -1e-7) is False
+
+    def test_less_equal_is_one_sided(self):
+        assert satisfies("<=", 1.0 + 5e-9, 1.0) is True
+        assert satisfies("<=", 1.0 + 2e-8, 1.0) is False
+        assert satisfies("<=", -100.0, 1.0) is True
+
+    def test_greater_equal_is_one_sided(self):
+        assert satisfies(">=", 1.0 - 5e-9, 1.0) is True
+        assert satisfies(">=", 1.0 - 2e-8, 1.0) is False
+        assert satisfies(">=", 100.0, 1.0) is True
+
+    def test_relative_part_at_large_magnitude(self):
+        # tol(1e9, 1e9 + 0.3) = 1e-3: the summation error of §23.1's example.
+        assert satisfies("==", 1e9 + 0.1 + 0.2, 1e9 + 0.3) is True
+        assert satisfies("==", 1e9 + 1.0, 1e9) is False
+
+    def test_agrees_with_the_solution_validator_verdict(self):
+        """Same expressions as ``solution_validator._evaluate``; proven here
+        rather than shared by import so its kernels stay untouched."""
+        problem = OptimizationProblem.model_validate(
+            {
+                "name": "satisfies vs validate",
+                "variables": [{"name": "x"}],
+                "objective": {"direction": "minimize", "linear_terms": []},
+                "constraints": [
+                    {"id": "eq", "type": "hard", "terms": [{"variable": "x", "coefficient": 1}], "operator": "==", "rhs": 0},
+                    {"id": "le", "type": "hard", "terms": [{"variable": "x", "coefficient": 1}], "operator": "<=", "rhs": 0},
+                    {"id": "ge", "type": "hard", "terms": [{"variable": "x", "coefficient": 1}], "operator": ">=", "rhs": 0},
+                ],
+            }
+        )
+        for rhs in [0.0, 1e-9, -9e-9, 1.5e-8, -1e-7, 0.5, -0.5, 1.0, 2e4, 1e9]:
+            for actual in [0, 1]:
+                shifted = problem.model_copy(
+                    update={
+                        "constraints": [
+                            constraint.model_copy(update={"rhs": rhs})
+                            for constraint in problem.constraints
+                        ]
+                    }
+                )
+                verdicts = {
+                    evaluation.constraint_id: evaluation.satisfied
+                    for evaluation in validate_solution(shifted, {"x": actual}).evaluations
+                }
+                assert verdicts == {
+                    "eq": satisfies("==", float(actual), rhs),
+                    "le": satisfies("<=", float(actual), rhs),
+                    "ge": satisfies(">=", float(actual), rhs),
+                }, (actual, rhs)

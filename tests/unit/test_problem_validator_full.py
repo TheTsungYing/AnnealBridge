@@ -276,6 +276,118 @@ class TestRedundantConstraint:
         assert "REDUNDANT_CONSTRAINT" in warning_codes(result)
 
 
+class TestSoftAlwaysViolated:
+    """Review F-04 / F-12: a soft constraint no assignment can satisfy warns.
+
+    It is a legal problem (the weight is simply always paid), so this is a
+    warning, never an error; the judgement uses the same hybrid tolerance
+    as ``TRIVIALLY_INFEASIBLE`` does for hard constraints.
+    """
+
+    def test_zero_coefficients_with_nonzero_rhs_warns(self):
+        # F-04's reproduction: x:+1, x:-1 == 5, weight 2.
+        problem = make_problem(
+            constraints=[soft("c1", "==", 5, [lin("x1", 1), lin("x1", -1)], 2.0)]
+        )
+        result = validate_problem_full(problem)
+        assert result.valid is True
+        assert result.errors == []
+        (warning,) = warnings_with(result, "SOFT_ALWAYS_VIOLATED")
+        assert warning.path == "constraints[0]"
+        assert "c1" in warning.message
+        assert "== 5.0" in warning.message
+        assert "2.0" in warning.message
+        assert warning.recommended_action
+        assert warning.retryable is False
+
+    def test_f12_pair_reports_both_sides_symmetrically(self):
+        problem = make_problem(
+            variables=("x", "y"),
+            linear=[lin("x", 1)],
+            constraints=[
+                soft("impossible", "<=", -5, [lin("x", -1), lin("y", -1)], 10.0),
+                soft("always", "<=", 3, [lin("x", 1)], 1.0),
+            ],
+        )
+        result = validate_problem_full(problem)
+        assert result.valid is True
+        assert {(w.code, w.path) for w in result.warnings} == {
+            ("SOFT_ALWAYS_VIOLATED", "constraints[0]"),
+            ("REDUNDANT_CONSTRAINT", "constraints[1]"),
+        }
+        (warning,) = warnings_with(result, "SOFT_ALWAYS_VIOLATED")
+        assert "impossible" in warning.message
+        assert "[-2.0, 0.0]" in warning.message
+        assert "<= -5.0" in warning.message
+
+    def test_equality_whose_range_misses_the_rhs_warns(self):
+        problem = make_problem(
+            variables=("x1", "x2"),
+            constraints=[soft("three", "==", 3, [lin("x1", 1), lin("x2", 1)], 1.0)],
+        )
+        (warning,) = warnings_with(validate_problem_full(problem), "SOFT_ALWAYS_VIOLATED")
+        assert warning.path == "constraints[0]"
+
+    def test_greater_equal_over_integer_bounds_warns(self):
+        problem = make_problem(
+            variables=(integer("n", -3, 2), "x1"),
+            constraints=[soft("big", ">=", 4, [lin("n", 1), lin("x1", 1)], 1.0)],
+        )
+        (warning,) = warnings_with(validate_problem_full(problem), "SOFT_ALWAYS_VIOLATED")
+        assert "[-3.0, 3.0]" in warning.message
+
+    @pytest.mark.parametrize("rhs", [0, 1e-9, 9e-9])
+    def test_zero_coefficients_with_rhs_within_tolerance_is_redundant(self, rhs):
+        problem = make_problem(
+            constraints=[soft("noop", "==", rhs, [lin("x1", 1), lin("x1", -1)], 2.0)]
+        )
+        result = validate_problem_full(problem)
+        assert warnings_with(result, "SOFT_ALWAYS_VIOLATED") == []
+        (warning,) = warnings_with(result, "REDUNDANT_CONSTRAINT")
+        assert warning.path == "constraints[0]"
+        assert "noop" in warning.message
+
+    @pytest.mark.parametrize("rhs", [1.5e-8, 1e-7, -1e-7])
+    def test_zero_coefficients_with_rhs_beyond_tolerance_warns(self, rhs):
+        problem = make_problem(
+            constraints=[soft("off", "==", rhs, [lin("x1", 1), lin("x1", -1)], 2.0)]
+        )
+        result = validate_problem_full(problem)
+        assert warnings_with(result, "REDUNDANT_CONSTRAINT") == []
+        assert len(warnings_with(result, "SOFT_ALWAYS_VIOLATED")) == 1
+
+    def test_hard_zero_coefficient_equality_that_holds_stays_silent(self):
+        # The Phase 3a golden recording pins the validator output of a 1.0
+        # problem with exactly this constraint (no warning), so the soft
+        # REDUNDANT_CONSTRAINT above is not extended to hard equalities.
+        problem = make_problem(
+            constraints=[hard("noop_eq", "==", 0, [lin("x1", 1), lin("x1", -1)])]
+        )
+        result = validate_problem_full(problem)
+        assert result.valid is True
+        assert result.warnings == []
+
+    def test_hard_constraint_is_an_error_never_the_soft_warning(self):
+        problem = make_problem(
+            constraints=[hard("c1", "==", 5, [lin("x1", 1), lin("x1", -1)])]
+        )
+        result = validate_problem_full(problem)
+        assert result.valid is False
+        assert error_codes(result.errors) == {"TRIVIALLY_INFEASIBLE"}
+        assert "SOFT_ALWAYS_VIOLATED" not in warning_codes(result)
+
+    def test_satisfiable_soft_constraints_do_not_warn(self):
+        problem = make_problem(
+            variables=("x1", "x2"),
+            constraints=[
+                soft("eq", "==", 1, [lin("x1", 1), lin("x2", 1)], 1.0),
+                soft("le", "<=", 0, [lin("x1", 1)], 1.0),
+                soft("ge", ">=", 2, [lin("x1", 1), lin("x2", 1)], 1.0),
+            ],
+        )
+        assert "SOFT_ALWAYS_VIOLATED" not in warning_codes(validate_problem_full(problem))
+
+
 class TestExactBackendLimits:
     """§9.3 rows EXACT_OVER_LIMIT / EXACT_NEAR_LIMIT: ``caps.exhaustive``."""
 
@@ -809,6 +921,11 @@ class TestWarningPayload:
                     constraints=[hard("cap", "<=", 1000, [lin("n", 1), lin("m", 1)])],
                 )
             ),
+            validate_problem_full(  # review F-04 / F-12: a soft constraint never satisfiable
+                make_problem(
+                    constraints=[soft("c1", "==", 5, [lin("x1", 1), lin("x1", -1)], 2.0)]
+                )
+            ),
         ]
 
     def test_every_warning_code_is_covered(self):
@@ -827,6 +944,7 @@ class TestWarningPayload:
             "DUPLICATE_TERM_MERGED",
             "LARGE_INTEGER_RANGE",
             "INTEGER_QUADRATIC_BLOWUP",
+            "SOFT_ALWAYS_VIOLATED",
         }
 
     def test_warnings_are_not_retryable_and_carry_an_action(self):

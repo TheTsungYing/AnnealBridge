@@ -17,14 +17,18 @@ tolerance is ``1e-3``, which absorbs the accumulation error of summing
 coefficients of that size (``1e9 + 0.1 + 0.2`` lands 1.19e-7 away from
 ``1e9 + 0.3``) without accepting a real violation of one unit.
 
-Two callers share this rule and must never drift apart:
+Three callers share this rule and must never drift apart:
 
 - :mod:`annealbridge.validation.solution_validator` judges every candidate
   with it, in both its scalar and its numpy kernel.
 - :mod:`annealbridge.validation.problem_validator` uses the same rule to
-  decide ``TRIVIALLY_INFEASIBLE`` (review F-25), so a constraint that is
-  rejected before compilation is exactly one that no assignment could have
-  passed afterwards.
+  decide ``TRIVIALLY_INFEASIBLE`` (review F-25) and, for soft constraints,
+  ``SOFT_ALWAYS_VIOLATED`` (review F-04 / F-12), so a constraint that is
+  rejected or flagged before compilation is exactly one that no assignment
+  could have passed afterwards.
+- :mod:`annealbridge.compiler.cqm` decides its constant-constraint branch
+  (``0 <op> rhs``) with :func:`satisfies`, so the compiler never refuses a
+  constraint the validator accepted (review F-04).
 
 :func:`tolerance` is pure Python and :func:`tolerance_array` is the numpy
 version; they perform the same IEEE operations in the same order, so their
@@ -48,6 +52,25 @@ EPSILON = ABSOLUTE_TOLERANCE
 def tolerance(actual: float, rhs: float) -> float:
     """Return the tolerance for comparing ``actual`` with ``rhs`` (scalar)."""
     return max(ABSOLUTE_TOLERANCE, RELATIVE_TOLERANCE * max(abs(actual), abs(rhs)))
+
+
+def satisfies(operator: str, actual: float, rhs: float) -> bool:
+    """Whether ``actual <operator> rhs`` holds under the §23.1 tolerance.
+
+    The three expressions are the ones ``solution_validator._evaluate``
+    uses, kept literally identical (``tests/unit/test_tolerance.py`` checks
+    them against ``validate_solution`` verdict by verdict): ``==`` is
+    ``abs(actual - rhs) <= tol``, ``<=`` is ``actual <= rhs + tol`` and
+    ``>=`` is ``actual >= rhs - tol``.
+    """
+    tol = tolerance(actual, rhs)
+    if operator == "==":
+        return abs(actual - rhs) <= tol
+    if operator == "<=":
+        return actual <= rhs + tol
+    if operator == ">=":
+        return actual >= rhs - tol
+    raise ValueError(f"unknown constraint operator {operator!r}")
 
 
 def tolerance_array(actual: np.ndarray, rhs: float) -> np.ndarray:
