@@ -3,7 +3,12 @@
 import pytest
 
 from annealbridge.compiler import BQMCompiler
-from annealbridge.models import CompiledProblem, OptimizationProblem, SolverPreferences
+from annealbridge.models import (
+    CompiledProblem,
+    OptimizationProblem,
+    ParameterLimit,
+    SolverPreferences,
+)
 from annealbridge.solvers import (
     AvailabilityStatus,
     ExactSolverBackend,
@@ -147,7 +152,20 @@ class TestSimulatedAnnealingBackend:
         assert capabilities.description.strip()
         assert capabilities.supports_num_sweeps is True
         assert capabilities.requires_embedding is False
-        assert capabilities.parameter_limits == []
+        # 2026-09-09 review (F-02): the two caller-controlled sampling
+        # parameters are policy-limited under their own keys and codes.
+        assert capabilities.parameter_limits == [
+            ParameterLimit(
+                preference="num_reads",
+                limit="local_reads",
+                error_code="LOCAL_READS_LIMIT",
+            ),
+            ParameterLimit(
+                preference="num_sweeps",
+                limit="sweeps",
+                error_code="SWEEPS_LIMIT",
+            ),
+        ]
 
     def test_is_available(self):
         status = SimulatedAnnealingBackend().is_available()

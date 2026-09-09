@@ -108,15 +108,40 @@ async def test_schema_metadata():
 async def test_limits_come_from_policy():
     content = (await _get_capabilities()).structured_content
     by_name = {backend["name"]: backend for backend in content["backends"]}
-    assert by_name["exact"]["limits"] == {"max_variables": 24}
+    # Every backend also carries the two service-level ceilings of spec
+    # §11.4: the retry ceiling chosen by the ``remote`` flag, then top_k.
+    assert by_name["exact"]["limits"] == {
+        "max_variables": 24,
+        "max_local_retries": 10,
+        "max_top_k": 1000,
+    }
     assert by_name["dwave_qpu"]["limits"] == {
         "max_reads": 1000,
         "max_annealing_time_us": 2000.0,
+        "max_remote_retries": 3,
+        "max_top_k": 1000,
     }
-    assert by_name["leap_hybrid_bqm"]["limits"] == {"max_time_seconds": 300}
-    assert by_name["leap_hybrid_cqm"]["limits"] == {"max_time_seconds": 300}
-    assert by_name["fujitsu_da"]["limits"] == {"max_time_seconds": 300}
-    assert by_name["simulated_annealing"]["limits"] == {}
+    assert by_name["leap_hybrid_bqm"]["limits"] == {
+        "max_time_seconds": 300,
+        "max_remote_retries": 3,
+        "max_top_k": 1000,
+    }
+    assert by_name["leap_hybrid_cqm"]["limits"] == {
+        "max_time_seconds": 300,
+        "max_remote_retries": 3,
+        "max_top_k": 1000,
+    }
+    assert by_name["fujitsu_da"]["limits"] == {
+        "max_time_seconds": 300,
+        "max_remote_retries": 3,
+        "max_top_k": 1000,
+    }
+    assert by_name["simulated_annealing"]["limits"] == {
+        "max_local_reads": 100000,
+        "max_sweeps": 100000,
+        "max_local_retries": 10,
+        "max_top_k": 1000,
+    }
 
 
 async def test_capabilities_never_calls_solve(monkeypatch):

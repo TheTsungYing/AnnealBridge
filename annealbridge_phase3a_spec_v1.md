@@ -454,6 +454,27 @@ class ExecutionPolicy(BaseModel):
 
 `OptimizationService.__init__` 走訪 registry 全部 backend 的 `parameter_limits`，任何 `limit` key 在 policy 查不到值（`limit(key) is None`）→ `raise ValueError("backend 'x' declares limit 'iterations' but the policy has no value for it")`。這是 composition root 的錯誤（`build_state` 轉成 `SettingsError` 一併印到 stderr、exit 2），不是 solve 時的結構化錯誤：一個宣告了上限卻沒有上限值的遠端 backend 不可以靜默地無上限執行。
 
+### 11.4 2026-09-09 review 修正（F-02 / F-07）：新增五個內建 limit key
+
+review 指出仍有一批呼叫端可控的參數沒有任何上限：本機取樣的 `num_reads` / `num_sweeps` 可以無限拉高而長時間佔住 concurrency slot；`max_retries` 即使 opt-in 遠端重試後也無上限，可以把單一請求放大成任意多次廠商提交；`top_k` 則無限制地放大回傳體積。因此在 §11.1 的四個 key 之後再加五個，形制與相容層完全相同（`max_<key>` 欄位 + `ANNEALBRIDGE_MAX_<KEY>` env），一樣被 `limits` validator 拒收，所以每個 key 仍只有一個來源。
+
+| key | 欄位 | env | 預設 | 適用 |
+|---|---|---|---|---|
+| `local_reads` | `max_local_reads` | `ANNEALBRIDGE_MAX_LOCAL_READS` | 100000 | `simulated_annealing` 宣告 `ParameterLimit`（`num_reads` → `LOCAL_READS_LIMIT`） |
+| `sweeps` | `max_sweeps` | `ANNEALBRIDGE_MAX_SWEEPS` | 100000 | `simulated_annealing` 宣告 `ParameterLimit`（`num_sweeps` → `SWEEPS_LIMIT`） |
+| `local_retries` | `max_local_retries` | `ANNEALBRIDGE_MAX_LOCAL_RETRIES` | 10 | 所有 `remote=False` backend 的 `max_retries`（`RETRY_LIMIT`） |
+| `remote_retries` | `max_remote_retries` | `ANNEALBRIDGE_MAX_REMOTE_RETRIES` | 3 | 所有 `remote=True` backend 的 `max_retries`（`RETRY_LIMIT`） |
+| `top_k` | `max_top_k` | `ANNEALBRIDGE_MAX_TOP_K` | 1000 | 所有 backend 的 `top_k`（`TOP_K_LIMIT`） |
+
+- `local_reads` / `sweeps` 走 §11.3 的宣告路徑：backend 自己宣告，policy 只提供值。
+- `local_retries` / `remote_retries` / `top_k` **不屬於任何 backend**，由 service 層依 capabilities 的 flag 驅動：retry 上限以 `remote` 旗標二選一（`ExecutionPolicy.retries_limit_key()`），`top_k` 對每個 backend 都套用。`max_retries` 的檢查與該次是否真的會重試無關——`allow_remote_retries=False` 時超限一樣拒絕，opt-in 之後上限也不會被解除。
+- `limits_for()` 因此對**每個** backend 在原有 key 之後追加 `max_local_retries` / `max_remote_retries`（依 `remote`）與 `max_top_k`。capabilities view 與 CLI 表格是同一份輸出，所以新 key 也會出現在那裡；key 順序仍是「宣告項在前、service 層在後」。
+- 超限一律 `status="resource_limit_exceeded"` + 對應 code，值不砍，backend 不被呼叫。相關新增 error code：`LOCAL_READS_LIMIT`、`SWEEPS_LIMIT`、`RETRY_LIMIT`、`TOP_K_LIMIT`，皆非 retryable。
+- 兩個 retry 上限的 bound 是 `ge=0`（`max_retries: 0` 是合法請求），其餘三個為 `ge=1`。
+- §11.2 的「**不新增任何 backend 命名的 policy 欄位**」原則未變：這五個欄位全部以參數／範疇命名（local / remote、reads / sweeps / retries / top_k），沒有一個綁定 backend 名稱。
+
+同批 review 另加（F-07）`PENALTY_OVERFLOW`：hard penalty 倍增或編譯結果溢出浮點範圍時，service 回 `resource_limit_exceeded` 並帶此 code，不再落到 `SOLVER_ERROR`；（F-08）`penalty_multiplier` 同時改為 `allow_inf_nan=False`，validator 訊息改為 `must be a finite number > 0`（`INVALID_SOLVER_PREFERENCE`）。
+
 ---
 
 ## 12. Service 通用 limit 檢查（`orchestration/limits.py`）

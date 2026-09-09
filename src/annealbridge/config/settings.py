@@ -38,6 +38,13 @@ class ServerSettings(BaseSettings):
     max_qpu_annealing_time_us: float = Field(default=2000.0, gt=0)
     max_remote_time_seconds: int = Field(default=300, ge=1)
     max_concurrent_solves: int = Field(default=4, ge=1)
+    # 2026-09-09 review (F-02 / F-07): ceilings on the caller-controlled
+    # parameters; same defaults and bounds as ExecutionPolicy.
+    max_local_reads: int = Field(default=100000, ge=1)
+    max_sweeps: int = Field(default=100000, ge=1)
+    max_local_retries: int = Field(default=10, ge=0)
+    max_remote_retries: int = Field(default=3, ge=0)
+    max_top_k: int = Field(default=1000, ge=1)
     limits: dict[str, float] = Field(default_factory=dict)
     http_host: str = "127.0.0.1"
     http_port: int = 8000
@@ -59,6 +66,11 @@ class ServerSettings(BaseSettings):
             max_qpu_annealing_time_us=self.max_qpu_annealing_time_us,
             max_remote_time_seconds=self.max_remote_time_seconds,
             max_concurrent_solves=self.max_concurrent_solves,
+            max_local_reads=self.max_local_reads,
+            max_sweeps=self.max_sweeps,
+            max_local_retries=self.max_local_retries,
+            max_remote_retries=self.max_remote_retries,
+            max_top_k=self.max_top_k,
             limits=self.limits,
         )
 

@@ -56,6 +56,14 @@ EXPECTED_CODES = [
     "INTEGER_REQUIRES_VERSION_1_1",
     # Compilation
     "COMPILATION_FAILED",
+    # 2026-09-09 review (F-02 / F-07 / F-08): the parameter ceilings that
+    # had no code, plus the penalty overflow that used to surface as
+    # SOLVER_ERROR (3a spec §11.4).
+    "LOCAL_READS_LIMIT",
+    "SWEEPS_LIMIT",
+    "RETRY_LIMIT",
+    "TOP_K_LIMIT",
+    "PENALTY_OVERFLOW",
 ]
 
 # Codes whose guidance quotes an IR *contract constant* verbatim, as 3b spec
@@ -89,7 +97,7 @@ class TestRecommendedActions:
         assert set(RECOMMENDED_ACTIONS) == set(EXPECTED_CODES)
 
     def test_expected_codes_are_unique(self):
-        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 41
+        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 46
 
 
 class TestRetryableCodes:

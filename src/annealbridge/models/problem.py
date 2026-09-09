@@ -78,7 +78,9 @@ class SolverPreferences(BaseModel):
     seed: int | None = None
     top_k: int = 5
     max_retries: int = 3
-    penalty_multiplier: float = 2.0
+    # Finite only (2026-09-09 review F-08): ``nan`` would silently disable
+    # every hard penalty and ``inf`` would break the compiled model.
+    penalty_multiplier: float = Field(default=2.0, allow_inf_nan=False)
     dwave_qpu: DWaveQPUOptions | None = None
     leap_hybrid_bqm: LeapHybridBQMOptions | None = None
     leap_hybrid_cqm: LeapHybridCQMOptions | None = None

@@ -973,11 +973,15 @@ def _check_solver_preferences(
         ("num_reads", solver.num_reads, solver.num_reads <= 0, "must be > 0"),
         ("num_sweeps", solver.num_sweeps, solver.num_sweeps <= 0, "must be > 0"),
         ("max_retries", solver.max_retries, solver.max_retries < 0, "must be >= 0"),
+        # Finiteness re-checked here (F-08): the schema already rejects
+        # NaN / inf, but a model built without validation must not slip a
+        # ``nan`` penalty through (``nan <= 0`` is False).
         (
             "penalty_multiplier",
             solver.penalty_multiplier,
-            solver.penalty_multiplier <= 0,
-            "must be > 0",
+            not math.isfinite(solver.penalty_multiplier)
+            or solver.penalty_multiplier <= 0,
+            "must be a finite number > 0",
         ),
     ]
     for field, value, is_bad, rule in checks:

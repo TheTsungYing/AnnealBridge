@@ -109,7 +109,14 @@ class TestCapabilitiesView:
     def test_limits_come_from_the_policy_custom_key(self, registry, policy):
         capabilities = build_capabilities(registry, policy)
         (entry,) = [b for b in capabilities.backends if b.name == FAKE_DECLARED_NAME]
-        assert entry.limits == {f"max_{FAKE_LIMIT_KEY}": ITERATIONS_LIMIT}
+        # The declared key, then the two service-level ceilings every
+        # backend carries (spec §11.4): remote retries by the ``remote``
+        # flag, then top_k.
+        assert entry.limits == {
+            f"max_{FAKE_LIMIT_KEY}": ITERATIONS_LIMIT,
+            "max_remote_retries": 3,
+            "max_top_k": 1000,
+        }
         assert entry.available is True
         assert entry.enabled is True
         assert entry.remote is True

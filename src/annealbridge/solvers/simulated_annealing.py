@@ -8,6 +8,7 @@ from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers.base import (
     AvailabilityStatus,
+    ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
     sampleset_to_arrays,
@@ -30,6 +31,18 @@ _CAPABILITIES = SolverCapabilities(
         "Local heuristic simulated-annealing sampler; scales to larger "
         "problems but does not prove optimality or infeasibility."
     ),
+    # 2026-09-09 review (F-07): reads and sweeps bound the CPU time one
+    # request can hold a concurrency slot for. Declared under their own
+    # keys (``local_reads`` rather than the QPU quota key ``reads``) so the
+    # policy can give local and remote sampling different ceilings.
+    parameter_limits=[
+        ParameterLimit(
+            preference="num_reads", limit="local_reads", error_code="LOCAL_READS_LIMIT"
+        ),
+        ParameterLimit(
+            preference="num_sweeps", limit="sweeps", error_code="SWEEPS_LIMIT"
+        ),
+    ],
 )
 
 

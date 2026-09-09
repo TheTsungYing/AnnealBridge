@@ -1024,9 +1024,11 @@ class TestIntegerProblemThroughTheService:
 class TestRemoteRetries:
     """§14 step 14: remote retries burn quota, so policy must opt in."""
 
-    def solve(self, monkeypatch, *, allow_remote_retries: bool):
+    def solve(self, monkeypatch, *, allow_remote_retries: bool, max_retries: int = 2):
         set_key(monkeypatch)
-        problem = make_zero_infeasible_problem(backend="fujitsu_da", max_retries=2)
+        problem = make_zero_infeasible_problem(
+            backend="fujitsu_da", max_retries=max_retries
+        )
         width = len(BQMCompiler().compile(problem, hard_penalty=100.0).model.variables)
         # The all-zero sample violates "a + b >= 1", so no attempt can ever
         # produce a feasible candidate and every retry is actually taken.
@@ -1055,6 +1057,32 @@ class TestRemoteRetries:
         assert fake.submit_calls == 3
         assert fake.delete_calls == 3
         assert result.warnings == []
+
+    def test_over_the_remote_retry_ceiling_submits_nothing(self, monkeypatch):
+        # 2026-09-09 review (F-07): opting in to remote retries does not lift
+        # the ceiling. max_retries=4 is over the default 3, so the request is
+        # refused before any vendor job exists — zero quota burnt.
+        fake, result = self.solve(
+            monkeypatch, allow_remote_retries=True, max_retries=4
+        )
+
+        assert result.status == "resource_limit_exceeded"
+        assert [error.code for error in result.errors] == ["RETRY_LIMIT"]
+        assert "4" in result.errors[0].message
+        assert result.solutions == []
+        assert result.attempts == []
+        assert fake.submit_calls == 0
+        assert fake.delete_calls == 0
+
+    def test_exactly_the_remote_retry_ceiling_is_allowed(self, monkeypatch):
+        # The ceiling is inclusive: max_retries == the ceiling still solves.
+        fake, result = self.solve(
+            monkeypatch, allow_remote_retries=True, max_retries=3
+        )
+
+        assert result.status == "infeasible"
+        assert len(result.attempts) == 4
+        assert fake.submit_calls == 4
 
 
 class TestRedaction:

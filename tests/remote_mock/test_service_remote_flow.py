@@ -914,6 +914,39 @@ class TestRemoteRetryPolicy:
         assert [warning.code for warning in cut.warnings] == ["REMOTE_RETRIES_DISABLED"]
         assert not_cut.warnings == []
 
+    def test_over_the_remote_retry_ceiling_never_reaches_the_sampler(self, monkeypatch):
+        # 2026-09-09 review (F-07): the opt-in enables retries, it does not
+        # raise their ceiling. 4 is over the default 3, so nothing is sampled.
+        fake, result = self.solve(
+            monkeypatch, allow_remote_retries=True, max_retries=4
+        )
+
+        assert result.status == "resource_limit_exceeded"
+        assert [error.code for error in result.errors] == ["RETRY_LIMIT"]
+        assert "4" in result.errors[0].message
+        assert result.solutions == []
+        assert fake.sample_calls == 0
+
+    def test_exactly_the_remote_retry_ceiling_is_allowed(self, monkeypatch):
+        fake, result = self.solve(
+            monkeypatch, allow_remote_retries=True, max_retries=3
+        )
+
+        assert result.status == "infeasible"
+        assert len(result.attempts) == 4
+        assert fake.sample_calls == 4
+
+    def test_ceiling_applies_even_when_retries_are_off(self, monkeypatch):
+        # The ceiling is a bound on the requested value, not on what the
+        # policy would actually run: the opt-in flag is irrelevant to it.
+        fake, result = self.solve(
+            monkeypatch, allow_remote_retries=False, max_retries=4
+        )
+
+        assert result.status == "resource_limit_exceeded"
+        assert [error.code for error in result.errors] == ["RETRY_LIMIT"]
+        assert fake.sample_calls == 0
+
 
 class FailAfterFirstQPUSampler(FakeQPUSampler):
     """Returns its assignments on the first call and raises on every later one."""

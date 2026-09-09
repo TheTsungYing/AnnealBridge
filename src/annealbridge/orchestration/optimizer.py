@@ -8,6 +8,7 @@ never on the concrete compiled model type (spec §17).
 """
 
 import logging
+import math
 import threading
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
@@ -16,7 +17,11 @@ import numpy as np
 
 from annealbridge.compiler import BQMCompiler, CQMCompiler
 from annealbridge.compiler.base import ModelCompiler
-from annealbridge.exceptions import CompilationError, OptimizerError
+from annealbridge.exceptions import (
+    CompilationError,
+    NonFiniteModelError,
+    OptimizerError,
+)
 from annealbridge.models import (
     CompiledProblem,
     ModelType,
@@ -562,6 +567,38 @@ class OptimizationService:
             f"the server maximum of {maximum}",
         )
 
+    def _penalty_overflow(
+        self,
+        backend: SolverBackend,
+        direction: str,
+        attempts: list[SolveAttempt],
+        penalty: float,
+    ) -> SolveResult:
+        """Structured stop of the penalty ladder (2026-09-09 review F-07).
+
+        Reported as ``resource_limit_exceeded`` under PENALTY_OVERFLOW: the
+        floating-point range is a hard ceiling the request ran into, the
+        attempts made so far are kept, and no backend is called with a
+        non-finite model.
+        """
+        made = len(attempts)
+        last = attempts[-1].penalty if attempts else None
+        return self._failure(
+            "resource_limit_exceeded",
+            backend.name,
+            direction,
+            [
+                catalog_error(
+                    "PENALTY_OVERFLOW",
+                    f"Hard penalty {penalty!r} exceeds the floating-point range "
+                    f"after {made} attempt(s)"
+                    + (f" (last finite penalty {last!r})" if last is not None else "")
+                    + "; no feasible solution was found before the ceiling",
+                )
+            ],
+            attempts=attempts,
+        )
+
     def _max_attempts(
         self,
         backend: SolverBackend,
@@ -617,10 +654,13 @@ class OptimizationService:
         # Declared outside the try so a failure on a later attempt can still
         # report the last completed attempt's metadata.
         raw: RawSolverResult | None = None
+        # Likewise the current penalty, so the NonFiniteModelError handler
+        # can tell the hard-penalty path from a penalty-free one.
+        penalty: float | None = None
         try:
             max_attempts = self._max_attempts(backend, compiler, problem.solver)
             # §16.2 step 9: a native-constraint model has no hard penalty.
-            penalty: float | None = (
+            penalty = (
                 self._penalty_strategy.initial_penalty(problem)
                 if compiler.uses_hard_penalty
                 else None
@@ -636,6 +676,14 @@ class OptimizationService:
             )
 
             for attempt in range(1, max_attempts + 1):
+                # 2026-09-09 review (F-07): the penalty ladder must stop
+                # before it leaves the floating-point range. Checked before
+                # compile so no backend ever sees an infinite penalty and
+                # every recorded attempt keeps a finite value.
+                if penalty is not None and not math.isfinite(penalty):
+                    return self._penalty_overflow(
+                        backend, direction, attempts, penalty
+                    )
                 compiled = compiler.compile(problem, penalty)
                 # §14 step 9: this limit needs compiled info (slack included),
                 # so it runs after compile. Never clamp, never fall back.
@@ -784,6 +832,23 @@ class OptimizationService:
                 # the caller (e.g. quota spent on a remote solve).
                 metadata=raw.metadata if raw is not None else None,
                 message=message,
+            )
+        except NonFiniteModelError as exc:
+            # F-07, second guard: the penalty itself was finite but the
+            # compiled biases are not (penalty × coefficient² overflowed).
+            # On the hard-penalty path that is the penalty ladder hitting
+            # the float ceiling; without a penalty it is a coefficient
+            # problem and falls through to the compilation error below.
+            if penalty is not None:
+                logger.warning("Problem %s penalty overflow: %s", problem.name, exc)
+                return self._penalty_overflow(backend, direction, attempts, penalty)
+            logger.warning("Problem %s compilation error: %s", problem.name, exc)
+            return self._failure(
+                "invalid_problem",
+                backend.name,
+                direction,
+                [catalog_error("COMPILATION_FAILED", str(exc))],
+                attempts=attempts,
             )
         except CompilationError as exc:
             # The problem passed validation but the compiler still refused

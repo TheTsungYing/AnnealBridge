@@ -195,6 +195,8 @@ class ExecutionPolicy(BaseModel):
 
 `OptimizationService.__init__(..., policy: ExecutionPolicy = ExecutionPolicy())`。Phase 1 v2 在 `ExactSolverBackend` 建構子的上限 **移除**，改由 policy 統一管理。
 
+> 2026-09-09 review 修正：新增 `max_local_reads` / `max_sweeps` / `max_local_retries` / `max_remote_retries` / `max_top_k` 五個上限欄位，見 3a spec §11.4。
+
 ---
 
 ## 9. ServerSettings（config/settings.py）

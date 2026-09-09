@@ -49,6 +49,30 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "time_limit_seconds exceeds the server's limit for hybrid solving; "
         "lower it or omit it to use the sampler minimum."
     ),
+    "LOCAL_READS_LIMIT": (
+        "num_reads exceeds the server's limit for local sampling; lower "
+        "num_reads. The server never clamps values silently."
+    ),
+    "SWEEPS_LIMIT": (
+        "num_sweeps exceeds the server's limit for local sampling; lower "
+        "num_sweeps. The server never clamps values silently."
+    ),
+    "RETRY_LIMIT": (
+        "max_retries exceeds the server's retry limit for this backend "
+        "(remote retries are bounded more tightly because each one is a "
+        "billed submission); lower max_retries. The server never clamps "
+        "values silently."
+    ),
+    "TOP_K_LIMIT": (
+        "top_k exceeds the server's limit on returned solutions; lower "
+        "top_k. The server never clamps values silently."
+    ),
+    "PENALTY_OVERFLOW": (
+        "The hard-constraint penalty left the floating-point range before a "
+        "feasible solution was found, so the retry ladder stopped; lower "
+        "penalty_multiplier or max_retries, or rescale the problem's "
+        "coefficients."
+    ),
     "CONCURRENCY_LIMIT": (
         "Too many solves are running concurrently on this server; retry "
         "after the current solves finish."
@@ -157,7 +181,8 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
     "INVALID_SOLVER_PREFERENCE": (
         "A solver preference is outside its allowed range (values such as "
         "top_k, num_reads, num_sweeps, annealing_time_us, chain_strength and "
-        "time_limit_seconds must be positive, and max_retries must not be "
+        "time_limit_seconds must be positive, penalty_multiplier must be a "
+        "finite number greater than zero, and max_retries must not be "
         "negative); correct the value, or omit it to use the default."
     ),
     "TRIVIALLY_INFEASIBLE": (

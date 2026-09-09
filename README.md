@@ -738,12 +738,17 @@ All settings use the `ANNEALBRIDGE_` prefix:
 | Variable                            | Default     | Meaning                                        |
 | ----------------------------------- | ----------- | ---------------------------------------------- |
 | `ANNEALBRIDGE_ALLOW_REMOTE`         | `false`     | Enable the remote (D-Wave and Fujitsu) backends |
-| `ANNEALBRIDGE_ALLOW_REMOTE_RETRIES` | `false`     | Allow penalty retries on remote backends       |
+| `ANNEALBRIDGE_ALLOW_REMOTE_RETRIES` | `false`     | Allow penalty retries on remote backends (bounded by `MAX_REMOTE_RETRIES`) |
 | `ANNEALBRIDGE_EXACT_MAX_VARIABLES`  | `24`        | Variable ceiling for the `exact` backend       |
 | `ANNEALBRIDGE_MAX_QPU_READS`        | `1000`      | Upper bound on QPU `num_reads`                 |
 | `ANNEALBRIDGE_MAX_QPU_ANNEALING_TIME_US` | `2000` | Upper bound on QPU annealing time (µs)         |
 | `ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS`   | `300`  | Upper bound on hybrid solver time              |
 | `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES`     | `4`    | Concurrent solves allowed                      |
+| `ANNEALBRIDGE_MAX_LOCAL_READS`      | `100000`    | Upper bound on `simulated_annealing` `num_reads` |
+| `ANNEALBRIDGE_MAX_SWEEPS`           | `100000`    | Upper bound on `simulated_annealing` `num_sweeps` |
+| `ANNEALBRIDGE_MAX_LOCAL_RETRIES`    | `10`        | Upper bound on `max_retries` for local backends |
+| `ANNEALBRIDGE_MAX_REMOTE_RETRIES`   | `3`         | Upper bound on `max_retries` for remote backends (applies even when remote retries are enabled) |
+| `ANNEALBRIDGE_MAX_TOP_K`            | `1000`      | Upper bound on `top_k`                         |
 | `ANNEALBRIDGE_HTTP_HOST`            | `127.0.0.1` | Default bind host for streamable-http          |
 | `ANNEALBRIDGE_HTTP_PORT`            | `8000`      | Default port for streamable-http               |
 | `ANNEALBRIDGE_LIMITS`               | `{}`        | Generic policy limits as a JSON object, e.g. `{"iterations": 100}`; for backends that declare custom limit keys. Not needed by the built-in backends |
@@ -754,8 +759,9 @@ that register custom limit keys declaratively; the six built-in backends use
 the dedicated variables instead (`fujitsu_da` shares
 `ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS` with the hybrid solvers and declares no
 limit key of its own). It must not contain a key that already has a dedicated
-variable — `variables`, `reads`, `annealing_time_us` and `time_seconds` are
-rejected, and have to be configured through the older variables.
+variable — `variables`, `reads`, `annealing_time_us`, `time_seconds`,
+`local_reads`, `sweeps`, `local_retries`, `remote_retries` and `top_k` are
+rejected, and have to be configured through their own variables.
 
 Vendor credentials are deliberately **not** `ANNEALBRIDGE_*` settings:
 
@@ -782,7 +788,17 @@ model.
   billed QPU submissions. Resource limits (`MAX_QPU_READS`,
   `MAX_QPU_ANNEALING_TIME_US`, `MAX_REMOTE_TIME_SECONDS`) are enforced as
   errors, never silently clamped. The CQM path never retries at all: it always
-  runs exactly one attempt.
+  runs exactly one attempt. Opting in does not lift the ceiling: `max_retries`
+  is still bounded by `ANNEALBRIDGE_MAX_REMOTE_RETRIES` (default `3`), and a
+  request above it is rejected with `resource_limit_exceeded` before any
+  submission — zero vendor calls, zero quota.
+- **Local parameters are bounded too.** `ANNEALBRIDGE_MAX_LOCAL_READS`,
+  `ANNEALBRIDGE_MAX_SWEEPS`, `ANNEALBRIDGE_MAX_LOCAL_RETRIES` and
+  `ANNEALBRIDGE_MAX_TOP_K` keep a single request from holding one of the
+  (four, by default) concurrency slots for a very long time. An over-limit
+  value is rejected, never clamped down to the ceiling. A hard penalty that
+  would have to double past the floating-point range stops with a structured
+  `PENALTY_OVERFLOW` error rather than a solver error.
 - **Streamable HTTP binds `127.0.0.1` by default.** The server has **no
   authentication or authorization of any kind**. Do not expose it directly to
   a public network or bind it to `0.0.0.0`. If remote access is genuinely

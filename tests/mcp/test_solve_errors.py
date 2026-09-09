@@ -1,7 +1,7 @@
 """Error paths of the ``solve_optimization`` MCP tool, via a real client.
 
-These three tests show that the two error channels are both observable through
-the MCP round trip and that they stay distinct:
+These tests show that the two error channels are both observable through the
+MCP round trip and that they stay distinct:
 
 * an SDK *tool error* (``result.is_error is True``) for the type layer, i.e. a
   payload Pydantic cannot even parse into ``OptimizationProblem``; and
@@ -91,3 +91,63 @@ async def test_unknown_variable_is_a_structured_invalid_problem():
 
     assert content["status"] == "invalid_problem"
     assert content["solutions"] == []
+
+
+# --- 2026-09-09 review (F-02 / F-07 / F-08): parameter ceilings -------------
+
+
+async def test_top_k_over_the_ceiling_is_a_structured_resource_limit(load_example):
+    # top_k is a service-level ceiling that applies to every backend; the
+    # value is refused, never clamped down to the ceiling.
+    problem = load_example("knapsack.json", backend="exact", top_k=1001)
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("solve_optimization", {"problem": problem})
+        assert result.is_error is False
+        content = result.structured_content
+
+    assert content["status"] == "resource_limit_exceeded"
+    codes = [error["code"] for error in content["errors"]]
+    assert "TOP_K_LIMIT" in codes
+    assert content["solutions"] == []
+
+
+async def test_max_retries_over_the_local_ceiling_is_refused(load_example):
+    # simulated_annealing is a local backend, so max_retries is bounded by
+    # ANNEALBRIDGE_MAX_LOCAL_RETRIES (default 10) — 11 is over it.
+    problem = load_example(
+        "knapsack.json", backend="simulated_annealing", max_retries=11
+    )
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("solve_optimization", {"problem": problem})
+        assert result.is_error is False
+        content = result.structured_content
+
+    assert content["status"] == "resource_limit_exceeded"
+    codes = [error["code"] for error in content["errors"]]
+    assert "RETRY_LIMIT" in codes
+    assert content["solutions"] == []
+
+
+@pytest.mark.parametrize(
+    "value", [float("inf"), float("nan")], ids=["inf", "nan"]
+)
+async def test_non_finite_penalty_multiplier_never_reaches_the_solver(
+    load_example, value
+):
+    # Blocked by the MCP type layer, not by the validator: JSON has no
+    # representation for inf/nan, so the value arrives as null and the tool's
+    # argument model (`penalty_multiplier: float`) refuses to parse it. The
+    # solver-side guard (`allow_inf_nan=False` on the field, plus the
+    # INVALID_SOLVER_PREFERENCE validator rule) covers the in-process callers
+    # that bypass this transport; over MCP the request never gets that far.
+    problem = load_example(
+        "knapsack.json", backend="exact", penalty_multiplier=value
+    )
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("solve_optimization", {"problem": problem})
+
+    assert result.is_error is True
+    assert "penalty_multiplier" in result.content[0].text

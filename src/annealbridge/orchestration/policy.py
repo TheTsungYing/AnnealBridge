@@ -11,14 +11,22 @@ from pydantic import BaseModel, Field, field_validator
 
 from annealbridge.models import SolverCapabilities
 
-# Generic limit key → the Phase 2 field that still carries its value
-# (spec §11.1). The fields, their defaults, bounds and env names are the
-# compatibility layer; new backends only ever add keys to ``limits``.
+# Built-in limit key → the policy field that carries its value. The first
+# four are the Phase 2 fields kept as the compatibility layer (spec §11.1);
+# the rest were added by the 2026-09-09 review (F-02 / F-07) in the same
+# shape (``max_<key>`` field, ``ANNEALBRIDGE_MAX_<KEY>`` env). Every key
+# has exactly one source, so ``limits`` refuses all of them; third-party
+# backends only ever add keys to ``limits``.
 COMPATIBILITY_LIMIT_FIELDS: dict[str, str] = {
     "variables": "exact_max_variables",
     "reads": "max_qpu_reads",
     "annealing_time_us": "max_qpu_annealing_time_us",
     "time_seconds": "max_remote_time_seconds",
+    "local_reads": "max_local_reads",
+    "sweeps": "max_sweeps",
+    "local_retries": "max_local_retries",
+    "remote_retries": "max_remote_retries",
+    "top_k": "max_top_k",
 }
 
 
@@ -49,7 +57,8 @@ class ExecutionPolicy(BaseModel):
 
     Every limit has a lower bound: a zero or negative ceiling would reject
     every solve (or, for ``max_concurrent_solves``, break the semaphore the
-    service builds from it), so such values are configuration errors.
+    service builds from it), so such values are configuration errors. The
+    two retry ceilings allow zero, which still admits ``max_retries: 0``.
     """
 
     allow_remote: bool = False
@@ -59,6 +68,17 @@ class ExecutionPolicy(BaseModel):
     max_qpu_annealing_time_us: float = Field(default=2000.0, gt=0)
     max_remote_time_seconds: int = Field(default=300, ge=1)  # hybrid time_limit upper bound
     max_concurrent_solves: int = Field(default=4, ge=1)
+    # 2026-09-09 review (F-02 / F-07): ceilings on the caller-controlled
+    # parameters that had none. A value over a ceiling is refused, never
+    # clamped. ``local_reads`` / ``sweeps`` are declared by the local
+    # sampling backend; ``local_retries`` / ``remote_retries`` and
+    # ``top_k`` are service-level and apply to every backend by its
+    # ``remote`` flag (see ``limits_for`` and ``preference_limit_errors``).
+    max_local_reads: int = Field(default=100000, ge=1)
+    max_sweeps: int = Field(default=100000, ge=1)
+    max_local_retries: int = Field(default=10, ge=0)
+    max_remote_retries: int = Field(default=3, ge=0)
+    max_top_k: int = Field(default=1000, ge=1)
     enabled_backends: set[str] | None = None   # None = all registry backends
     # Generic limits keyed by the names backends declare in their
     # ``parameter_limits`` (spec §11). Every value is finite and > 0; the
@@ -74,9 +94,9 @@ class ExecutionPolicy(BaseModel):
     def limit(self, key: str) -> float | int | None:
         """Generic lookup: ``limits`` first, then the compatibility field.
 
-        Compatibility keys return the field's own type (``int`` for
-        ``variables``, ``reads`` and ``time_seconds``; ``float`` for
-        ``annealing_time_us``); ``limits`` values are always ``float``.
+        Built-in keys return the field's own type (``float`` for
+        ``annealing_time_us``, ``int`` for the rest); ``limits`` values are
+        always ``float``.
         Returns None when the policy has no value for ``key``.
         """
         if key in self.limits:
@@ -92,8 +112,9 @@ class ExecutionPolicy(BaseModel):
         The single source for both the capabilities view and the service
         (spec §12.3): what an agent reads here is exactly what a solve is
         checked against. The exhaustive variable ceiling and the effective
-        remote time limit are flag-driven (they need compiled data); the
-        rest follows the backend's declared ``parameter_limits``.
+        remote time limit are flag-driven (they need compiled data), and so
+        are the service-level retry and ``top_k`` ceilings (they belong to
+        no backend); the rest follows the declared ``parameter_limits``.
         """
         result: dict[str, float | int] = {}
         if capabilities.exhaustive:
@@ -102,4 +123,17 @@ class ExecutionPolicy(BaseModel):
             result[f"max_{declaration.limit}"] = self.limit(declaration.limit)
         if capabilities.remote and capabilities.supports_time_limit:
             result["max_time_seconds"] = self.limit("time_seconds")
+        retries_key = self.retries_limit_key(capabilities)
+        result[f"max_{retries_key}"] = self.limit(retries_key)
+        result["max_top_k"] = self.limit("top_k")
         return result
+
+    @staticmethod
+    def retries_limit_key(capabilities: SolverCapabilities) -> str:
+        """The retry ceiling that governs ``max_retries`` on this backend.
+
+        Remote retries burn vendor quota and local ones CPU time, so the two
+        have separate ceilings; the choice is by the ``remote`` flag, never
+        by name.
+        """
+        return "remote_retries" if capabilities.remote else "local_retries"

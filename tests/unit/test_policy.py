@@ -210,16 +210,56 @@ class TestLimitsFor:
             for name in registry.names()
         }
 
+        # The declared keys come first; the two service-level ceilings added
+        # by the 2026-09-09 review (retries by the ``remote`` flag, then
+        # top_k) close every backend's view.
         assert limits == {
-            "exact": {"max_variables": 24},
-            "simulated_annealing": {},
-            "dwave_qpu": {"max_reads": 1000, "max_annealing_time_us": 2000.0},
-            "leap_hybrid_bqm": {"max_time_seconds": 300},
-            "leap_hybrid_cqm": {"max_time_seconds": 300},
-            "fujitsu_da": {"max_time_seconds": 300},
+            "exact": {
+                "max_variables": 24,
+                "max_local_retries": 10,
+                "max_top_k": 1000,
+            },
+            "simulated_annealing": {
+                "max_local_reads": 100000,
+                "max_sweeps": 100000,
+                "max_local_retries": 10,
+                "max_top_k": 1000,
+            },
+            "dwave_qpu": {
+                "max_reads": 1000,
+                "max_annealing_time_us": 2000.0,
+                "max_remote_retries": 3,
+                "max_top_k": 1000,
+            },
+            "leap_hybrid_bqm": {
+                "max_time_seconds": 300,
+                "max_remote_retries": 3,
+                "max_top_k": 1000,
+            },
+            "leap_hybrid_cqm": {
+                "max_time_seconds": 300,
+                "max_remote_retries": 3,
+                "max_top_k": 1000,
+            },
+            "fujitsu_da": {
+                "max_time_seconds": 300,
+                "max_remote_retries": 3,
+                "max_top_k": 1000,
+            },
         }
         # Key order feeds the CLI table, so it is pinned too.
-        assert list(limits["dwave_qpu"]) == ["max_reads", "max_annealing_time_us"]
+        assert list(limits["dwave_qpu"]) == [
+            "max_reads",
+            "max_annealing_time_us",
+            "max_remote_retries",
+            "max_top_k",
+        ]
+        assert list(limits["simulated_annealing"]) == [
+            "max_local_reads",
+            "max_sweeps",
+            "max_local_retries",
+            "max_top_k",
+        ]
 
     def test_values_follow_the_policy(self):
         registry = SolverRegistry.default()
@@ -228,17 +268,36 @@ class TestLimitsFor:
             max_qpu_reads=10,
             max_qpu_annealing_time_us=123.5,
             max_remote_time_seconds=30,
+            max_local_reads=200,
+            max_sweeps=300,
+            max_local_retries=2,
+            max_remote_retries=1,
+            max_top_k=50,
         )
 
         assert policy.limits_for(registry.get("exact").capabilities) == {
-            "max_variables": 8
+            "max_variables": 8,
+            "max_local_retries": 2,
+            "max_top_k": 50,
+        }
+        assert policy.limits_for(
+            registry.get("simulated_annealing").capabilities
+        ) == {
+            "max_local_reads": 200,
+            "max_sweeps": 300,
+            "max_local_retries": 2,
+            "max_top_k": 50,
         }
         assert policy.limits_for(registry.get("dwave_qpu").capabilities) == {
             "max_reads": 10,
             "max_annealing_time_us": 123.5,
+            "max_remote_retries": 1,
+            "max_top_k": 50,
         }
         assert policy.limits_for(registry.get("leap_hybrid_bqm").capabilities) == {
-            "max_time_seconds": 30
+            "max_time_seconds": 30,
+            "max_remote_retries": 1,
+            "max_top_k": 50,
         }
 
     def test_hybrid_cqm_style_declaration_yields_one_time_limit(self):
@@ -259,7 +318,11 @@ class TestLimitsFor:
             ],
         )
 
-        assert ExecutionPolicy().limits_for(caps) == {"max_time_seconds": 300}
+        assert ExecutionPolicy().limits_for(caps) == {
+            "max_time_seconds": 300,
+            "max_remote_retries": 3,
+            "max_top_k": 1000,
+        }
 
     def test_custom_declared_key_is_reported_from_limits(self):
         caps = make_capabilities(
@@ -274,14 +337,23 @@ class TestLimitsFor:
         )
         policy = ExecutionPolicy(limits={"iterations": 100000})
 
-        assert policy.limits_for(caps) == {"max_iterations": 100000.0}
+        assert policy.limits_for(caps) == {
+            "max_iterations": 100000.0,
+            "max_remote_retries": 3,
+            "max_top_k": 1000,
+        }
 
-    def test_remote_with_num_reads_but_no_declaration_has_no_limits(self):
+    def test_remote_with_num_reads_but_no_declaration_has_only_service_limits(self):
         # The Phase 2 drift (spec §0 item 1) is gone: without a declaration
-        # the view reports nothing, and the service enforces nothing.
+        # the view reports no read ceiling, and the service enforces none.
+        # Only the two service-level ceilings (spec §11.4), which belong to
+        # no backend, remain.
         caps = make_capabilities(remote=True, supports_num_reads=True)
 
-        assert ExecutionPolicy().limits_for(caps) == {}
+        assert ExecutionPolicy().limits_for(caps) == {
+            "max_remote_retries": 3,
+            "max_top_k": 1000,
+        }
 
 
 class DeclaringBackend:

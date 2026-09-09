@@ -21,6 +21,12 @@ ENV_SUFFIXES = [
     "MAX_QPU_ANNEALING_TIME_US",
     "MAX_REMOTE_TIME_SECONDS",
     "MAX_CONCURRENT_SOLVES",
+    # 2026-09-09 review (F-02 / F-07): the five parameter ceilings.
+    "MAX_LOCAL_READS",
+    "MAX_SWEEPS",
+    "MAX_LOCAL_RETRIES",
+    "MAX_REMOTE_RETRIES",
+    "MAX_TOP_K",
     "LIMITS",
     "HTTP_HOST",
     "HTTP_PORT",
@@ -71,6 +77,11 @@ class TestServerSettingsFromEnvironment:
         clean_env.setenv("ANNEALBRIDGE_MAX_QPU_ANNEALING_TIME_US", "123.5")
         clean_env.setenv("ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS", "30")
         clean_env.setenv("ANNEALBRIDGE_MAX_CONCURRENT_SOLVES", "2")
+        clean_env.setenv("ANNEALBRIDGE_MAX_LOCAL_READS", "200")
+        clean_env.setenv("ANNEALBRIDGE_MAX_SWEEPS", "300")
+        clean_env.setenv("ANNEALBRIDGE_MAX_LOCAL_RETRIES", "4")
+        clean_env.setenv("ANNEALBRIDGE_MAX_REMOTE_RETRIES", "1")
+        clean_env.setenv("ANNEALBRIDGE_MAX_TOP_K", "50")
         clean_env.setenv("ANNEALBRIDGE_HTTP_HOST", "0.0.0.0")
         clean_env.setenv("ANNEALBRIDGE_HTTP_PORT", "9000")
 
@@ -83,6 +94,11 @@ class TestServerSettingsFromEnvironment:
         assert settings.max_qpu_annealing_time_us == 123.5
         assert settings.max_remote_time_seconds == 30
         assert settings.max_concurrent_solves == 2
+        assert settings.max_local_reads == 200
+        assert settings.max_sweeps == 300
+        assert settings.max_local_retries == 4
+        assert settings.max_remote_retries == 1
+        assert settings.max_top_k == 50
         assert settings.http_host == "0.0.0.0"
         assert settings.http_port == 9000
 
@@ -126,6 +142,11 @@ class TestToPolicy:
         assert policy.max_qpu_annealing_time_us == 2000.0
         assert policy.max_remote_time_seconds == 300
         assert policy.max_concurrent_solves == 4
+        assert policy.max_local_reads == 100000
+        assert policy.max_sweeps == 100000
+        assert policy.max_local_retries == 10
+        assert policy.max_remote_retries == 3
+        assert policy.max_top_k == 1000
 
     def test_carries_environment_overrides_into_the_policy(self, clean_env):
         clean_env.setenv("ANNEALBRIDGE_ALLOW_REMOTE", "true")
@@ -135,6 +156,11 @@ class TestToPolicy:
         clean_env.setenv("ANNEALBRIDGE_MAX_QPU_ANNEALING_TIME_US", "123.5")
         clean_env.setenv("ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS", "30")
         clean_env.setenv("ANNEALBRIDGE_MAX_CONCURRENT_SOLVES", "2")
+        clean_env.setenv("ANNEALBRIDGE_MAX_LOCAL_READS", "200")
+        clean_env.setenv("ANNEALBRIDGE_MAX_SWEEPS", "300")
+        clean_env.setenv("ANNEALBRIDGE_MAX_LOCAL_RETRIES", "4")
+        clean_env.setenv("ANNEALBRIDGE_MAX_REMOTE_RETRIES", "1")
+        clean_env.setenv("ANNEALBRIDGE_MAX_TOP_K", "50")
 
         settings = ServerSettings()
         policy = settings.to_policy()
@@ -146,6 +172,11 @@ class TestToPolicy:
         assert policy.max_qpu_annealing_time_us == settings.max_qpu_annealing_time_us
         assert policy.max_remote_time_seconds == settings.max_remote_time_seconds
         assert policy.max_concurrent_solves == settings.max_concurrent_solves
+        assert policy.max_local_reads == settings.max_local_reads
+        assert policy.max_sweeps == settings.max_sweeps
+        assert policy.max_local_retries == settings.max_local_retries
+        assert policy.max_remote_retries == settings.max_remote_retries
+        assert policy.max_top_k == settings.max_top_k
 
     def test_enabled_backends_stays_none(self, clean_env):
         assert ServerSettings().to_policy().enabled_backends is None

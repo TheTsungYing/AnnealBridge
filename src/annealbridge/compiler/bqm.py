@@ -1,6 +1,7 @@
 """BQM compiler: OptimizationProblem -> dimod.BinaryQuadraticModel (spec §15)."""
 
 import logging
+import math
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
@@ -15,7 +16,7 @@ from annealbridge.compiler.integer_encoding import (
 )
 from annealbridge.compiler.objective import build_objective_bqm
 from annealbridge.compiler.slack import accumulate_terms, encode_slack
-from annealbridge.exceptions import CompilationError
+from annealbridge.exceptions import CompilationError, NonFiniteModelError
 from annealbridge.models import (
     CompiledProblem,
     Constraint,
@@ -54,6 +55,23 @@ def _add_squared_penalty(
         for var_j, value_j in items[i + 1 :]:
             bqm.add_quadratic(var_i, var_j, 2.0 * lam * value_i * value_j)
     bqm.offset += lam * constant * constant
+
+
+def _check_finite(
+    bqm: dimod.BinaryQuadraticModel, problem: OptimizationProblem, hard_penalty: float
+) -> None:
+    """Raise :class:`NonFiniteModelError` if any bias of ``bqm`` is not finite."""
+    finite = (
+        math.isfinite(bqm.offset)
+        and all(math.isfinite(bias) for bias in bqm.linear.values())
+        and all(math.isfinite(bias) for bias in bqm.quadratic.values())
+    )
+    if not finite:
+        raise NonFiniteModelError(
+            f"Compiled model of problem {problem.name} has a non-finite bias "
+            f"at hard_penalty={hard_penalty!r}: the penalty or coefficient "
+            f"arithmetic overflowed the floating-point range"
+        )
 
 
 class BQMCompiler:
@@ -116,6 +134,10 @@ class BQMCompiler:
             )
             for constraint in problem.constraints
         ]
+        # 2026-09-09 review (F-07): the penalty arithmetic is plain float
+        # multiplication, which overflows to ``inf`` silently; a model with
+        # a non-finite bias must never reach a backend.
+        _check_finite(bqm, problem, hard_penalty)
 
         compiled = CompiledProblem(
             model_type=self.model_type,

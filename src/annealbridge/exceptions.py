@@ -17,6 +17,17 @@ class CompilationError(OptimizerError):
     """The problem could not be compiled into a solver model."""
 
 
+class NonFiniteModelError(CompilationError):
+    """The compiled model holds a non-finite bias (2026-09-09 review F-07).
+
+    Raised by a compiler whose arithmetic overflowed — typically the hard
+    penalty multiplied into a squared-constraint expansion — so the service
+    can report a structured result instead of handing a model with ``inf``
+    biases to a backend, which would surface as an unclassified solver
+    failure.
+    """
+
+
 class SolverExecutionError(OptimizerError):
     """The solver backend failed while executing.
 

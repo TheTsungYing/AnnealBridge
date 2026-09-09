@@ -101,7 +101,7 @@ def preference_limit_errors(
     preferences: SolverPreferences,
     policy: ExecutionPolicy,
 ) -> list[SolveError]:
-    """§16.2 step 8: every declared parameter limit the preferences exceed.
+    """§16.2 step 8: every parameter limit the preferences exceed.
 
     Walks ``capabilities.parameter_limits``; each violation becomes a
     catalog error under the declared ``error_code``, labelled with the
@@ -110,6 +110,17 @@ def preference_limit_errors(
     policy has no value for raises ``ValueError`` — the service refuses to
     be built in that state (spec §11.3); this is the pure function's own
     guard for callers that bypass it.
+
+    After the declared limits come the two service-level ceilings added by
+    the 2026-09-09 review (F-02 / F-07): ``max_retries`` against the
+    retry ceiling chosen by the backend's ``remote`` flag, and ``top_k``
+    against ``max_top_k``. They are flag-driven rather than declared
+    because the retry loop and the candidate cut belong to the service,
+    not to any backend, so a backend that declares nothing must still be
+    covered. The retry ceiling applies whether or not this solve would
+    actually retry (an exhaustive backend, a native-constraint model or
+    disabled remote retries): one rule for every backend, and a value that
+    is over the ceiling is refused rather than quietly ignored.
     """
     errors: list[SolveError] = []
     for declaration in capabilities.parameter_limits:
@@ -126,6 +137,18 @@ def preference_limit_errors(
                     declaration.error_code, declaration.preference, value, maximum
                 )
             )
+    retries_maximum = policy.limit(policy.retries_limit_key(capabilities))
+    if preferences.max_retries > retries_maximum:
+        errors.append(
+            limit_error(
+                "RETRY_LIMIT", "max_retries", preferences.max_retries, retries_maximum
+            )
+        )
+    top_k_maximum = policy.limit("top_k")
+    if preferences.top_k > top_k_maximum:
+        errors.append(
+            limit_error("TOP_K_LIMIT", "top_k", preferences.top_k, top_k_maximum)
+        )
     return errors
 
 
