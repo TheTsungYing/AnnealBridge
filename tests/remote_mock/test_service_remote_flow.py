@@ -908,6 +908,22 @@ class TestRemoteRetryPolicy:
         assert result.warnings == []
         assert "server policy" not in (result.message or "")
 
+    def test_validator_warnings_come_before_the_run_time_warning(self, monkeypatch):
+        # solve reports the validator's advice for this backend first, then
+        # whatever the run itself raised: the QPU backend ignores seeds, so
+        # SEED_IGNORED precedes REMOTE_RETRIES_DISABLED.
+        make_remote_available(monkeypatch, qpu_module)
+        fake = FakeQPUSampler(assignments=[{"a": 0, "b": 0}])
+        service = make_qpu_service(fake, allow_remote=True, allow_remote_retries=False)
+
+        result = service.solve(make_zero_infeasible_problem(max_retries=3, seed=7))
+
+        assert result.status == "infeasible"
+        assert [warning.code for warning in result.warnings] == [
+            "SEED_IGNORED",
+            "REMOTE_RETRIES_DISABLED",
+        ]
+
     def test_warning_only_when_policy_actually_cut_retries(self, monkeypatch):
         _, cut = self.solve(monkeypatch, allow_remote_retries=False, max_retries=1)
         _, not_cut = self.solve(monkeypatch, allow_remote_retries=False, max_retries=0)

@@ -84,7 +84,17 @@ unique samples, feasible samples) and whether infeasibility was *proven*;
 `invalid_problem`, `resource_limit_exceeded`, `backend_unavailable`,
 `configuration_error` and `solver_error` print their structured errors as
 `[CODE] path: message`, each with its recommended action. Warnings, when there
-are any, are appended in the same form.
+are any, are appended in the same form — the same warnings `validate` would
+give for that backend, plus any raised during the run. With `"seed": 7` in
+the solver block of the knapsack example:
+
+```console
+$ annealbridge solve examples/knapsack.json --backend exact
+...
+Warnings (1):
+  [SEED_IGNORED] solver.seed: Backend exact does not support seeding; solver.seed will be ignored
+    recommended action: This backend does not support seeding; remove solver.seed or use a backend that supports seeding if reproducibility is required.
+```
 
 `--json` prints the whole `SolveResult` — every ranked solution, every
 per-constraint evaluation, every attempt, and the solver metadata. That is the

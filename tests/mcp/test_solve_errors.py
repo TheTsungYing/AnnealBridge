@@ -144,6 +144,40 @@ async def test_boolean_or_string_numeric_field_is_a_readable_tool_error(
     assert noun in message
 
 
+# --- Unknown fields (models/strict.py) ---------------------------------------
+#
+# Same channel as the type errors above: an invented field name is the
+# LLM caller's characteristic mistake, and dropping it silently would solve
+# a different problem. The SDK's message names the offending path.
+
+
+@pytest.mark.parametrize("tool", ["validate_optimization_problem", "solve_optimization"])
+@pytest.mark.parametrize(
+    "path, key",
+    [
+        ("", "minimize_secondary"),
+        ("objective", "cubic_terms"),
+        ("objective.linear_terms[0]", "variable3"),
+        ("constraints[0]", "penalty"),
+        ("solver", "num_restarts"),
+    ],
+    ids=["top-level", "objective", "term", "constraint", "solver"],
+)
+async def test_unknown_field_is_a_tool_error_naming_the_path(
+    load_example, tool, path, key
+):
+    problem = copy.deepcopy(load_example("knapsack.json", backend="exact"))
+    _set_path(problem, f"{path}.{key}" if path else key, 1)
+
+    async with Client(mcp) as client:
+        result = await client.call_tool(tool, {"problem": problem})
+
+    assert result.is_error is True
+    message = result.content[0].text
+    assert key in message
+    assert "not permitted" in message
+
+
 async def test_unknown_variable_is_a_structured_invalid_problem():
     async with Client(mcp) as client:
         result = await client.call_tool(

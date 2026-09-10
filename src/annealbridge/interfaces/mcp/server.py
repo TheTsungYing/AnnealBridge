@@ -8,8 +8,10 @@ the first tool call (or an explicit ``build_service``) needs it.
 """
 
 import argparse
+import json
 import logging
 import sys
+from importlib.metadata import PackageNotFoundError, version
 
 from mcp.server import MCPServer
 
@@ -21,7 +23,99 @@ from annealbridge.interfaces.composition import (  # noqa: F401  (re-exports)
     build_state_from_policy,
 )
 
-mcp = MCPServer("AnnealBridge")
+# The smallest complete problem, shown to the host at initialize so an agent
+# learns the document shape before its first call instead of from its first
+# error. Kept as data so a test can prove it parses against the schema.
+EXAMPLE_PROBLEM: dict = {
+    "version": "1.0",
+    "name": "knapsack",
+    "variables": [
+        {"name": "item_a", "type": "binary"},
+        {"name": "item_b", "type": "binary"},
+        {"name": "item_c", "type": "binary"},
+    ],
+    "objective": {
+        "direction": "maximize",
+        "linear_terms": [
+            {"variable": "item_a", "coefficient": 10},
+            {"variable": "item_b", "coefficient": 8},
+            {"variable": "item_c", "coefficient": 7},
+        ],
+    },
+    "constraints": [
+        {
+            "id": "capacity",
+            "type": "hard",
+            "terms": [
+                {"variable": "item_a", "coefficient": 6},
+                {"variable": "item_b", "coefficient": 5},
+                {"variable": "item_c", "coefficient": 4},
+            ],
+            "operator": "<=",
+            "rhs": 10,
+        }
+    ],
+    "solver": {"backend": "exact"},
+}
+
+# Server-level guidance the host shows the agent once, at initialize. It
+# complements the per-tool descriptions (which say *when* to call a tool)
+# with what only the whole server can say: the call order, the rules a
+# first document most often breaks, and one complete example. Like every
+# recommended_action it names no configuration values and no limits — those
+# come from get_optimization_capabilities.
+SERVER_INSTRUCTIONS = (
+    """AnnealBridge solves combinatorial optimization problems that you write
+as a structured JSON document (binary or bounded-integer variables, a linear
+or quadratic objective, hard and soft linear constraints). Every result is
+re-validated against the original document; nothing is ever silently
+substituted, clamped or dropped.
+
+Call order:
+1. get_optimization_capabilities - once, first. It returns the problem JSON
+   schema (problem_json_schema), the accepted schema versions and, per
+   backend, whether it is available and enabled and which limits apply.
+2. validate_optimization_problem - after writing the document, before
+   spending anything. It returns every semantic error at once, each with a
+   recommended_action, plus advisory warnings and the compiled size estimate.
+3. recommend_backend - when the choice of backend is not obvious. Advisory
+   only; you still write the backend into solver.backend.
+4. solve_optimization - last. Its warnings are the same ones validate gives
+   for that backend, followed by any raised during the run: read them before
+   trusting an answer that looks weaker than expected.
+
+Rules a first document most often breaks:
+- Only the fields in problem_json_schema exist. A field the schema does not
+  declare (at any level) is rejected as a tool error naming its path; it is
+  never ignored, so an invented field can never silently change the problem.
+- An integer variable needs "type": "integer" with both lower_bound and
+  upper_bound, and the document must then carry "version": "1.1".
+- Inequality constraints (<=, >=) need integer coefficients and an integer
+  rhs. Soft constraints need a positive weight in objective-value units;
+  hard constraints must not carry one.
+- Leave solver.penalty_multiplier at its default: hard-constraint penalties
+  are managed by the server.
+
+A minimal complete problem (maximize value under a weight limit):
+"""
+    + json.dumps(EXAMPLE_PROBLEM, indent=2)
+    + "\n"
+)
+
+
+def _package_version() -> str:
+    """The installed distribution's version, or ``"unknown"`` outside one."""
+    try:
+        return version("annealbridge")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+mcp = MCPServer(
+    "AnnealBridge",
+    instructions=SERVER_INSTRUCTIONS,
+    version=_package_version(),
+)
 
 
 _state: AppState | None = None

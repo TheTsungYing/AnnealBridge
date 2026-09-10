@@ -204,6 +204,26 @@ class TestValidate:
         assert result.exit_code == 2
         assert "not a valid optimization problem" in _output(result)
 
+    @pytest.mark.parametrize("command", ["validate", "solve", "recommend"])
+    def test_unknown_field_exits_2_naming_the_path(self, tmp_path, command):
+        # models/strict.py: an invented field is refused on the type layer,
+        # never dropped; the message names the path in the problem's own
+        # words and points at the schema.
+        problem = json.loads(
+            (EXAMPLES_DIR / "knapsack.json").read_text(encoding="utf-8-sig")
+        )
+        problem["objective"]["cubic_terms"] = [{"coefficient": 100}]
+        path = tmp_path / "unknown_field.json"
+        path.write_text(json.dumps(problem))
+
+        result = runner.invoke(app, [command, str(path)])
+
+        assert result.exit_code == 2
+        output = _output(result)
+        assert "not a valid optimization problem" in output
+        assert "objective.cubic_terms: unknown field" in output
+        assert "export-schema" in output
+
     def test_unknown_backend_override_exits_2(self):
         result = runner.invoke(
             app,

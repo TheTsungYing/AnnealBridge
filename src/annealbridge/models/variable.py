@@ -2,12 +2,13 @@
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import Field
 
 from annealbridge.models.quantities import Count
+from annealbridge.models.strict import InputModel
 
 
-class Variable(BaseModel):
+class Variable(InputModel):
     """A binary or bounded-integer decision variable in an optimization problem.
 
     ``lower_bound`` / ``upper_bound`` are required for ``integer`` variables
@@ -22,11 +23,41 @@ class Variable(BaseModel):
     integral float (``2.0``) is still accepted (2026-09-09 review F-11).
     """
 
-    name: str
-    type: Literal["binary", "integer"] = "binary"
-    lower_bound: Count | None = None
-    upper_bound: Count | None = None
-    description: str | None = None
+    name: str = Field(
+        description=(
+            "Variable name, unique across the problem and used to reference "
+            "it from objective and constraint terms. Must not start with "
+            '"__", which is reserved for compiler-internal variables.'
+        )
+    )
+    type: Literal["binary", "integer"] = Field(
+        default="binary",
+        description=(
+            '"binary" is a 0/1 choice; "integer" is a bounded integer and '
+            'requires both bounds plus problem version "1.1".'
+        ),
+    )
+    lower_bound: Count | None = Field(
+        default=None,
+        description=(
+            "Inclusive lower bound. Required for integer variables and must "
+            "be absent for binary ones; may be negative."
+        ),
+    )
+    upper_bound: Count | None = Field(
+        default=None,
+        description=(
+            "Inclusive upper bound. Required for integer variables and must "
+            "exceed lower_bound; must be absent for binary variables."
+        ),
+    )
+    description: str | None = Field(
+        default=None,
+        description=(
+            "Free text describing what this variable means. For humans only; "
+            "never sent to a remote vendor."
+        ),
+    )
 
     def bounds(self) -> tuple[int, int]:
         """Return ``(lower, upper)``: ``(0, 1)`` for binary, the declared

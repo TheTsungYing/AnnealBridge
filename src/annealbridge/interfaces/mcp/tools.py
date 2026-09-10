@@ -57,7 +57,13 @@ async def validate_optimization_problem(
     warnings, and an estimate of the compiled variable count including slack
     bits. Call this before solve_optimization when planning to use a remote
     backend, so problems can be fixed before spending quota. Nothing is
-    compiled or solved and no network requests are made.
+    compiled or solved and no network requests are made. solve_optimization
+    reports the same warnings for the same backend, so skipping this call
+    never hides them; calling it first only saves the solve.
+
+    A field the schema does not declare is a tool error naming its path,
+    never ignored: check the problem_json_schema from
+    get_optimization_capabilities before inventing one.
 
     The estimate follows the model type the chosen backend compiles to. On a
     bqm backend it counts the slack bits of every inequality constraint plus
@@ -116,7 +122,13 @@ async def solve_optimization(problem: OptimizationProblem) -> SolveResult:
     Use recommend_backend to compare backends; the choice remains yours.
 
     Returns ranked feasible solutions with per-constraint evaluations, or a
-    structured error with a recommended_action.
+    structured error with a recommended_action. Whatever the status, the
+    result's warnings are the same advisory warnings
+    validate_optimization_problem gives for this backend (an ignored seed or
+    parameter, a wide integer range, a negligible soft weight, ...) followed
+    by any raised during the run; read them before trusting a weaker answer
+    than expected. A field the schema does not declare is a tool error naming
+    its path, never ignored.
     """
     state = get_state()
     return await anyio.to_thread.run_sync(state.service.solve, problem)

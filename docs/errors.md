@@ -132,7 +132,12 @@ same way. No warning is ever retryable.
 Warnings never block. They appear in `ProblemValidationResult.warnings` and in
 `SolveResult.warnings`, use the same [SolveError](output-format.md#solveerror)
 structure, and always carry `retryable: false`. `valid` is decided by errors
-alone.
+alone. `validate` and `solve` run the same advisory pass for the same backend,
+so a solve result carries exactly the warnings a validate call would have
+given — whatever its `status`, except `invalid_problem` — followed by the one
+warning only a run can raise, `REMOTE_RETRIES_DISABLED`. The two advisories
+`validate` alone reports, `UNKNOWN_BACKEND` and `NO_COMPILER_FOR_MODEL_TYPE`,
+are errors on `solve`.
 
 Warnings are only produced for a problem with no errors — an erroneous problem
 has to be fixed first anyway, and the no-error gate is what makes the size
@@ -200,7 +205,9 @@ moving that backend behind the others. The ranking never rewrites
 Exit code `2` covers three situations:
 
 - the input file cannot be read, is not valid JSON, or is not a valid
-  optimization problem document (a schema error, as opposed to a semantic one);
+  optimization problem document (a schema error, as opposed to a semantic
+  one — a wrong type, a missing required field, or a field the schema does
+  not declare, reported as `<path>: unknown field`);
 - `--backend` (available on `solve` and `validate` only) names a backend
   that is not one of the known names;
 - an `ANNEALBRIDGE_*` environment variable holds an illegal value. The message

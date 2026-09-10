@@ -66,10 +66,14 @@ CQM, and the Fujitsu Digital Annealer for remote execution.
   from the agent; `1.0` problems keep their exact behaviour, pinned by a
   golden test.
 - **Structured failures, never exceptions.** Every outcome is a `SolveResult`
-  with a `status`, an error catalog of stable codes, and a
-  `recommended_action` for each error.
+  with a `status`; every failure carries stable error codes from one catalog,
+  each with a `recommended_action`. (`infeasible` is an answer, not a failure:
+  it carries `infeasibility_proven` and a message instead of an error code.)
 - **No silent decisions.** An unavailable backend is reported, never swapped
-  for a local one. An over-limit parameter is rejected, never clamped.
+  for a local one. An over-limit parameter is rejected, never clamped. A field
+  the schema does not declare is rejected, never ignored. A solve result
+  carries the same advisory warnings `validate` gives, so an ignored seed or
+  a wide integer range is never hidden behind `success`.
 - **Safe by default.** Remote execution and remote retries are off until
   enabled; every resource limit is an environment variable; vendor credentials
   are redacted from results, logs and error messages, and a credential-leak

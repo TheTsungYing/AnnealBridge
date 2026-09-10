@@ -36,7 +36,7 @@ The outcome of `solve_optimization` / `annealbridge solve`.
 | `attempts` | array of [SolveAttempt](#solveattempt) | One entry per compile/solve/validate attempt, in order. |
 | `infeasibility_proven` | boolean | `true` only when an exhaustive backend actually enumerated every assignment and found none feasible. Defaults to `false`. |
 | `errors` | array of [SolveError](#solveerror) | Structured failures. Empty on success. |
-| `warnings` | array of [SolveError](#solveerror) | Non-blocking advice, same structure as an error. |
+| `warnings` | array of [SolveError](#solveerror) | Non-blocking advice, same structure as an error: the warnings `validate` gives for this backend, then any raised during the run. Present whatever the `status`, except `invalid_problem`. |
 | `metadata` | [SolverExecutionMetadata](#solverexecutionmetadata) \| null | Sanitized execution facts. `null` when the backend reported none — the local backends do not. |
 | `message` | string \| null | Human-readable summary, mainly used to explain an `infeasible` result. |
 

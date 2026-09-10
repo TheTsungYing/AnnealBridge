@@ -106,6 +106,28 @@ weight or a count is a schema error. An integer is still accepted where a float
 is expected (`2` → `2.0`), and an integral float where an integer is expected
 (`10.0` → `10`).
 
+### Unknown fields are rejected
+
+Every object in the document — the problem, a variable, a term, a constraint,
+the solver block and its option blocks — accepts only the fields listed on
+this page. A field the schema does not declare is a schema error naming its
+path, never dropped: a `"variable3"` on a quadratic term, a `"cubic_terms"`
+block, or a `"num_restarts"` in `solver` would otherwise vanish silently and
+the server would solve a *different* problem that passes every check. The
+published JSON Schema carries `additionalProperties: false` on every object
+for the same reason.
+
+On the CLI this is exit code `2`:
+
+```console
+$ annealbridge solve problem.json
+Error: 'problem.json' is not a valid optimization problem:
+  objective.cubic_terms: unknown field, not in the problem schema (see 'annealbridge export-schema')
+```
+
+Over MCP it is a tool error (not a `SolveResult`) whose text names the same
+path, in the same channel as a boolean in a numeric field.
+
 ## Variables
 
 | Field | Type | Required | Default | Meaning |
@@ -460,4 +482,7 @@ prints the complete JSON Schema for `OptimizationProblem` — the same schema an
 agent can use for structured output, and the same one returned in the
 `problem_json_schema` field of the `get_optimization_capabilities` MCP tool.
 Because it is generated from the pydantic models, it never drifts from the
-behaviour documented here. See [CLI](cli.md) and [MCP server](mcp.md).
+behaviour documented here: every field carries a `description`, and every
+object declares `additionalProperties: false` (see
+[Unknown fields are rejected](#unknown-fields-are-rejected)). See
+[CLI](cli.md) and [MCP server](mcp.md).

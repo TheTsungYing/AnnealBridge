@@ -63,3 +63,22 @@ async def test_solve_integer_knapsack_on_exact_backend(load_example):
             assert not name.startswith("__")
             assert isinstance(value, int)
             assert 0 <= value <= 3
+
+
+async def test_solve_reports_the_validators_warnings(load_example):
+    # The same advice validate_optimization_problem gives for this backend
+    # travels with the solve result, so an agent that skipped validate still
+    # learns that the exact backend ignored its seed.
+    problem = load_example("knapsack.json", backend="exact", seed=7)
+
+    async with Client(mcp) as client:
+        solved = await client.call_tool("solve_optimization", {"problem": problem})
+        validated = await client.call_tool(
+            "validate_optimization_problem", {"problem": problem}
+        )
+
+    assert solved.is_error is False
+    content = solved.structured_content
+    assert content["status"] == "success"
+    assert [warning["code"] for warning in content["warnings"]] == ["SEED_IGNORED"]
+    assert content["warnings"] == validated.structured_content["warnings"]

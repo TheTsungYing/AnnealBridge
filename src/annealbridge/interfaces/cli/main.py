@@ -59,7 +59,17 @@ def _load_problem(path: Path) -> OptimizationProblem:
         typer.echo(f"Error: '{path}' is not a valid optimization problem:", err=True)
         for err in exc.errors():
             location = ".".join(str(part) for part in err["loc"])
-            typer.echo(f"  {location}: {err['msg']}", err=True)
+            if err["type"] == "extra_forbidden":
+                # The input models refuse unknown keys (models/strict.py):
+                # say so in the problem's own vocabulary and point at the
+                # schema, instead of pydantic's generic wording.
+                message = (
+                    "unknown field, not in the problem schema (see "
+                    "'annealbridge export-schema')"
+                )
+            else:
+                message = err["msg"]
+            typer.echo(f"  {location}: {message}", err=True)
         raise typer.Exit(code=2)
 
 

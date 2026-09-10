@@ -59,10 +59,14 @@ Leap hybrid CQM 與 Fujitsu Digital Annealer。
   solver 用。走哪一條由 backend 宣告自己支援什麼來決定。
 - **有界整數變數**（`"version": "1.1"`），編碼方式對 agent 完全隱藏；
   `1.0` 的問題行為分毫不變，由 golden test 釘住。
-- **結構化的失敗，不丟例外。** 每個結果都是 `SolveResult`，帶有 `status`、
-  一份穩定錯誤碼構成的錯誤目錄，以及每個錯誤對應的 `recommended_action`。
+- **結構化的失敗，不丟例外。** 每個結果都是 `SolveResult`，帶有 `status`；
+  每個失敗都帶同一份目錄裡的穩定錯誤碼，以及每個錯誤對應的
+  `recommended_action`。（`infeasible` 是答案而不是失敗：它帶的是
+  `infeasibility_proven` 與一段說明，而不是錯誤碼。）
 - **不做沉默的決定。** backend 不可用就如實回報，絕不偷偷換成本地的。參數
-  超過上限就直接拒絕，絕不自動夾到範圍內。
+  超過上限就直接拒絕，絕不自動夾到範圍內。schema 沒宣告的欄位一律拒絕，
+  絕不無聲丟棄。solve 的結果帶有與 `validate` 相同的 warning，所以被忽略的
+  seed 或過寬的整數範圍不會藏在 `success` 後面。
 - **預設就安全。** 遠端執行與遠端重試在啟用前都是關閉的；每一項資源上限都
   是環境變數；廠商憑證會從結果、log 與錯誤訊息中遮蔽，並有一整套憑證外洩
   測試佐證。

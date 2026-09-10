@@ -55,6 +55,23 @@ The three tools that do real work run the synchronous, CPU-bound core in a
 worker thread, so one large problem cannot freeze the event loop and with it
 every other client of the server.
 
+### Server instructions
+
+At initialize the server hands the host a short instructions text alongside
+its name and version (the installed package version). It carries what the
+per-tool descriptions cannot: the recommended call order, the rules a first
+document most often breaks (schema version `1.1` for integer variables,
+integer coefficients on inequalities, unknown fields being rejected), and one
+complete minimal problem, so an agent learns the document shape before its
+first call rather than from its first error. The field descriptions in
+`problem_json_schema` serve the same purpose one level down. Neither names a
+configuration value or a limit; those come from
+`get_optimization_capabilities`.
+
+A `problem` argument carrying a field the schema does not declare — at any
+level — is refused as a tool error naming the path, never dropped. See
+[Unknown fields are rejected](problem-format.md#unknown-fields-are-rejected).
+
 ### `get_optimization_capabilities`
 
 Describes what this server accepts and which backends are usable right now.
@@ -151,6 +168,14 @@ Things worth knowing before calling it:
   the server.
 - Every candidate is re-validated against the *original* problem, never judged
   by the solver's energy or by a sampler's own feasibility flag.
+- Whatever the `status`, `warnings` holds the same advisory warnings
+  `validate_optimization_problem` gives for that backend (`SEED_IGNORED`,
+  `PARAMETER_IGNORED`, `LARGE_INTEGER_RANGE`, `SOFT_WEIGHT_SMALL`, ...),
+  followed by any warning raised during the run (`REMOTE_RETRIES_DISABLED`).
+  Skipping `validate` therefore never hides them; only an `invalid_problem`
+  result carries none. Read them before trusting an answer that looks weaker
+  than expected — a wide integer range on a heuristic backend, for example,
+  can return a slightly sub-optimal value with `status: success`.
 
 ## Claude Desktop (stdio)
 
@@ -261,6 +286,8 @@ narrows what the next one has to guess.
 4. **`solve_optimization`** — last, with a problem already known to be valid
    and a backend already known to be usable. Its result carries the ranked
    solutions and, on failure, a structured error with a recommended action.
+   Its `warnings` are the same ones step 2 gave for that backend, so an agent
+   that skipped step 2 still sees them.
 
 Steps 1–3 perform no solving, no network requests and consume no vendor quota,
 so an agent can iterate freely; only step 4 costs anything. If step 4 returns

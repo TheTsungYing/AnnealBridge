@@ -333,7 +333,11 @@ class TestNoHardPenaltyPath:
         assert solution.variables == {"x1": 1, "x2": 0}
         assert solution.objective_value == 3.0
         assert solution.hard_constraints_satisfied is True
-        assert result.warnings == []
+        # make_problem asks for retries, which the CQM path cannot honour;
+        # solve reports the validator's PARAMETER_IGNORED for it, and nothing
+        # else (no REMOTE_RETRIES_DISABLED: nothing was cut).
+        assert [w.code for w in result.warnings] == ["PARAMETER_IGNORED"]
+        assert result.warnings[0].path == "solver.max_retries"
 
     def test_infeasible_answer_is_one_attempt_and_not_proven(self):
         # x1 = x2 = 1 violates x1 + x2 <= 1; the independent validator
@@ -353,7 +357,7 @@ class TestNoHardPenaltyPath:
         assert backend.solve_calls == 1
         assert "constraint-model backend" in result.message
         assert "not proven" in result.message
-        assert result.warnings == []
+        assert [w.code for w in result.warnings] == ["PARAMETER_IGNORED"]
 
     def test_remote_backend_gets_no_retries_disabled_warning(self):
         # A remote no-penalty backend with retries disabled by policy: the
@@ -370,7 +374,8 @@ class TestNoHardPenaltyPath:
 
         assert result.status == "infeasible"
         assert len(result.attempts) == 1
-        assert [w.code for w in result.warnings] == []
+        # Only the validator's advice about max_retries on the CQM path.
+        assert [w.code for w in result.warnings] == ["PARAMETER_IGNORED"]
         assert "constraint-model backend" in result.message
 
     def test_bqm_path_still_retries(self):

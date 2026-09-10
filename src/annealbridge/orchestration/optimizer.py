@@ -57,7 +57,6 @@ from annealbridge.validation import (
     BackendRecommendationResult,
     ProblemValidationResult,
     validate_batch,
-    validate_problem,
     validate_problem_full,
     validate_solution,
 )
@@ -402,17 +401,21 @@ class OptimizationService:
         model_type = self._select_model_type(caps)
         return None if model_type is None else self._compilers[model_type]
 
-    def validate(self, problem: OptimizationProblem) -> ProblemValidationResult:
-        """Dry-run check of ``problem`` against the named backend (3a §10).
+    def _validate_against_backend(
+        self, problem: OptimizationProblem
+    ) -> tuple[ProblemValidationResult, SolverCapabilities | None, ModelType | None]:
+        """The validator's error pass plus its advisory layer, for the
+        backend ``problem`` names — shared by :meth:`validate` and
+        :meth:`solve` so both report the same warnings.
 
         Looks the backend up only to read its *declaration*; nothing is
         compiled or solved, no network is touched and no concurrency slot
         is taken. The policy → validator wiring lives here (not in the
         interfaces) so any Python caller gets the same advice as MCP/CLI.
-
-        An unknown backend (possible with a custom registry) still gets
-        the backend-independent checks plus an UNKNOWN_BACKEND *warning*;
-        the validator does not judge backend existence, ``solve`` does.
+        Returns the capabilities (None for an unknown backend) and the
+        compiler path chosen (None when no compiler fits) so the callers
+        can add what only they know: ``validate`` turns those two cases
+        into advisory warnings, ``solve`` into errors.
         """
         backend_name = problem.solver.backend
         try:
@@ -431,6 +434,20 @@ class OptimizationService:
             max_compiled_variables=int(self._policy.limit("variables")),
             model_type=model_type,
         )
+        return result, caps, model_type
+
+    def validate(self, problem: OptimizationProblem) -> ProblemValidationResult:
+        """Dry-run check of ``problem`` against the named backend (3a §10).
+
+        Nothing is compiled or solved, no network is touched and no
+        concurrency slot is taken (see :meth:`_validate_against_backend`).
+
+        An unknown backend (possible with a custom registry) still gets
+        the backend-independent checks plus an UNKNOWN_BACKEND *warning*;
+        the validator does not judge backend existence, ``solve`` does.
+        """
+        backend_name = problem.solver.backend
+        result, caps, model_type = self._validate_against_backend(problem)
         if caps is None:
             result.warnings.append(
                 catalog_error(
@@ -471,16 +488,34 @@ class OptimizationService:
         Never raises for domain errors: validation and compilation failures
         become ``invalid_problem`` (no backend was ever called) and solver
         failures become ``solver_error`` (spec §27, §36).
+
+        The result carries the same advisory ``warnings`` :meth:`validate`
+        would give for this backend (SEED_IGNORED, LARGE_INTEGER_RANGE,
+        SOFT_WEIGHT_SMALL, ...) ahead of any warning raised by the run
+        itself (REMOTE_RETRIES_DISABLED), whatever the status — they
+        describe the problem as submitted, and an agent that skipped
+        ``validate`` must still see them. Only ``invalid_problem`` carries
+        none: warnings are produced for an error-free problem only.
         """
-        errors = validate_problem(problem)
-        if errors:
+        validation, _, _ = self._validate_against_backend(problem)
+        if validation.errors:
             logger.info(
                 "Problem %s failed validation with %d error(s)",
                 problem.name,
-                len(errors),
+                len(validation.errors),
             )
-            return self._failure("invalid_problem", None, None, errors)
+            return self._failure("invalid_problem", None, None, validation.errors)
 
+        result = self._dispatch(problem)
+        if not validation.warnings:
+            return result
+        return result.model_copy(
+            update={"warnings": [*validation.warnings, *result.warnings]}
+        )
+
+    def _dispatch(self, problem: OptimizationProblem) -> SolveResult:
+        """§16.2 steps 2–6 for a validated problem: resolve the backend,
+        gate it, take a concurrency slot and run the attempts."""
         direction = problem.objective.direction
         backend_name = problem.solver.backend
         try:

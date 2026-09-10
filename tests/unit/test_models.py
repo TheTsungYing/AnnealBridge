@@ -472,3 +472,128 @@ class TestSolveResultStatuses:
             }
         )
         assert result.warnings == []
+
+
+# --- Unknown fields (models/strict.py) --------------------------------------
+#
+# The caller is usually an LLM, and inventing a plausible field name is its
+# characteristic mistake. pydantic's default would drop the key silently and
+# solve a *different* problem that passes every guarantee; every input model
+# therefore refuses keys it does not declare, on the type layer, like a
+# boolean in a numeric field (2026-09-09 review F-11).
+
+
+def _with_key(payload: dict, path: str, key: str) -> dict:
+    """Copy ``payload`` with ``key: 1`` inserted at the node named by ``path``."""
+    node = payload
+    for part in path.split(".") if path else []:
+        if part.endswith("]"):
+            name, _, index = part[:-1].partition("[")
+            node = node[name][int(index)]
+        else:
+            node = node[part]
+    node[key] = 1
+    return payload
+
+
+class TestUnknownFields:
+    @pytest.mark.parametrize(
+        "path, key, expected_loc",
+        [
+            ("", "minimize_secondary", ("minimize_secondary",)),
+            ("variables[0]", "weight", ("variables", 0, "weight")),
+            ("objective", "cubic_terms", ("objective", "cubic_terms")),
+            (
+                "objective.quadratic_terms[0]",
+                "variable3",
+                ("objective", "quadratic_terms", 0, "variable3"),
+            ),
+            (
+                "objective.linear_terms[0]",
+                "coeff",
+                ("objective", "linear_terms", 0, "coeff"),
+            ),
+            ("constraints[0]", "penalty", ("constraints", 0, "penalty")),
+            ("solver", "num_restarts", ("solver", "num_restarts")),
+            (
+                "solver.dwave_qpu",
+                "num_spin_reversal_transforms",
+                ("solver", "dwave_qpu", "num_spin_reversal_transforms"),
+            ),
+        ],
+        ids=[
+            "top-level",
+            "variable",
+            "objective",
+            "quadratic-term",
+            "linear-term",
+            "constraint",
+            "solver",
+            "option-block",
+        ],
+    )
+    def test_unknown_key_is_rejected_with_its_path(self, path, key, expected_loc):
+        payload = make_problem_dict()
+        payload["solver"] = {"backend": "dwave_qpu", "dwave_qpu": {}}
+        _with_key(payload, path, key)
+
+        with pytest.raises(ValidationError) as excinfo:
+            OptimizationProblem.model_validate(payload)
+
+        errors = excinfo.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["type"] == "extra_forbidden"
+        assert errors[0]["loc"] == expected_loc
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            Variable,
+            Objective,
+            Constraint,
+            SolverPreferences,
+            DWaveQPUOptions,
+            LeapHybridBQMOptions,
+            FujitsuDAOptions,
+            OptimizationProblem,
+        ],
+    )
+    def test_every_input_model_forbids_extra(self, model):
+        assert model.model_config.get("extra") == "forbid"
+
+    def test_published_schema_declares_no_additional_properties(self):
+        """A schema-aware host can refuse the document before sending it."""
+        schema = OptimizationProblem.model_json_schema()
+        assert schema["additionalProperties"] is False
+        for name, definition in schema["$defs"].items():
+            assert definition.get("additionalProperties") is False, name
+
+    def test_output_models_keep_the_default(self):
+        """Results are built by our own code; only caller input is strict."""
+        assert SolveResult.model_config.get("extra") is None
+
+
+class TestFieldDescriptions:
+    """Every public input field must document itself in the JSON Schema.
+
+    The schema is what an LLM agent sees as the MCP tool's inputSchema, so a
+    property without a description is a field the agent has to guess at.
+    """
+
+    def test_every_schema_property_has_a_description(self):
+        schema = OptimizationProblem.model_json_schema()
+        missing: list[str] = []
+
+        def check(model_name: str, definition: dict) -> None:
+            for field, prop in definition.get("properties", {}).items():
+                description = prop.get("description")
+                if not isinstance(description, str) or not description.strip():
+                    missing.append(f"{model_name}.{field}")
+
+        check("OptimizationProblem", schema)
+        for name, definition in schema.get("$defs", {}).items():
+            check(name, definition)
+
+        assert not missing, "properties without a description: " + ", ".join(
+            sorted(missing)
+        )
