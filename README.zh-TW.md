@@ -11,7 +11,203 @@
 重新檢查，再透過 [MCP](https://modelcontextprotocol.io)、CLI 或純 Python
 回傳排名過、已驗證的解。
 
-## 它做什麼
+## 安裝
+
+需要 Python 3.11 以上。給 MCP host 用的話，只要裝好
+[uv](https://docs.astral.sh/uv/)：把 server 加進 `claude_desktop_config.json`
+（或你的 host 對應的設定檔），然後重啟 host。host 第一次啟動 server 時，
+`uvx` 會把套件抓進它自己的快取環境。
+
+```json
+{
+  "mcpServers": {
+    "annealbridge": {
+      "command": "uvx",
+      "args": ["--from", "annealbridge[mcp]", "annealbridge-mcp"]
+    }
+  }
+}
+```
+
+Claude Code 一行就能註冊：
+
+```bash
+claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
+```
+
+要用命令列或 Python API，把套件裝進任何環境即可：
+
+```bash
+pip install annealbridge              # core: local backends + CLI
+pip install "annealbridge[mcp]"       # + MCP server (annealbridge-mcp)
+pip install "annealbridge[dwave]"     # + D-Wave cloud backends
+pip install "annealbridge[all]"       # everything
+```
+
+`pipx`、用 pip 裝好後以絕對路徑指定 server，以及從 checkout 安裝開發版本，
+見[深入安裝](#深入安裝)。
+
+## 一段對話
+
+server 註冊好之後，最佳化就是一段普通的聊天。agent 把需求轉成一份小小的
+JSON 文件；AnnealBridge 求解，並在回傳前把每個答案拿回那份文件重新檢查。
+
+> **你：** 我最多能背 10 公斤。物品 A 價值 10、重 6，B 價值 8、重 5，C 價值
+> 7、重 4，D 價值 6、重 3。我該帶哪些？
+
+在回覆背後，agent 依序呼叫 server 的三個工具：
+
+1. `get_optimization_capabilities`：可以用哪些變數型別與運算子、現在哪些
+   backend 可用、上限是多少。
+2. `validate_optimization_problem`：它草擬的問題（四個 binary 變數、一個
+   maximize 目標、一條 `<= 10` 的 hard constraint）一次拿回所有錯誤，或者
+   確認沒問題。此時還沒求解，也沒花任何成本。
+3. `solve_optimization`：排名過的解，每一個都對照原始約束重新驗證過；因為
+   窮舉的 `exact` backend 列舉了所有組合，所以帶著 `optimality_proven: true`。
+
+> **Agent：** 帶 A 和 C：價值 17，剛好 10 公斤。次佳是 A 加 D（16，9 公斤）
+> 與 B 加 C（15，9 公斤）。這是已證明的最佳解，所有組合都列舉過了。
+
+措辭是 agent 的，數字來自工具結果。第四個工具 `recommend_backend` 會針對
+問題把 backend 排名，僅供參考。任何支援 stdio 的 MCP host 都是同樣的用法，
+另外也有 streamable-http transport；見 [docs/mcp.md](docs/mcp.md)。agent 送出
+的那份文件就是[問題 JSON 一覽](#問題-json-一覽)。
+
+## 命令列與 Python
+
+同一個問題，從終端機或腳本求解。
+
+### 命令列
+
+先把[下方的問題 JSON](#問題-json-一覽)存成 `knapsack.json`，然後：
+
+```bash
+annealbridge solve knapsack.json
+```
+
+```text
+Problem:   knapsack
+Backend:   exact
+Status:    success
+Attempts:  1
+
+Best solution (rank 1)
+  objective (maximize):  17
+  soft violation score:  0
+  item_a = 1
+  item_b = 0
+  item_c = 1
+  item_d = 0
+
+Hard constraints: 1 / 1 satisfied
+Soft constraints: 0 violations
+```
+
+加上 `--json` 可以拿到完整的 `SolveResult`，`--backend simulated_annealing`
+可以覆寫 backend，也可以試試 `validate`、`recommend`、`capabilities` 與
+`export-schema`。見 [docs/cli.md](docs/cli.md)。
+
+### Python
+
+```python
+import json
+
+from annealbridge.models import OptimizationProblem
+from annealbridge.orchestration import OptimizationService
+
+with open("knapsack.json", encoding="utf-8") as f:
+    problem = OptimizationProblem.model_validate(json.load(f))
+
+result = OptimizationService().solve(problem)
+print(result.status)                          # "success"
+print(result.solutions[0].variables)          # {"item_a": 1, "item_b": 0, ...}
+print(result.solutions[0].objective_value)    # 17.0
+```
+
+領域上的失敗一律以結果回傳，不會丟例外：`result.status` 會是 `success`、
+`infeasible`、`invalid_problem`、`resource_limit_exceeded`、
+`backend_unavailable`、`configuration_error` 或 `solver_error` 其中之一。
+見 [docs/output-format.md](docs/output-format.md)。
+
+## 問題 JSON 一覽
+
+這就是上面兩個範例背後的文件：一個容量為 10 的 0/1 背包問題，也是
+repository 中 [examples/knapsack.json](examples/knapsack.json) 的精簡版。
+存成 `knapsack.json` 放在任何位置都可以。
+
+```json
+{
+  "version": "1.0",
+  "name": "knapsack",
+  "variables": [
+    {"name": "item_a", "type": "binary"},
+    {"name": "item_b", "type": "binary"},
+    {"name": "item_c", "type": "binary"},
+    {"name": "item_d", "type": "binary"}
+  ],
+  "objective": {
+    "direction": "maximize",
+    "linear_terms": [
+      {"variable": "item_a", "coefficient": 10},
+      {"variable": "item_b", "coefficient": 8},
+      {"variable": "item_c", "coefficient": 7},
+      {"variable": "item_d", "coefficient": 6}
+    ]
+  },
+  "constraints": [
+    {
+      "id": "capacity",
+      "type": "hard",
+      "terms": [
+        {"variable": "item_a", "coefficient": 6},
+        {"variable": "item_b", "coefficient": 5},
+        {"variable": "item_c", "coefficient": 4},
+        {"variable": "item_d", "coefficient": 3}
+      ],
+      "operator": "<=",
+      "rhs": 10
+    }
+  ],
+  "solver": {"backend": "exact"}
+}
+```
+
+整數變數（`"type": "integer"` 加上 bounds、`"version": "1.1"`）、二次目標
+項、帶權重的 soft constraint，以及各 backend 的 solver 偏好設定，都寫在
+[docs/problem-format.md](docs/problem-format.md)。`annealbridge
+export-schema` 會印出 JSON Schema，agent 可以拿它來做結構化輸出。
+
+repository 裡有四個可直接執行的範例：[背包問題](examples/knapsack.json)、
+[指派問題](examples/assignment.json)、[TSP](examples/tsp.json) 與
+[整數背包問題](examples/integer_knapsack.json)。安裝後的 wheel 不含這些檔案，
+請從 checkout 或 GitHub 取得。
+
+## 深入安裝
+
+核心安裝不需要 `mcp`，也不需要 `dwave-system`：registry 照樣載入，只是把
+遠端 backend 回報為不可用。Fujitsu backend 完全不需要任何 extra；它用標準
+函式庫直接跟廠商的 HTTPS API 溝通，只等一個 `FUJITSU_DA_API_KEY`。
+
+上面的 `uvx` 會在需要時從獨立的快取環境執行 MCP server。
+[pipx](https://pipx.pypa.io/) 則是把 `annealbridge-mcp` 永久裝到 `PATH` 上的
+對應做法：
+
+```bash
+pipx install "annealbridge[mcp]"
+```
+
+用 pip 裝進虛擬環境的 server 不在 host 的 `PATH` 上：這時不用 `uvx`，改把
+`"command"` 指向 `annealbridge-mcp` 的絕對路徑（Windows 上是
+`Scripts\annealbridge-mcp.exe`）。設定值透過 host 的 `env` 區塊傳給
+server；見 [docs/mcp.md](docs/mcp.md)。
+
+要安裝 checkout 上的開發版本：
+
+```bash
+pip install "annealbridge[all] @ git+https://github.com/TheTsungYing/AnnealBridge.git"
+```
+
+## 運作方式
 
 agent 產生一個 `OptimizationProblem`：binary 或有界整數變數、線性或二次的
 目標函式，以及 hard 或 soft 的線性約束。就只有這些。接著 AnnealBridge 會
@@ -74,173 +270,6 @@ Leap hybrid CQM 與 Fujitsu Digital Annealer。
 - **架構是被強制的。** import 邊界、「orchestration、validation 與介面層
   不出現 backend 名稱」、「新增 backend 不必動到求解流程」這些都是測試，
   不是慣例。
-
-## 安裝
-
-需要 Python 3.11 以上。
-
-```bash
-pip install annealbridge              # core: local backends + CLI
-pip install "annealbridge[mcp]"       # + MCP server (annealbridge-mcp)
-pip install "annealbridge[dwave]"     # + D-Wave cloud backends
-pip install "annealbridge[all]"       # everything
-```
-
-核心安裝不需要 `mcp`，也不需要 `dwave-system`：registry 照樣載入，只是把
-遠端 backend 回報為不可用。Fujitsu backend 完全不需要任何 extra；它用標準
-函式庫直接跟廠商的 HTTPS API 溝通，只等一個 `FUJITSU_DA_API_KEY`。
-
-只需要 MCP server 的話，[uv](https://docs.astral.sh/uv/) 或
-[pipx](https://pipx.pypa.io/) 可以省掉自己管理虛擬環境：`uvx` 會在需要時從
-獨立的快取環境執行 server，`pipx` 則把 `annealbridge-mcp` 裝到 `PATH` 上：
-
-```bash
-uvx --from "annealbridge[mcp]" annealbridge-mcp     # 不安裝、直接執行
-pipx install "annealbridge[mcp]"                    # 或安裝成指令
-```
-
-要安裝 checkout 上的開發版本：
-
-```bash
-pip install "annealbridge[all] @ git+https://github.com/TheTsungYing/AnnealBridge.git"
-```
-
-## 快速開始
-
-### 命令列
-
-先把[下方的問題 JSON](#問題-json-一覽)存成 `knapsack.json`，然後：
-
-```bash
-annealbridge solve knapsack.json
-```
-
-```text
-Problem:   knapsack
-Backend:   exact
-Status:    success
-Attempts:  1
-
-Best solution (rank 1)
-  objective (maximize):  17
-  soft violation score:  0
-  item_a = 1
-  item_b = 0
-  item_c = 1
-  item_d = 0
-
-Hard constraints: 1 / 1 satisfied
-Soft constraints: 0 violations
-```
-
-加上 `--json` 可以拿到完整的 `SolveResult`，`--backend simulated_annealing`
-可以覆寫 backend，也可以試試 `validate`、`recommend`、`capabilities` 與
-`export-schema`。見 [docs/cli.md](docs/cli.md)。
-
-### Python
-
-```python
-import json
-
-from annealbridge.models import OptimizationProblem
-from annealbridge.orchestration import OptimizationService
-
-with open("knapsack.json", encoding="utf-8") as f:
-    problem = OptimizationProblem.model_validate(json.load(f))
-
-result = OptimizationService().solve(problem)
-print(result.status)                          # "success"
-print(result.solutions[0].variables)          # {"item_a": 1, "item_b": 0, ...}
-print(result.solutions[0].objective_value)    # 17.0
-```
-
-領域上的失敗一律以結果回傳，不會丟例外：`result.status` 會是 `success`、
-`infeasible`、`invalid_problem`、`resource_limit_exceeded`、
-`backend_unavailable`、`configuration_error` 或 `solver_error` 其中之一。
-見 [docs/output-format.md](docs/output-format.md)。
-
-### MCP（Claude Desktop 與其他 host）
-
-把 server 加進 `claude_desktop_config.json`，然後重啟 host。裝好
-[uv](https://docs.astral.sh/uv/) 之後不需要別的：host 第一次啟動 server 時，
-`uvx` 會把套件抓進它自己的快取環境。
-
-```json
-{
-  "mcpServers": {
-    "annealbridge": {
-      "command": "uvx",
-      "args": ["--from", "annealbridge[mcp]", "annealbridge-mcp"]
-    }
-  }
-}
-```
-
-沒有 uv 的話，先 `pip install "annealbridge[mcp]"`（或 `pipx install`），再把
-`"command"` 指向 `annealbridge-mcp` 執行檔；它在虛擬環境裡時要寫絕對路徑。
-Claude Code 一行就能註冊：
-
-```bash
-claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
-```
-
-server 提供四個工具：`get_optimization_capabilities`、
-`validate_optimization_problem`、`recommend_backend` 與
-`solve_optimization`。任何支援 stdio 的 MCP host 都是同樣的設定方式；另外
-也有 streamable-http transport 可用。見 [docs/mcp.md](docs/mcp.md)。
-
-## 問題 JSON 一覽
-
-這就是上面快速開始所求解的檔案：一個容量為 10 的 0/1 背包問題，也是
-repository 中 [examples/knapsack.json](examples/knapsack.json) 的精簡版。
-存成 `knapsack.json` 放在任何位置都可以。
-
-```json
-{
-  "version": "1.0",
-  "name": "knapsack",
-  "variables": [
-    {"name": "item_a", "type": "binary"},
-    {"name": "item_b", "type": "binary"},
-    {"name": "item_c", "type": "binary"},
-    {"name": "item_d", "type": "binary"}
-  ],
-  "objective": {
-    "direction": "maximize",
-    "linear_terms": [
-      {"variable": "item_a", "coefficient": 10},
-      {"variable": "item_b", "coefficient": 8},
-      {"variable": "item_c", "coefficient": 7},
-      {"variable": "item_d", "coefficient": 6}
-    ]
-  },
-  "constraints": [
-    {
-      "id": "capacity",
-      "type": "hard",
-      "terms": [
-        {"variable": "item_a", "coefficient": 6},
-        {"variable": "item_b", "coefficient": 5},
-        {"variable": "item_c", "coefficient": 4},
-        {"variable": "item_d", "coefficient": 3}
-      ],
-      "operator": "<=",
-      "rhs": 10
-    }
-  ],
-  "solver": {"backend": "exact"}
-}
-```
-
-整數變數（`"type": "integer"` 加上 bounds、`"version": "1.1"`）、二次目標
-項、帶權重的 soft constraint，以及各 backend 的 solver 偏好設定，都寫在
-[docs/problem-format.md](docs/problem-format.md)。`annealbridge
-export-schema` 會印出 JSON Schema，agent 可以拿它來做結構化輸出。
-
-repository 裡有四個可直接執行的範例：[背包問題](examples/knapsack.json)、
-[指派問題](examples/assignment.json)、[TSP](examples/tsp.json) 與
-[整數背包問題](examples/integer_knapsack.json)。安裝後的 wheel 不含這些檔案，
-請從 checkout 或 GitHub 取得。
 
 ## 求解器 backend
 

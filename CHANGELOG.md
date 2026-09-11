@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Both READMEs now open with *Install* (the `uvx` host entry, `claude mcp
+  add`, the pip matrix) and *A conversation* (what a user asks, the three
+  tool calls the agent makes, what comes back), followed by the command
+  line and Python examples; *How it works*, *Features* and the rest moved
+  below them. The extra install paths live under *Installation in depth*.
+
 ## [0.1.0] - 2026-09-11
 
 First public release.

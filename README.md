@@ -12,7 +12,216 @@ and solve it, checks every answer against the original problem, and returns
 ranked, verified solutions over [MCP](https://modelcontextprotocol.io), a CLI,
 or plain Python.
 
-## What it does
+## Install
+
+Requires Python 3.11 or newer. For an MCP host, [uv](https://docs.astral.sh/uv/)
+is the only prerequisite: add the server to `claude_desktop_config.json` (or
+your host's equivalent) and restart the host. `uvx` fetches the package into
+its own cached environment the first time the host starts the server.
+
+```json
+{
+  "mcpServers": {
+    "annealbridge": {
+      "command": "uvx",
+      "args": ["--from", "annealbridge[mcp]", "annealbridge-mcp"]
+    }
+  }
+}
+```
+
+Claude Code registers it in one line:
+
+```bash
+claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
+```
+
+For the command line or the Python API, install the package into any
+environment:
+
+```bash
+pip install annealbridge              # core: local backends + CLI
+pip install "annealbridge[mcp]"       # + MCP server (annealbridge-mcp)
+pip install "annealbridge[dwave]"     # + D-Wave cloud backends
+pip install "annealbridge[all]"       # everything
+```
+
+`pipx`, a pip-installed server behind an absolute path, and the development
+version from a checkout are covered in
+[Installation in depth](#installation-in-depth).
+
+## A conversation
+
+Once the server is registered, optimizing is an ordinary chat. The agent
+turns the request into a small JSON document; AnnealBridge solves it and
+checks every answer against that document before anything comes back.
+
+> **You:** I can carry 10 kg. Item A is worth 10 and weighs 6, B is worth 8
+> and weighs 5, C is worth 7 and weighs 4, D is worth 6 and weighs 3. Which
+> ones should I take?
+
+Behind the reply, the agent calls three of the server's tools in order:
+
+1. `get_optimization_capabilities` — which variable types and operators it
+   may use, which backends are usable right now, and their limits.
+2. `validate_optimization_problem` — its draft (four binary variables, a
+   maximize objective, one `<= 10` hard constraint) comes back with every
+   error at once, or clean. Nothing is solved yet and nothing is spent.
+3. `solve_optimization` — ranked solutions, each re-validated against the
+   original constraints, with `optimality_proven: true` because the
+   exhaustive `exact` backend enumerated every combination.
+
+> **Agent:** Take A and C: value 17 at exactly 10 kg. The runners-up are A
+> and D (16, at 9 kg) and B and C (15, at 9 kg). This is the proven optimum;
+> every combination was enumerated.
+
+The wording is the agent's; the numbers are the tool result. The fourth tool,
+`recommend_backend`, ranks the backends for a given problem and is advisory
+only. Any stdio-capable MCP host works the same way, and a streamable-http
+transport is available too; see [docs/mcp.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/mcp.md). The document
+the agent sent is [the problem JSON at a glance](#the-problem-json-at-a-glance).
+
+## Command line and Python
+
+The same solve from a terminal or a script.
+
+### Command line
+
+Save [the problem JSON below](#the-problem-json-at-a-glance) as
+`knapsack.json`, then:
+
+```bash
+annealbridge solve knapsack.json
+```
+
+```text
+Problem:   knapsack
+Backend:   exact
+Status:    success
+Attempts:  1
+
+Best solution (rank 1)
+  objective (maximize):  17
+  soft violation score:  0
+  item_a = 1
+  item_b = 0
+  item_c = 1
+  item_d = 0
+
+Hard constraints: 1 / 1 satisfied
+Soft constraints: 0 violations
+```
+
+Add `--json` for the full `SolveResult`, `--backend simulated_annealing` to
+override the backend, or try `validate`, `recommend`, `capabilities` and
+`export-schema`. See [docs/cli.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/cli.md).
+
+### Python
+
+```python
+import json
+
+from annealbridge.models import OptimizationProblem
+from annealbridge.orchestration import OptimizationService
+
+with open("knapsack.json", encoding="utf-8") as f:
+    problem = OptimizationProblem.model_validate(json.load(f))
+
+result = OptimizationService().solve(problem)
+print(result.status)                          # "success"
+print(result.solutions[0].variables)          # {"item_a": 1, "item_b": 0, ...}
+print(result.solutions[0].objective_value)    # 17.0
+```
+
+Domain failures come back as results, never as exceptions: `result.status`
+is one of `success`, `infeasible`, `invalid_problem`,
+`resource_limit_exceeded`, `backend_unavailable`, `configuration_error` or
+`solver_error`. See [docs/output-format.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/output-format.md).
+
+## The problem JSON at a glance
+
+This is the document behind both examples above: a 0/1 knapsack with capacity
+10, the reduced form of the repository's
+[examples/knapsack.json](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/knapsack.json). Save it as `knapsack.json`
+anywhere you like.
+
+```json
+{
+  "version": "1.0",
+  "name": "knapsack",
+  "variables": [
+    {"name": "item_a", "type": "binary"},
+    {"name": "item_b", "type": "binary"},
+    {"name": "item_c", "type": "binary"},
+    {"name": "item_d", "type": "binary"}
+  ],
+  "objective": {
+    "direction": "maximize",
+    "linear_terms": [
+      {"variable": "item_a", "coefficient": 10},
+      {"variable": "item_b", "coefficient": 8},
+      {"variable": "item_c", "coefficient": 7},
+      {"variable": "item_d", "coefficient": 6}
+    ]
+  },
+  "constraints": [
+    {
+      "id": "capacity",
+      "type": "hard",
+      "terms": [
+        {"variable": "item_a", "coefficient": 6},
+        {"variable": "item_b", "coefficient": 5},
+        {"variable": "item_c", "coefficient": 4},
+        {"variable": "item_d", "coefficient": 3}
+      ],
+      "operator": "<=",
+      "rhs": 10
+    }
+  ],
+  "solver": {"backend": "exact"}
+}
+```
+
+Integer variables (`"type": "integer"` with bounds, `"version": "1.1"`),
+quadratic objective terms, soft constraints with weights, and per-backend
+solver preferences are described in
+[docs/problem-format.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/problem-format.md). `annealbridge export-schema`
+prints the JSON Schema an agent can use for structured output.
+
+Four ready-to-run examples live in the repository —
+[knapsack](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/knapsack.json),
+[assignment](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/assignment.json), [TSP](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/tsp.json) and
+[integer knapsack](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/integer_knapsack.json). The installed wheel does
+not ship them; take them from a checkout or from GitHub.
+
+## Installation in depth
+
+The core install needs no `mcp` and no `dwave-system`: the registry still
+loads and simply reports the remote backends as unavailable. The Fujitsu
+backend needs no extra at all; it talks to the vendor's HTTPS API through the
+standard library and only waits for `FUJITSU_DA_API_KEY`.
+
+`uvx` (above) runs the MCP server from an isolated, cached environment on
+demand. [pipx](https://pipx.pypa.io/) is the equivalent that puts
+`annealbridge-mcp` on your `PATH` permanently:
+
+```bash
+pipx install "annealbridge[mcp]"
+```
+
+A server installed with pip into a virtual environment is not on the host's
+`PATH`: set `"command"` to the absolute path of `annealbridge-mcp` (on
+Windows, `Scripts\annealbridge-mcp.exe`) instead of using `uvx`.
+Configuration reaches the server through the host's `env` block; see
+[docs/mcp.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/mcp.md).
+
+To install the development version from a checkout:
+
+```bash
+pip install "annealbridge[all] @ git+https://github.com/TheTsungYing/AnnealBridge.git"
+```
+
+## How it works
 
 An agent produces an `OptimizationProblem`: binary or bounded-integer
 variables, a linear or quadratic objective, and hard or soft linear
@@ -82,180 +291,6 @@ CQM, and the Fujitsu Digital Annealer for remote execution.
 - **Enforced architecture.** Import boundaries, "no backend names in the
   orchestration, validation or interface layers", and "a new backend plugs
   into the pipeline without touching it" are tests, not conventions.
-
-## Installation
-
-Requires Python 3.11 or newer.
-
-```bash
-pip install annealbridge              # core: local backends + CLI
-pip install "annealbridge[mcp]"       # + MCP server (annealbridge-mcp)
-pip install "annealbridge[dwave]"     # + D-Wave cloud backends
-pip install "annealbridge[all]"       # everything
-```
-
-The core install needs no `mcp` and no `dwave-system`: the registry still
-loads and simply reports the remote backends as unavailable. The Fujitsu
-backend needs no extra at all; it talks to the vendor's HTTPS API through the
-standard library and only waits for `FUJITSU_DA_API_KEY`.
-
-For the MCP server alone, [uv](https://docs.astral.sh/uv/) or
-[pipx](https://pipx.pypa.io/) save you a virtual environment: `uvx` runs the
-server from an isolated, cached environment on demand, and `pipx` puts
-`annealbridge-mcp` on your `PATH`:
-
-```bash
-uvx --from "annealbridge[mcp]" annealbridge-mcp     # run without installing
-pipx install "annealbridge[mcp]"                    # or install the command
-```
-
-To install the development version from a checkout:
-
-```bash
-pip install "annealbridge[all] @ git+https://github.com/TheTsungYing/AnnealBridge.git"
-```
-
-## Quick start
-
-### Command line
-
-Save [the problem JSON below](#the-problem-json-at-a-glance) as
-`knapsack.json`, then:
-
-```bash
-annealbridge solve knapsack.json
-```
-
-```text
-Problem:   knapsack
-Backend:   exact
-Status:    success
-Attempts:  1
-
-Best solution (rank 1)
-  objective (maximize):  17
-  soft violation score:  0
-  item_a = 1
-  item_b = 0
-  item_c = 1
-  item_d = 0
-
-Hard constraints: 1 / 1 satisfied
-Soft constraints: 0 violations
-```
-
-Add `--json` for the full `SolveResult`, `--backend simulated_annealing` to
-override the backend, or try `validate`, `recommend`, `capabilities` and
-`export-schema`. See [docs/cli.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/cli.md).
-
-### Python
-
-```python
-import json
-
-from annealbridge.models import OptimizationProblem
-from annealbridge.orchestration import OptimizationService
-
-with open("knapsack.json", encoding="utf-8") as f:
-    problem = OptimizationProblem.model_validate(json.load(f))
-
-result = OptimizationService().solve(problem)
-print(result.status)                          # "success"
-print(result.solutions[0].variables)          # {"item_a": 1, "item_b": 0, ...}
-print(result.solutions[0].objective_value)    # 17.0
-```
-
-Domain failures come back as results, never as exceptions: `result.status`
-is one of `success`, `infeasible`, `invalid_problem`,
-`resource_limit_exceeded`, `backend_unavailable`, `configuration_error` or
-`solver_error`. See [docs/output-format.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/output-format.md).
-
-### MCP (Claude Desktop and other hosts)
-
-Add the server to `claude_desktop_config.json` and restart the host. With
-[uv](https://docs.astral.sh/uv/) installed nothing else is needed: `uvx`
-fetches the package into its own cached environment the first time the host
-starts the server.
-
-```json
-{
-  "mcpServers": {
-    "annealbridge": {
-      "command": "uvx",
-      "args": ["--from", "annealbridge[mcp]", "annealbridge-mcp"]
-    }
-  }
-}
-```
-
-Without uv, `pip install "annealbridge[mcp]"` (or `pipx install`) and set
-`"command"` to the `annealbridge-mcp` executable, by absolute path when it
-lives in a virtual environment. Claude Code registers it in one line:
-
-```bash
-claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
-```
-
-The server exposes four tools: `get_optimization_capabilities`,
-`validate_optimization_problem`, `recommend_backend` and
-`solve_optimization`. Any stdio-capable MCP host is configured the same way;
-a streamable-http transport is available too. See [docs/mcp.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/mcp.md).
-
-## The problem JSON at a glance
-
-This is the file the quick start above solves: a 0/1 knapsack with capacity
-10, the reduced form of the repository's
-[examples/knapsack.json](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/knapsack.json). Save it as `knapsack.json`
-anywhere you like.
-
-```json
-{
-  "version": "1.0",
-  "name": "knapsack",
-  "variables": [
-    {"name": "item_a", "type": "binary"},
-    {"name": "item_b", "type": "binary"},
-    {"name": "item_c", "type": "binary"},
-    {"name": "item_d", "type": "binary"}
-  ],
-  "objective": {
-    "direction": "maximize",
-    "linear_terms": [
-      {"variable": "item_a", "coefficient": 10},
-      {"variable": "item_b", "coefficient": 8},
-      {"variable": "item_c", "coefficient": 7},
-      {"variable": "item_d", "coefficient": 6}
-    ]
-  },
-  "constraints": [
-    {
-      "id": "capacity",
-      "type": "hard",
-      "terms": [
-        {"variable": "item_a", "coefficient": 6},
-        {"variable": "item_b", "coefficient": 5},
-        {"variable": "item_c", "coefficient": 4},
-        {"variable": "item_d", "coefficient": 3}
-      ],
-      "operator": "<=",
-      "rhs": 10
-    }
-  ],
-  "solver": {"backend": "exact"}
-}
-```
-
-Integer variables (`"type": "integer"` with bounds, `"version": "1.1"`),
-quadratic objective terms, soft constraints with weights, and per-backend
-solver preferences are described in
-[docs/problem-format.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/problem-format.md). `annealbridge export-schema`
-prints the JSON Schema an agent can use for structured output.
-
-Four ready-to-run examples live in the repository —
-[knapsack](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/knapsack.json),
-[assignment](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/assignment.json), [TSP](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/tsp.json) and
-[integer knapsack](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/integer_knapsack.json). The installed wheel does
-not ship them; take them from a checkout or from GitHub.
 
 ## Solver backends
 
