@@ -201,11 +201,13 @@ def sanitize_sampleset_info(info: dict, backend: str) -> SolverExecutionMetadata
     there).  Values must be plain numbers and are coerced to float; any
     other type is dropped.  The raw info dict is never passed through.
 
-    The result is always ``remote=True``: only the remote backends produce
-    execution metadata (the local backends return ``metadata=None``), and
-    the former ``remote=`` keyword had no production caller (2026-09-09
-    review F-18). A test double for a local backend that wants metadata
-    overrides the flag with ``model_copy``.
+    This is the remote backends' tool for turning a vendor's ``info`` dict
+    into metadata, so the result is always ``remote=True``; the former
+    ``remote=`` keyword had no production caller (2026-09-09 review F-18).
+    The local backends have no vendor info to extract and build their own
+    ``SolverExecutionMetadata(remote=False)`` directly, without this
+    function. A test double that wants a different flag overrides it with
+    ``model_copy``.
     """
     timing_us: dict[str, float] = {}
 

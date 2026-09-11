@@ -56,6 +56,9 @@ configured. See [CLI](cli.md#capabilities).
   no noise.
 - Returns every assignment as a candidate row, so `top_k` really does yield
   the top K distinct feasible solutions.
+- Reports `metadata` with `remote: false` and `model_type: "bqm"`. A local run
+  has no vendor side, so `timing_us` is empty and the vendor fields are `null`
+  — `num_reads_requested` included, since this backend does not sample.
 
 ## `simulated_annealing`
 
@@ -85,6 +88,10 @@ configured. See [CLI](cli.md#capabilities).
   `ANNEALBRIDGE_MAX_LOCAL_RETRIES`).
 - Being heuristic, an `infeasible` result only means "not found under this
   configuration": it carries `infeasibility_proven: false`.
+- Reports `metadata` with `remote: false`, `model_type: "bqm"` and
+  `num_reads_requested` set to the reads asked of the sampler — the whole
+  request, not a shard. A local run has no vendor side, so `timing_us` is
+  empty and the vendor fields are `null`.
 
 ## `dwave_qpu`
 

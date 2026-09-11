@@ -142,6 +142,24 @@ class TestExactSolverBackend:
         assert compiled.internal_variables <= set(result.variables)
         assert compiled.internal_variables <= set(result.as_dicts()[0])
 
+    def test_reports_local_execution_metadata(self, compile_knapsack):
+        compiled = compile_knapsack()
+        result = ExactSolverBackend().solve(compiled, SolverPreferences())
+
+        assert result.metadata is not None
+        assert result.metadata.backend == "exact"
+        assert result.metadata.remote is False
+        # A local run has no vendor facts: no timing, no solver id, no quota.
+        assert result.metadata.timing_us == {}
+        assert result.metadata.solver_id is None
+        assert result.metadata.effective_time_limit_seconds is None
+        assert result.metadata.average_chain_break_fraction is None
+        assert result.metadata.embedding_max_chain_length is None
+        assert result.metadata.sampler_reported_feasible is None
+        # This backend takes no read count; the service stamps model_type.
+        assert result.metadata.num_reads_requested is None
+        assert result.metadata.model_type is None
+
 
 class TestSimulatedAnnealingBackend:
     def test_properties(self):
@@ -226,6 +244,36 @@ class TestSimulatedAnnealingBackend:
         result = SimulatedAnnealingBackend().solve(compiled, preferences)
 
         assert result.num_samples == preferences.num_reads
+
+    def test_reports_local_execution_metadata(self, compile_knapsack):
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=20, num_sweeps=100, seed=7)
+        result = SimulatedAnnealingBackend().solve(compiled, preferences)
+
+        assert result.metadata is not None
+        assert result.metadata.backend == "simulated_annealing"
+        assert result.metadata.remote is False
+        # A local run has no vendor facts: no timing, no solver id, no quota.
+        assert result.metadata.timing_us == {}
+        assert result.metadata.solver_id is None
+        assert result.metadata.effective_time_limit_seconds is None
+        assert result.metadata.average_chain_break_fraction is None
+        assert result.metadata.embedding_max_chain_length is None
+        assert result.metadata.sampler_reported_feasible is None
+        # The reads asked of the sampler, whatever the shard layout was.
+        assert result.metadata.num_reads_requested == preferences.num_reads
+        # The service stamps the model type; the backend does not know it.
+        assert result.metadata.model_type is None
+
+    def test_metadata_read_count_is_independent_of_sharding(self, compile_knapsack):
+        # More than one shard: the count reported is the request, not a shard.
+        compiled = compile_knapsack()
+        num_reads = READS_PER_SHARD * 2 + 3
+        preferences = SolverPreferences(num_reads=num_reads, num_sweeps=10, seed=3)
+        result = SimulatedAnnealingBackend(workers=2).solve(compiled, preferences)
+
+        assert result.metadata is not None
+        assert result.metadata.num_reads_requested == num_reads
 
 
 class TestSimulatedAnnealingSharding:

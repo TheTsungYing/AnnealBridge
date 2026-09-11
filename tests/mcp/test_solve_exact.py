@@ -49,6 +49,18 @@ async def test_solve_knapsack_on_exact_backend(load_example):
     for solution in content["solutions"]:
         assert all(not name.startswith("__") for name in solution["variables"])
 
+    # A local backend reports execution metadata too: which backend ran,
+    # that it ran here, and the model type the service stamped on it.
+    metadata = content["metadata"]
+    assert metadata is not None
+    assert metadata["backend"] == "exact"
+    assert metadata["remote"] is False
+    assert metadata["model_type"] == "bqm"
+    # No vendor facts on a local run, and this backend takes no read count.
+    assert metadata["timing_us"] == {}
+    assert metadata["solver_id"] is None
+    assert metadata["num_reads_requested"] is None
+
 
 async def test_solve_integer_knapsack_on_exact_backend(load_example):
     # 3b: the integer variables are binary-encoded for a bqm backend, but the

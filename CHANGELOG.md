@@ -57,6 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`SolveResult.metadata` is no longer `null` on the local backends.**
+  `exact` and `simulated_annealing` now report a `SolverExecutionMetadata`
+  like every other backend: `backend`, `remote: false`, the `model_type` the
+  service stamps, and — on `simulated_annealing` — `num_reads_requested`,
+  the reads asked of the sampler (the whole request, not a shard). A local
+  run has no vendor side, so `timing_us` is empty and `solver_id`,
+  `effective_time_limit_seconds`, `sampler_reported_feasible` and the two
+  QPU fields stay `null`. A consumer that read `metadata is null` as "this
+  ran locally" must read `metadata.remote` instead. `metadata` is still
+  `null` whenever no attempt completed — the service invents nothing.
 - **Seeded `simulated_annealing` results differ from 0.1.0 when
   `num_reads > 25`.** Reads beyond one shard are sampled under seeds derived
   from the request seed (`numpy.random.SeedSequence`), so the sample set for a

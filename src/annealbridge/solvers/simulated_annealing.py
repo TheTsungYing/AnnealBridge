@@ -9,7 +9,11 @@ import numpy as np
 from dwave.samplers import SimulatedAnnealingSampler
 
 from annealbridge.exceptions import SolverExecutionError
-from annealbridge.models import CompiledProblem, SolverPreferences
+from annealbridge.models import (
+    CompiledProblem,
+    SolverExecutionMetadata,
+    SolverPreferences,
+)
 from annealbridge.solvers.base import (
     AvailabilityStatus,
     BackendAliases,
@@ -195,6 +199,15 @@ class SimulatedAnnealingBackend(BackendAliases):
             samples=samples,
             energies=energies,
             backend=self.name,
+            # A local run leaves no vendor facts behind: no solver id, no
+            # timing, no quota. Reported are the backend, that it ran here,
+            # and the read count asked of the sampler — the shard layout is
+            # an implementation detail and is not part of the output.
+            metadata=SolverExecutionMetadata(
+                backend=self.name,
+                remote=False,
+                num_reads_requested=preferences.num_reads,
+            ),
         )
 
     def _sample(

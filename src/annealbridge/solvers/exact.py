@@ -5,7 +5,11 @@ import logging
 import dimod
 
 from annealbridge.exceptions import SolverExecutionError
-from annealbridge.models import CompiledProblem, SolverPreferences
+from annealbridge.models import (
+    CompiledProblem,
+    SolverExecutionMetadata,
+    SolverPreferences,
+)
 from annealbridge.solvers.base import (
     AvailabilityStatus,
     BackendAliases,
@@ -76,4 +80,10 @@ class ExactSolverBackend(BackendAliases):
             samples=samples,
             energies=energies,
             backend=self.name,
+            # A local run leaves no vendor facts behind: no solver id, no
+            # timing, no quota. The metadata still says which backend ran
+            # and that it ran here, and the service stamps the model type.
+            # ``num_reads`` is not reported: this backend enumerates the
+            # space once and does not take a read count.
+            metadata=SolverExecutionMetadata(backend=self.name, remote=False),
         )

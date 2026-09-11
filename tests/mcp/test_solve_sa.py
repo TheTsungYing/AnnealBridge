@@ -22,13 +22,24 @@ async def solve(problem: dict) -> dict:
 
 async def test_seeded_sa_run_returns_a_feasible_solution(load_example):
     problem = load_example(
-        "knapsack.json", backend="simulated_annealing", seed=42
+        "knapsack.json", backend="simulated_annealing", seed=42, num_reads=40
     )
 
     content = await solve(problem)
 
     assert content["status"] == "success"
     assert content["solutions"][0]["hard_constraints_satisfied"] is True
+
+    # A local backend reports execution metadata too, the reads it asked
+    # the sampler for included; the vendor-side fields stay empty.
+    metadata = content["metadata"]
+    assert metadata is not None
+    assert metadata["backend"] == "simulated_annealing"
+    assert metadata["remote"] is False
+    assert metadata["model_type"] == "bqm"
+    assert metadata["num_reads_requested"] == problem["solver"]["num_reads"]
+    assert metadata["timing_us"] == {}
+    assert metadata["solver_id"] is None
 
 
 async def test_same_seed_gives_identical_solutions(load_example):
