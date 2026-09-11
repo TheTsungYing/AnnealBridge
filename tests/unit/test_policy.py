@@ -165,6 +165,20 @@ class TestLimitLookup:
     def test_unknown_key_is_none(self):
         assert ExecutionPolicy().limit("iterations") is None
 
+    def test_required_limit_raises_for_an_unknown_key(self):
+        # The caller must have a ceiling: no value is an error, never a
+        # comparison against None.
+        assert ExecutionPolicy().limit("iterations") is None
+
+        with pytest.raises(ValueError, match="iterations"):
+            ExecutionPolicy().required_limit("iterations")
+
+    def test_required_limit_equals_limit_when_present(self):
+        policy = ExecutionPolicy(limits={"iterations": 5})
+
+        assert policy.required_limit("variables") == policy.limit("variables")
+        assert policy.required_limit("iterations") == policy.limit("iterations")
+
     def test_limits_default_to_empty(self):
         assert ExecutionPolicy().limits == {}
 

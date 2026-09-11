@@ -148,6 +148,42 @@ def limit_error(code: str, label: str, value: object, maximum: object) -> SolveE
     return catalog_error(code, f"{label} {value} exceeds the server maximum of {maximum}")
 
 
+def no_compiler_error(
+    backend_name: str, capabilities: SolverCapabilities, *, path: str | None = None
+) -> SolveError:
+    """NO_COMPILER_FOR_MODEL_TYPE in the one wording solve, validate and recommend share.
+
+    ``path`` is ``solver.backend`` where the report is advisory (validate's
+    warning, recommend's blocking entry) and ``None`` for solve's error.
+    """
+    return catalog_error(
+        "NO_COMPILER_FOR_MODEL_TYPE",
+        f"Backend '{backend_name}' accepts model types "
+        f"[{', '.join(capabilities.supported_model_types)}] but the server "
+        f"has no compiler for any of them",
+        path=path,
+    )
+
+
+def exact_variable_limit_error(
+    num_variables: int, limit: int | float, *, path: str | None = None
+) -> SolveError:
+    """§14 step 9 / 3a §12.2: the exhaustive backend's variable ceiling.
+
+    One wording for every place it is checked: from the estimate before
+    compile, from the compiled model after (2026-09-09 review F-14), and
+    from recommend's advisory estimate. The estimate equals the compiled
+    count for every validated problem (``estimate_model_variables``), so
+    the sentence is true either way.
+    """
+    return catalog_error(
+        "EXACT_VARIABLE_LIMIT",
+        f"Compiled problem has {num_variables} variables (including "
+        f"internal), exceeding the exhaustive backend limit of {limit}",
+        path=path,
+    )
+
+
 def preference_limit_errors(
     capabilities: SolverCapabilities,
     preferences: SolverPreferences,
@@ -189,14 +225,14 @@ def preference_limit_errors(
                     declaration.error_code, declaration.preference, value, maximum
                 )
             )
-    retries_maximum = policy.limit(policy.retries_limit_key(capabilities))
+    retries_maximum = policy.required_limit(policy.retries_limit_key(capabilities))
     if preferences.max_retries > retries_maximum:
         errors.append(
             limit_error(
                 "RETRY_LIMIT", "max_retries", preferences.max_retries, retries_maximum
             )
         )
-    top_k_maximum = policy.limit("top_k")
+    top_k_maximum = policy.required_limit("top_k")
     if preferences.top_k > top_k_maximum:
         errors.append(
             limit_error("TOP_K_LIMIT", "top_k", preferences.top_k, top_k_maximum)

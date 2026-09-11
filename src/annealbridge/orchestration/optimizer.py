@@ -13,7 +13,8 @@ import threading
 import time
 import traceback
 from collections.abc import Collection, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Literal, NamedTuple
 
 import numpy as np
 
@@ -43,7 +44,9 @@ from annealbridge.models import (
     catalog_error,
 )
 from annealbridge.orchestration.limits import (
+    exact_variable_limit_error,
     gate_errors,
+    no_compiler_error,
     preference_limit_errors,
     read_preference,
     select_model_type,
@@ -542,6 +545,96 @@ def process_candidates(
     return ProcessedCandidates(solutions, len(candidates), int(len(feasible)))
 
 
+_BudgetCut = Literal["exhaustive", "no_hard_penalty", "remote_retries_disabled"]
+
+
+class _AttemptBudget(NamedTuple):
+    """How many attempts a solve may make, and why fewer than asked (if so).
+
+    ``cut_reason`` is ``None`` when nothing was cut. That includes a remote
+    backend whose retries policy disables when the user asked for
+    ``max_retries == 0`` anyway: no retry was wanted, so none was cut.
+    """
+
+    max_attempts: int
+    cut_reason: _BudgetCut | None
+
+
+@dataclass(frozen=True)
+class _AttemptPlan:
+    """What ``_prepare_attempts`` settles before the first attempt."""
+
+    compiler: ModelCompiler
+    variable_limit: float | int
+    budget: _AttemptBudget
+    initial_penalty: float | None
+
+
+@dataclass
+class _AttemptState:
+    """Mutable facts the attempt loop shares with ``_run_attempts``'s handlers.
+
+    ``last_metadata`` is the last completed attempt's metadata (model type
+    already filled in), assigned in exactly one place so no failure path
+    can forget it (2026-09-11 review F08). ``raw`` is kept for the
+    infeasibility proof (``num_samples``); ``infeasibility`` is the last
+    attempt's diagnosis, so an infeasible result explains the final
+    (highest-penalty) attempt.
+    """
+
+    attempts: list[SolveAttempt] = field(default_factory=list)
+    raw: RawSolverResult | None = None
+    last_metadata: SolverExecutionMetadata | None = None
+    infeasibility: InfeasibilityDiagnostics | None = None
+
+
+def _infeasible_message(
+    proven: bool, cut_reason: _BudgetCut | None, attempts_made: int
+) -> tuple[str, list[SolveError]]:
+    """The infeasible result's message and warnings (3a §16.2 steps 16–17).
+
+    Pure so each wording can be pinned by a test without a backend, a
+    compiler and a policy behind it.
+    """
+    warnings: list[SolveError] = []
+    if proven:
+        message = (
+            "No feasible solution exists: the exhaustive backend "
+            "enumerated every assignment"
+        )
+    elif cut_reason == "exhaustive":
+        message = (
+            "No feasible solution found: the exhaustive backend "
+            "returned no samples, so infeasibility is not proven"
+        )
+    elif cut_reason == "no_hard_penalty":
+        # §16.2 step 16 / §16.3: one attempt, nothing to retune.
+        message = (
+            "No feasible solution found: the constraint-model backend "
+            "returned no sample satisfying the hard constraints under "
+            "independent validation; infeasibility is not proven"
+        )
+    elif cut_reason == "remote_retries_disabled":
+        message = (
+            "No feasible solution found in 1 attempt; server policy "
+            "disables automatic remote retries"
+        )
+        warnings.append(
+            catalog_error(
+                "REMOTE_RETRIES_DISABLED",
+                "1 attempt was made; server policy disables "
+                "automatic remote retries to protect quota",
+            )
+        )
+    else:
+        message = (
+            f"No feasible solution found in {attempts_made} attempt(s); "
+            "the problem may still be feasible under a different "
+            "solver configuration"
+        )
+    return message, warnings
+
+
 class OptimizationService:
     """End-to-end solve pipeline over pluggable components (spec §28)."""
 
@@ -658,7 +751,7 @@ class OptimizationService:
         result = validate_problem_full(
             problem,
             capabilities=caps,
-            max_compiled_variables=int(self._policy.limit("variables")),
+            max_compiled_variables=int(self._policy.required_limit("variables")),
             model_type=model_type,
         )
         return result, caps, model_type
@@ -691,13 +784,7 @@ class OptimizationService:
             # would fail with the same code as an error).
             result.model_type = None
             result.warnings.append(
-                catalog_error(
-                    "NO_COMPILER_FOR_MODEL_TYPE",
-                    f"Backend '{backend_name}' accepts model types "
-                    f"[{', '.join(caps.supported_model_types)}] but the "
-                    f"server has no compiler for any of them",
-                    path="solver.backend",
-                )
+                no_compiler_error(backend_name, caps, path="solver.backend")
             )
         return result
 
@@ -859,7 +946,7 @@ class OptimizationService:
         if not (caps.remote and caps.supports_time_limit):
             return None
         effective = backend.resolve_time_limit(compiled, preferences)
-        maximum = self._policy.limit("time_seconds")
+        maximum = self._policy.required_limit("time_seconds")
         if effective is None or effective <= maximum:
             return None
         return catalog_error(
@@ -910,22 +997,6 @@ class OptimizationService:
         )
 
     @staticmethod
-    def _exact_variable_limit_error(num_variables: int, limit: int | float) -> SolveError:
-        """§14 step 9 / 3a §12.2: the exhaustive backend's variable ceiling.
-
-        One wording for both places it is checked: from the estimate before
-        compile and from the compiled model after (2026-09-09 review
-        F-14). The estimate equals the compiled count for every validated
-        problem (``estimate_model_variables``), so the sentence is true
-        either way.
-        """
-        return catalog_error(
-            "EXACT_VARIABLE_LIMIT",
-            f"Compiled problem has {num_variables} variables (including "
-            f"internal), exceeding the exhaustive backend limit of {limit}",
-        )
-
-    @staticmethod
     def _compile(
         compiler: ModelCompiler, problem: OptimizationProblem, penalty: float | None
     ) -> CompiledProblem:
@@ -957,19 +1028,232 @@ class OptimizationService:
         backend: SolverBackend,
         compiler: ModelCompiler,
         preferences: SolverPreferences,
-    ) -> int:
+    ) -> _AttemptBudget:
         # §19: the exact backend enumerates every state, so retrying with a
         # larger penalty can never surface new feasible samples. 3a §16.3:
         # without a hard penalty there is no lever to turn, so a retry
         # would repeat the same submission. §14 step 14: remote retries
         # burn quota, so policy must opt in explicitly.
         if backend.is_exhaustive:
-            return 1
+            return _AttemptBudget(1, "exhaustive")
         if not compiler.uses_hard_penalty:
-            return 1
+            return _AttemptBudget(1, "no_hard_penalty")
+        # Only a real cut deserves a warning: with max_retries == 0 the
+        # user asked for a single attempt and policy blocked nothing.
+        # 3a §16.2 step 17: only the hard-penalty path ever retries, so
+        # only it can have had a retry cut by policy.
         if backend.capabilities.remote and not self._policy.allow_remote_retries:
-            return 1
-        return 1 + preferences.max_retries
+            return _AttemptBudget(
+                1, "remote_retries_disabled" if preferences.max_retries > 0 else None
+            )
+        return _AttemptBudget(1 + preferences.max_retries, None)
+
+    def _prepare_attempts(
+        self,
+        problem: OptimizationProblem,
+        backend: SolverBackend,
+        direction: str,
+    ) -> SolveResult | _AttemptPlan:
+        """3a §16.2 steps 7–10: what is settled before the first attempt.
+
+        Returns the plan, or the structured failure that stops the solve.
+        """
+        compiler = self._select_compiler(backend.capabilities)
+        if compiler is None:
+            return self._failure(
+                "configuration_error",
+                backend.name,
+                direction,
+                [no_compiler_error(backend.name, backend.capabilities)],
+            )
+        preference_errors = self._preference_limit_errors(backend, problem.solver)
+        if preference_errors:
+            return self._failure(
+                "resource_limit_exceeded",
+                backend.name,
+                direction,
+                preference_errors,
+            )
+
+        # §14 step 9 / 3a §12.2, checked *before* compile (2026-09-09
+        # review F-14): the estimate is pure arithmetic and equals the
+        # compiled count, while compiling a large inequality is O(n²).
+        # The post-compile check below stays as the final guarantee.
+        variable_limit = self._policy.required_limit("variables")
+        if backend.is_exhaustive:
+            estimated = estimate_model_variables(problem, compiler.model_type)
+            if estimated > variable_limit:
+                return self._failure(
+                    "resource_limit_exceeded",
+                    backend.name,
+                    direction,
+                    [exact_variable_limit_error(estimated, variable_limit)],
+                )
+
+        budget = self._max_attempts(backend, compiler, problem.solver)
+        # §16.2 step 9: a native-constraint model has no hard penalty.
+        penalty = (
+            self._penalty_strategy.initial_penalty(problem)
+            if compiler.uses_hard_penalty
+            else None
+        )
+        # Both scales walk the whole problem, so they are only computed
+        # when the line will actually be emitted (2026-09-09 review F-26).
+        # On the hard-penalty path ``initial_penalty`` already walked it
+        # once for the penalty scale, so the scale is recovered from the
+        # penalty instead of walking the problem a second time; only the
+        # native-constraint path, which computed no penalty, computes it.
+        if logger.isEnabledFor(logging.INFO):
+            multiplier = problem.solver.penalty_multiplier
+            if penalty is not None and multiplier > 0:
+                penalty_scale = penalty / multiplier
+                scale_source = "derived: hard_penalty / penalty_multiplier"
+            else:
+                penalty_scale = self._penalty_strategy.penalty_scale(problem)
+                scale_source = "computed"
+            logger.info(
+                "Problem %s: model_type=%s, objective_scale=%s, "
+                "penalty_scale=%s (%s), initial hard_penalty=%s",
+                problem.name,
+                compiler.model_type,
+                self._penalty_strategy.objective_scale(problem),
+                penalty_scale,
+                scale_source,
+                penalty,
+            )
+        return _AttemptPlan(
+            compiler=compiler,
+            variable_limit=variable_limit,
+            budget=budget,
+            initial_penalty=penalty,
+        )
+
+    def _solve_attempt(
+        self,
+        problem: OptimizationProblem,
+        backend: SolverBackend,
+        plan: _AttemptPlan,
+        direction: str,
+        attempt: int,
+        penalty: float | None,
+        state: _AttemptState,
+    ) -> SolveResult | None:
+        """3a §16.2 steps 11–15 for one attempt.
+
+        Returns the success result, a structured failure, or ``None`` when
+        no feasible sample came back and the ladder may continue.
+        """
+        compiler = plan.compiler
+        # 2026-09-09 review (F-07): the penalty ladder must stop
+        # before it leaves the floating-point range. Checked before
+        # compile so no backend ever sees an infinite penalty and
+        # every recorded attempt keeps a finite value.
+        if penalty is not None and not math.isfinite(penalty):
+            return self._penalty_overflow(
+                backend,
+                direction,
+                state.attempts,
+                penalty,
+                metadata=state.last_metadata,
+            )
+        compile_started = time.perf_counter()
+        compiled = self._compile(compiler, problem, penalty)
+        compile_ms = _elapsed_ms(compile_started)
+        # §14 step 9 on the compiled model (slack included): the
+        # final guarantee behind the estimate above. Never clamp,
+        # never fall back.
+        if backend.is_exhaustive and compiled.num_variables > plan.variable_limit:
+            return self._failure(
+                "resource_limit_exceeded",
+                backend.name,
+                direction,
+                [
+                    exact_variable_limit_error(
+                        compiled.num_variables, plan.variable_limit
+                    )
+                ],
+                attempts=state.attempts,
+            )
+        time_limit_error = self._effective_time_limit_error(
+            backend, compiled, problem.solver
+        )
+        if time_limit_error is not None:
+            return self._failure(
+                "resource_limit_exceeded",
+                backend.name,
+                direction,
+                [time_limit_error],
+                attempts=state.attempts,
+            )
+        solve_started = time.perf_counter()
+        raw = backend.solve(compiled, problem.solver)
+        solve_ms = _elapsed_ms(solve_started)
+        # 3a §22: the service, not the backend, knows the model
+        # type; never create metadata a local backend did not.
+        if raw.metadata is not None:
+            raw.metadata = raw.metadata.model_copy(
+                update={"model_type": compiled.model_type}
+            )
+        state.raw = raw
+        state.last_metadata = raw.metadata
+        # 3b §16 step 12a: the compiler strips internal columns and
+        # decodes integer variables; the candidate pipeline only
+        # ever sees business variables in problem order.
+        validate_started = time.perf_counter()
+        decoded = compiler.decode(compiled, raw)
+        processed = process_candidates(
+            problem, decoded, frozenset(), problem.solver.top_k
+        )
+        solutions = processed.solutions
+        unique_samples = processed.unique_samples
+        feasible_samples = processed.feasible_samples
+        state.infeasibility = processed.infeasibility
+        validate_ms = _elapsed_ms(validate_started)
+        state.attempts.append(
+            SolveAttempt(
+                attempt=attempt,
+                penalty=penalty,
+                samples_received=raw.num_samples,
+                unique_samples=unique_samples,
+                feasible_samples=feasible_samples,
+                compiled_variables=compiled.num_variables,
+                compiled_interactions=compiled.num_interactions,
+                compile_ms=compile_ms,
+                solve_ms=solve_ms,
+                validate_ms=validate_ms,
+            )
+        )
+        logger.info(
+            "Problem %s backend %s attempt %d: model_type=%s, "
+            "hard_penalty=%s, compiled_variables=%d, samples=%d, "
+            "unique=%d, feasible=%d, best_ranking_score=%s",
+            problem.name,
+            backend.name,
+            attempt,
+            compiled.model_type,
+            penalty,
+            compiled.num_variables,
+            raw.num_samples,
+            unique_samples,
+            feasible_samples,
+            solutions[0].ranking_score if solutions else None,
+        )
+        if solutions:
+            return SolveResult(
+                status="success",
+                backend=backend.name,
+                objective_direction=direction,
+                solutions=solutions,
+                attempts=state.attempts,
+                # Mirrors ``infeasibility_proven``: an exhaustive
+                # backend that returned samples enumerated every
+                # assignment, every business assignment was
+                # re-validated and ranked, so rank 1 is the global
+                # optimum of the ranking score.
+                optimality_proven=backend.is_exhaustive and raw.num_samples > 0,
+                metadata=raw.metadata,
+            )
+        return None
 
     def _run_attempts(
         self,
@@ -985,266 +1269,48 @@ class OptimizationService:
         ``solver_error`` — is kept by the service itself rather than
         delegated to every backend's own wrapping.
         """
-        attempts: list[SolveAttempt] = []
-        # Declared outside the try so a failure on a later attempt can still
-        # report the last completed attempt's metadata.
-        raw: RawSolverResult | None = None
-        # The last attempt's diagnosis; each attempt overwrites it, so an
-        # infeasible result explains the final (highest-penalty) attempt.
-        infeasibility: InfeasibilityDiagnostics | None = None
-        # Likewise the current penalty, so the NonFiniteModelError handler
-        # can tell the hard-penalty path from a penalty-free one.
+        state = _AttemptState()
+        # The current penalty, so the NonFiniteModelError handler can tell
+        # the hard-penalty path from a penalty-free one; None until
+        # ``_prepare_attempts`` has chosen it.
         penalty: float | None = None
         try:
-            compiler = self._select_compiler(backend.capabilities)
-            if compiler is None:
-                declared = ", ".join(backend.capabilities.supported_model_types)
-                return self._failure(
-                    "configuration_error",
-                    backend.name,
-                    direction,
-                    [
-                        catalog_error(
-                            "NO_COMPILER_FOR_MODEL_TYPE",
-                            f"Backend '{backend.name}' accepts model types "
-                            f"[{declared}] but the server has no compiler for "
-                            f"any of them",
-                        )
-                    ],
-                )
-            preference_errors = self._preference_limit_errors(backend, problem.solver)
-            if preference_errors:
-                return self._failure(
-                    "resource_limit_exceeded",
-                    backend.name,
-                    direction,
-                    preference_errors,
-                )
-
-            # §14 step 9 / 3a §12.2, checked *before* compile (2026-09-09
-            # review F-14): the estimate is pure arithmetic and equals the
-            # compiled count, while compiling a large inequality is O(n²).
-            # The post-compile check below stays as the final guarantee.
-            variable_limit = self._policy.limit("variables")
-            if backend.is_exhaustive:
-                estimated = estimate_model_variables(problem, compiler.model_type)
-                if estimated > variable_limit:
-                    return self._failure(
-                        "resource_limit_exceeded",
-                        backend.name,
-                        direction,
-                        [self._exact_variable_limit_error(estimated, variable_limit)],
-                    )
-
-            max_attempts = self._max_attempts(backend, compiler, problem.solver)
-            # §16.2 step 9: a native-constraint model has no hard penalty.
-            penalty = (
-                self._penalty_strategy.initial_penalty(problem)
-                if compiler.uses_hard_penalty
-                else None
-            )
-            # Both scales walk the whole problem, so they are only computed
-            # when the line will actually be emitted (2026-09-09 review F-26).
-            # On the hard-penalty path ``initial_penalty`` already walked it
-            # once for the penalty scale, so the scale is recovered from the
-            # penalty instead of walking the problem a second time; only the
-            # native-constraint path, which computed no penalty, computes it.
-            if logger.isEnabledFor(logging.INFO):
-                multiplier = problem.solver.penalty_multiplier
-                if penalty is not None and multiplier > 0:
-                    penalty_scale = penalty / multiplier
-                    scale_source = "derived: hard_penalty / penalty_multiplier"
-                else:
-                    penalty_scale = self._penalty_strategy.penalty_scale(problem)
-                    scale_source = "computed"
-                logger.info(
-                    "Problem %s: model_type=%s, objective_scale=%s, "
-                    "penalty_scale=%s (%s), initial hard_penalty=%s",
-                    problem.name,
-                    compiler.model_type,
-                    self._penalty_strategy.objective_scale(problem),
-                    penalty_scale,
-                    scale_source,
-                    penalty,
-                )
-
+            plan = self._prepare_attempts(problem, backend, direction)
+            if isinstance(plan, SolveResult):
+                return plan
+            penalty = plan.initial_penalty
+            max_attempts = plan.budget.max_attempts
             for attempt in range(1, max_attempts + 1):
-                # 2026-09-09 review (F-07): the penalty ladder must stop
-                # before it leaves the floating-point range. Checked before
-                # compile so no backend ever sees an infinite penalty and
-                # every recorded attempt keeps a finite value.
-                if penalty is not None and not math.isfinite(penalty):
-                    return self._penalty_overflow(
-                        backend,
-                        direction,
-                        attempts,
-                        penalty,
-                        metadata=raw.metadata if raw is not None else None,
-                    )
-                compile_started = time.perf_counter()
-                compiled = self._compile(compiler, problem, penalty)
-                compile_ms = _elapsed_ms(compile_started)
-                # §14 step 9 on the compiled model (slack included): the
-                # final guarantee behind the estimate above. Never clamp,
-                # never fall back.
-                if (
-                    backend.is_exhaustive
-                    and compiled.num_variables > variable_limit
-                ):
-                    return self._failure(
-                        "resource_limit_exceeded",
-                        backend.name,
-                        direction,
-                        [
-                            self._exact_variable_limit_error(
-                                compiled.num_variables, variable_limit
-                            )
-                        ],
-                        attempts=attempts,
-                    )
-                time_limit_error = self._effective_time_limit_error(
-                    backend, compiled, problem.solver
+                result = self._solve_attempt(
+                    problem, backend, plan, direction, attempt, penalty, state
                 )
-                if time_limit_error is not None:
-                    return self._failure(
-                        "resource_limit_exceeded",
-                        backend.name,
-                        direction,
-                        [time_limit_error],
-                        attempts=attempts,
-                    )
-                solve_started = time.perf_counter()
-                raw = backend.solve(compiled, problem.solver)
-                solve_ms = _elapsed_ms(solve_started)
-                # 3a §22: the service, not the backend, knows the model
-                # type; never create metadata a local backend did not.
-                if raw.metadata is not None:
-                    raw.metadata = raw.metadata.model_copy(
-                        update={"model_type": compiled.model_type}
-                    )
-                # 3b §16 step 12a: the compiler strips internal columns and
-                # decodes integer variables; the candidate pipeline only
-                # ever sees business variables in problem order.
-                validate_started = time.perf_counter()
-                decoded = compiler.decode(compiled, raw)
-                processed = process_candidates(
-                    problem, decoded, frozenset(), problem.solver.top_k
-                )
-                solutions = processed.solutions
-                unique_samples = processed.unique_samples
-                feasible_samples = processed.feasible_samples
-                infeasibility = processed.infeasibility
-                validate_ms = _elapsed_ms(validate_started)
-                attempts.append(
-                    SolveAttempt(
-                        attempt=attempt,
-                        penalty=penalty,
-                        samples_received=raw.num_samples,
-                        unique_samples=unique_samples,
-                        feasible_samples=feasible_samples,
-                        compiled_variables=compiled.num_variables,
-                        compiled_interactions=compiled.num_interactions,
-                        compile_ms=compile_ms,
-                        solve_ms=solve_ms,
-                        validate_ms=validate_ms,
-                    )
-                )
-                logger.info(
-                    "Problem %s backend %s attempt %d: model_type=%s, "
-                    "hard_penalty=%s, compiled_variables=%d, samples=%d, "
-                    "unique=%d, feasible=%d, best_ranking_score=%s",
-                    problem.name,
-                    backend.name,
-                    attempt,
-                    compiled.model_type,
-                    penalty,
-                    compiled.num_variables,
-                    raw.num_samples,
-                    unique_samples,
-                    feasible_samples,
-                    solutions[0].ranking_score if solutions else None,
-                )
-                if solutions:
-                    return SolveResult(
-                        status="success",
-                        backend=backend.name,
-                        objective_direction=direction,
-                        solutions=solutions,
-                        attempts=attempts,
-                        # Mirrors ``infeasibility_proven``: an exhaustive
-                        # backend that returned samples enumerated every
-                        # assignment, every business assignment was
-                        # re-validated and ranked, so rank 1 is the global
-                        # optimum of the ranking score.
-                        optimality_proven=backend.is_exhaustive and raw.num_samples > 0,
-                        metadata=raw.metadata,
-                    )
+                if result is not None:
+                    return result
                 if attempt < max_attempts and penalty is not None:
                     penalty = self._penalty_strategy.next_penalty(penalty, attempt)
 
-            warnings: list[SolveError] = []
-            # Only a real cut deserves a warning: with max_retries == 0 the
-            # user asked for a single attempt and policy blocked nothing.
-            # 3a §16.2 step 17: only the hard-penalty path ever retries, so
-            # only it can have had a retry cut by policy.
-            remote_retries_blocked = (
-                compiler.uses_hard_penalty
-                and backend.capabilities.remote
-                and not self._policy.allow_remote_retries
-                and problem.solver.max_retries > 0
-            )
             # An exhaustive backend proves infeasibility only by actually
             # enumerating assignments: zero samples back is not a proof.
             proven = (
-                backend.is_exhaustive and raw is not None and raw.num_samples > 0
+                backend.is_exhaustive
+                and state.raw is not None
+                and state.raw.num_samples > 0
             )
-            if proven:
-                message = (
-                    "No feasible solution exists: the exhaustive backend "
-                    "enumerated every assignment"
-                )
-            elif backend.is_exhaustive:
-                message = (
-                    "No feasible solution found: the exhaustive backend "
-                    "returned no samples, so infeasibility is not proven"
-                )
-            elif not compiler.uses_hard_penalty:
-                # §16.2 step 16 / §16.3: one attempt, nothing to retune.
-                message = (
-                    "No feasible solution found: the constraint-model backend "
-                    "returned no sample satisfying the hard constraints under "
-                    "independent validation; infeasibility is not proven"
-                )
-            elif remote_retries_blocked:
-                message = (
-                    "No feasible solution found in 1 attempt; server policy "
-                    "disables automatic remote retries"
-                )
-                warnings.append(
-                    catalog_error(
-                        "REMOTE_RETRIES_DISABLED",
-                        "1 attempt was made; server policy disables "
-                        "automatic remote retries to protect quota",
-                    )
-                )
-            else:
-                message = (
-                    f"No feasible solution found in {len(attempts)} attempt(s); "
-                    "the problem may still be feasible under a different "
-                    "solver configuration"
-                )
+            message, warnings = _infeasible_message(
+                proven, plan.budget.cut_reason, len(state.attempts)
+            )
             return SolveResult(
                 status="infeasible",
                 backend=backend.name,
                 objective_direction=direction,
                 solutions=[],
-                attempts=attempts,
+                attempts=state.attempts,
                 infeasibility_proven=proven,
-                infeasibility=infeasibility,
+                infeasibility=state.infeasibility,
                 warnings=warnings,
                 # Timing/usage facts from the last attempt still matter to
                 # the caller (e.g. quota spent on a remote solve).
-                metadata=raw.metadata if raw is not None else None,
+                metadata=state.last_metadata,
                 message=message,
             )
         except NonFiniteModelError as exc:
@@ -1258,9 +1324,9 @@ class OptimizationService:
                 return self._penalty_overflow(
                     backend,
                     direction,
-                    attempts,
+                    state.attempts,
                     penalty,
-                    metadata=raw.metadata if raw is not None else None,
+                    metadata=state.last_metadata,
                 )
             logger.warning("Problem %s compilation error: %s", problem.name, exc)
             return self._failure(
@@ -1268,7 +1334,7 @@ class OptimizationService:
                 backend.name,
                 direction,
                 [catalog_error("COMPILATION_FAILED", str(exc))],
-                attempts=attempts,
+                attempts=state.attempts,
             )
         except CompilationError as exc:
             # The problem passed validation but the compiler still refused
@@ -1281,7 +1347,7 @@ class OptimizationService:
                 backend.name,
                 direction,
                 [catalog_error("COMPILATION_FAILED", str(exc))],
-                attempts=attempts,
+                attempts=state.attempts,
             )
         except OptimizerError as exc:
             # Remote backends redact their messages before raising; the
@@ -1296,8 +1362,8 @@ class OptimizationService:
                 backend.name,
                 direction,
                 [catalog_error(code, str(exc))],
-                attempts=attempts,
-                metadata=raw.metadata if raw is not None else None,
+                attempts=state.attempts,
+                metadata=state.last_metadata,
             )
         except Exception as exc:
             # 2026-09-09 review F-03: the service-level guarantee (Phase 2
@@ -1330,6 +1396,6 @@ class OptimizationService:
                 backend.name,
                 direction,
                 [catalog_error("SOLVER_ERROR", message)],
-                attempts=attempts,
-                metadata=raw.metadata if raw is not None else None,
+                attempts=state.attempts,
+                metadata=state.last_metadata,
             )

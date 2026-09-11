@@ -81,7 +81,7 @@ happens before any vendor call, so no quota is consumed. The ceilings come from
 
 | Code | What it means | Recommended action (summary) |
 | --- | --- | --- |
-| `EXACT_VARIABLE_LIMIT` | The compiled problem has more variables than the exhaustive backend's limit. | Reduce the problem size, or use `simulated_annealing`. |
+| `EXACT_VARIABLE_LIMIT` | The compiled problem has more variables than the exhaustive backend's limit; `solve` and `recommend` report it in the same wording. | Reduce the problem size, or use `simulated_annealing`. |
 | `QPU_READS_LIMIT` | `num_reads` exceeds the server's QPU limit. | Lower `num_reads`. |
 | `QPU_ANNEALING_TIME_LIMIT` | `annealing_time_us` exceeds the server's limit. | Lower it, or omit it to use the QPU default. |
 | `REMOTE_TIME_LIMIT` | `time_limit_seconds` exceeds the server's limit for remote solving. | Lower it, or omit it to use the backend's default. |

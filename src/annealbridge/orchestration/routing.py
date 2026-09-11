@@ -18,10 +18,11 @@ from annealbridge.models import (
     OptimizationProblem,
     SolveError,
     SolverCapabilities,
-    catalog_error,
 )
 from annealbridge.orchestration.limits import (
+    exact_variable_limit_error,
     gate_errors,
+    no_compiler_error,
     preference_limit_errors,
     select_model_type,
 )
@@ -148,17 +149,9 @@ def _assess(
     # path the problem would actually take on this backend.
     model_type = select_model_type(caps, compilers)
     if model_type is None:
-        blocking.append(
-            catalog_error(
-                "NO_COMPILER_FOR_MODEL_TYPE",
-                f"Backend '{backend_name}' accepts model types "
-                f"[{', '.join(caps.supported_model_types)}] but the server has "
-                f"no compiler for any of them",
-                path="solver.backend",
-            )
-        )
+        blocking.append(no_compiler_error(backend_name, caps, path="solver.backend"))
 
-    variable_limit = int(policy.limit("variables"))
+    variable_limit = int(policy.required_limit("variables"))
     validation = validate_problem_full(
         problem,
         capabilities=caps,
@@ -170,11 +163,9 @@ def _assess(
         # What is only advice for validate() is a refusal for solve
         # (§16.2 step 9), so it blocks here.
         blocking.append(
-            catalog_error(
-                "EXACT_VARIABLE_LIMIT",
-                f"Estimated compiled variables "
-                f"({validation.estimated_compiled_variables}) exceed the "
-                f"exhaustive backend limit of {variable_limit}",
+            exact_variable_limit_error(
+                validation.estimated_compiled_variables,
+                variable_limit,
                 path="solver.backend",
             )
         )

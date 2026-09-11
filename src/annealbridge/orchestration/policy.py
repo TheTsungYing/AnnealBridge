@@ -106,7 +106,21 @@ class ExecutionPolicy(BaseModel):
             return None
         return getattr(self, field)
 
-    def limits_for(self, capabilities: SolverCapabilities) -> dict[str, float | int]:
+    def required_limit(self, key: str) -> float | int:
+        """``limit`` for a key the caller must have a value for.
+
+        Every solve-time check reads its ceiling through here, so a policy
+        that lacks a value fails loudly instead of comparing against
+        ``None``. Construction already refuses such a policy
+        (``OptimizationService._check_declared_limits``); this is the
+        guard for callers that bypass the service.
+        """
+        value = self.limit(key)
+        if value is None:
+            raise ValueError(f"policy has no value for limit '{key}'")
+        return value
+
+    def limits_for(self, capabilities: SolverCapabilities) -> dict[str, float | int | None]:
         """The limits this policy applies to a backend, keyed ``max_<limit>``.
 
         The single source for both the capabilities view and the service
@@ -115,8 +129,12 @@ class ExecutionPolicy(BaseModel):
         remote time limit are flag-driven (they need compiled data), and so
         are the service-level retry and ``top_k`` ceilings (they belong to
         no backend); the rest follows the declared ``parameter_limits``.
+
+        A value of ``None`` means the policy has no value for that key;
+        ``OptimizationService._check_declared_limits`` refuses such a
+        policy at construction, so after that no solve ever sees one.
         """
-        result: dict[str, float | int] = {}
+        result: dict[str, float | int | None] = {}
         if capabilities.exhaustive:
             result["max_variables"] = self.limit("variables")
         for declaration in capabilities.parameter_limits:

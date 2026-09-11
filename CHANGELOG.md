@@ -34,6 +34,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ANNEALBRIDGE_MAX_CONCURRENT_SOLVES` bounds the concurrent sampling threads.
 - Fujitsu DA result decoding drops an unreachable branch and gains tests for
   malformed vendor responses.
+- `recommend()` now reports an exhaustive backend's `EXACT_VARIABLE_LIMIT`
+  blocking entry in the same wording `solve()` uses — "Compiled problem has N
+  variables (including internal), exceeding the exhaustive backend limit of
+  L", where it previously said "Estimated compiled variables (N) exceed the
+  exhaustive backend limit of L". The code, the `solver.backend` path and the
+  condition that triggers it are unchanged.
+- Internal tidy-up of `orchestration/` (no behaviour change): `ExecutionPolicy`
+  gains `required_limit()`, which every solve-time check now reads its ceiling
+  through instead of comparing against a possibly-`None` `limit()`; the
+  `NO_COMPILER_FOR_MODEL_TYPE` and `EXACT_VARIABLE_LIMIT` messages are built
+  by one function each in `orchestration/limits.py`; and the service's
+  compile/solve/validate loop is split into `_prepare_attempts`,
+  `_solve_attempt` and the pure `_infeasible_message`, with the last
+  attempt's metadata assigned in exactly one place.
 
 ### Performance
 
