@@ -21,6 +21,10 @@ from annealbridge.models import (
     SolveResult,
     Variable,
 )
+from annealbridge.validation import (
+    BackendRecommendationResult,
+    ProblemValidationResult,
+)
 
 
 def make_problem_dict() -> dict:
@@ -643,27 +647,74 @@ class TestUnknownFields:
         assert SolveResult.model_config.get("extra") is None
 
 
+def _properties_without_description(model) -> list[str]:
+    """``Model.field`` for every schema property missing a description.
+
+    Walks the model's own properties and every ``$defs`` entry it pulls in,
+    so a nested result model is covered by the test of its container.
+    """
+    schema = model.model_json_schema()
+    missing: list[str] = []
+
+    def check(model_name: str, definition: dict) -> None:
+        for field, prop in definition.get("properties", {}).items():
+            description = prop.get("description")
+            if not isinstance(description, str) or not description.strip():
+                missing.append(f"{model_name}.{field}")
+
+    check(model.__name__, schema)
+    for name, definition in schema.get("$defs", {}).items():
+        check(name, definition)
+    return missing
+
+
 class TestFieldDescriptions:
-    """Every public input field must document itself in the JSON Schema.
+    """Every public field must document itself in the JSON Schema.
 
     The schema is what an LLM agent sees as the MCP tool's inputSchema, so a
-    property without a description is a field the agent has to guess at.
+    property without a description is a field the agent has to guess at. The
+    same holds one step later for the outputSchema derived from a tool's
+    return type: an agent reading a result should not have to infer what
+    ``energy`` or ``feasible_samples`` mean. ``OptimizationCapabilities``
+    lives in ``interfaces`` and is checked through the MCP outputSchema in
+    tests/mcp/test_tools_list.py instead, so this module stays on the core.
     """
 
     def test_every_schema_property_has_a_description(self):
-        schema = OptimizationProblem.model_json_schema()
-        missing: list[str] = []
-
-        def check(model_name: str, definition: dict) -> None:
-            for field, prop in definition.get("properties", {}).items():
-                description = prop.get("description")
-                if not isinstance(description, str) or not description.strip():
-                    missing.append(f"{model_name}.{field}")
-
-        check("OptimizationProblem", schema)
-        for name, definition in schema.get("$defs", {}).items():
-            check(name, definition)
+        missing = _properties_without_description(OptimizationProblem)
 
         assert not missing, "properties without a description: " + ", ".join(
             sorted(missing)
+        )
+
+    @pytest.mark.parametrize(
+        "model",
+        [SolveResult, ProblemValidationResult, BackendRecommendationResult],
+        ids=["solve", "validate", "recommend"],
+    )
+    def test_every_output_schema_property_has_a_description(self, model):
+        missing = _properties_without_description(model)
+
+        assert not missing, "properties without a description: " + ", ".join(
+            sorted(missing)
+        )
+
+    def test_output_descriptions_cover_the_easily_misread_fields(self):
+        """The four fields an agent is most likely to over-read.
+
+        ``energy`` is not a score, the two sample counts are post-dedup and
+        ``sampler_reported_feasible`` is the vendor's claim, not a verdict.
+        """
+        defs = SolveResult.model_json_schema()["$defs"]
+
+        assert "debugging only" in defs["Solution"]["properties"]["energy"][
+            "description"
+        ]
+        attempt = defs["SolveAttempt"]["properties"]
+        assert "deduplication" in attempt["unique_samples"]["description"]
+        assert "top_k" in attempt["feasible_samples"]["description"]
+        metadata = defs["SolverExecutionMetadata"]["properties"]
+        assert (
+            "Informational only"
+            in metadata["sampler_reported_feasible"]["description"]
         )

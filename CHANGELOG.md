@@ -54,6 +54,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   energy, and the field stays `null` on every other status and when the
   attempt returned no samples at all. `annealbridge solve` prints the closest
   candidate and the rates after `Infeasibility proven:`.
+- **Every output field now documents itself.** `SolveResult`,
+  `ProblemValidationResult`, `BackendRecommendationResult` and
+  `OptimizationCapabilities` — and every model nested in them — carry a
+  `description` on each field, so the MCP `outputSchema` an agent receives
+  explains what a field *means* instead of only its type: that `energy` is
+  for debugging and never feeds feasibility, the objective or the ranking;
+  that the `*_ms` timings are the service's own wall clock and unrelated to
+  the vendor's `metadata.timing_us`; that `sampler_reported_feasible` is the
+  vendor's claim and not a verdict; and what each of the seven `status`
+  values means. The wording follows `docs/output-format.md`, and tests fail
+  if any property in the four schemas loses its description. Input schemas
+  were already documented; no field, default or serialized value changed.
 
 ### Changed
 
@@ -131,6 +143,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rotation or `REMOTE_AUTH_FAILED` invalidation), best effort and outside
   its lock, instead of leaking the underlying client's threads and session
   in a long-running MCP server.
+- Documentation: the `SolveAttempt` table now says that `unique_samples` and
+  `feasible_samples` are both counted **after** deduplication, and that
+  fewer entries in `solutions` than `feasible_samples` means the list was
+  truncated to `solver.top_k`. The previous wording ("how many satisfied
+  every hard constraint") read as a count of raw solver rows.
 
 ## [0.1.0] - 2026-09-09
 

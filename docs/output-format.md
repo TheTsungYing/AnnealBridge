@@ -145,8 +145,8 @@ constraint with a rate below 1 does not imply a feasible candidate exists.
 | `attempt` | integer | 1-based attempt number. |
 | `penalty` | number \| null | The hard-constraint penalty λ used for this attempt. `null` on a path whose compiler uses no hard penalty (the CQM path). |
 | `samples_received` | integer | Rows the backend returned. |
-| `unique_samples` | integer | Distinct assignments among them, after decoding. |
-| `feasible_samples` | integer | How many satisfied every hard constraint under re-validation. |
+| `unique_samples` | integer | Distinct business assignments among those rows, **after decoding and deduplication** — the candidate count everything downstream works on. |
+| `feasible_samples` | integer | How many of those **deduplicated** candidates satisfied every hard constraint under independent re-validation. Never larger than `unique_samples`. |
 | `compiled_variables` | integer \| null | The compiled model's actual variable count (business variables plus slack and integer-encoding bits), as opposed to the estimate `validate` reports. |
 | `compiled_interactions` | integer \| null | The compiled model's quadratic terms: the BQM's interactions, or on the CQM path the objective's plus every constraint's. |
 | `compile_ms` | number \| null | Wall-clock milliseconds the compile stage took. |
@@ -155,6 +155,11 @@ constraint with a rate below 1 does not imply a feasible candidate exists.
 
 An attempt is recorded even when it produced nothing feasible, so the retry
 ladder is visible: attempt 2 carries double attempt 1's penalty.
+
+Both sample counts are post-deduplication, so they can be compared with the
+returned list directly: `len(solutions)` smaller than the last attempt's
+`feasible_samples` means the list was truncated to `solver.top_k`, not that
+candidates were lost.
 
 The three `*_ms` timings are the service's own clock around each stage and
 are measured for every backend, local ones included. They vary from run to

@@ -9,7 +9,7 @@ The result is *advisory*: nothing anywhere feeds it back into a solve.
 given (overview principle 5).
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from annealbridge.models import ModelType, SolveError
 
@@ -29,14 +29,50 @@ class BackendRecommendation(BaseModel):
     routing codes (spec §23.4) in the order they were applied.
     """
 
-    rank: int
-    backend: str
-    usable: bool
-    model_type: ModelType | None  # the compiler path it would take; None = no compiler
-    reasons: list[str]
-    blocking: list[SolveError] = []  # why a solve now would fail (REMOTE_DISABLED, ...)
-    warnings: list[SolveError] = []  # service.validate() warnings for this backend
-    estimated_compiled_variables: int | None = None
+    rank: int = Field(description="1-based position in the ranking.")
+    backend: str = Field(
+        description=(
+            "The registry name — the value to put in solver.backend to run "
+            "on it."
+        )
+    )
+    usable: bool = Field(
+        description=(
+            "Whether a solve on it right now would get past every gate: "
+            "enabled by policy, available, and within every declared limit "
+            "for the submitted preferences."
+        )
+    )
+    model_type: ModelType | None = Field(
+        description=(
+            "The compiler path this backend would take; null when the server "
+            "has no compiler for any model type it accepts."
+        )
+    )
+    reasons: list[str] = Field(
+        description=(
+            "Fixed routing reason codes, in the order they were applied to "
+            "reach this rank."
+        )
+    )
+    blocking: list[SolveError] = Field(
+        default=[],
+        description=(
+            "Why a solve now would fail, e.g. REMOTE_DISABLED. Empty exactly "
+            "when usable is true."
+        ),
+    )
+    warnings: list[SolveError] = Field(
+        default=[],
+        description="The validation warnings for this backend's compiler path.",
+    )
+    estimated_compiled_variables: int | None = Field(
+        default=None,
+        description=(
+            "The compiled size on this backend's path, computed arithmetically "
+            "without building a model. Null when there is no compiler path."
+        ),
+    )
 
 
 class BackendRecommendationResult(BaseModel):
@@ -46,7 +82,23 @@ class BackendRecommendationResult(BaseModel):
     the problem errors and ``recommendations`` is empty.
     """
 
-    valid: bool
-    errors: list[SolveError] = []
-    recommendations: list[BackendRecommendation] = []
-    advisory: str = ADVISORY_TEXT
+    valid: bool = Field(
+        description=(
+            "The problem's own validity. When false, recommendations is empty."
+        )
+    )
+    errors: list[SolveError] = Field(
+        default=[],
+        description="The problem's errors when it is invalid; empty otherwise.",
+    )
+    recommendations: list[BackendRecommendation] = Field(
+        default=[],
+        description="Every registered backend, ranked best first.",
+    )
+    advisory: str = Field(
+        default=ADVISORY_TEXT,
+        description=(
+            "A fixed sentence restating that a solve always uses "
+            "problem.solver.backend as given and never substitutes one."
+        ),
+    )

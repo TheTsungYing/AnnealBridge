@@ -62,6 +62,9 @@ extra ends the same way, with the same exit code. Logs go to stderr at
 [Problem format](problem-format.md). Every tool returns a structured result
 derived from its return type, so a host gets a typed output schema rather than
 free text; the shapes are described in [Output format](output-format.md).
+Every field of those schemas carries a description, so an agent reading a
+result does not have to guess what a field means — that `energy` is for
+debugging only, or that `feasible_samples` counts deduplicated candidates.
 
 The three tools that do real work run the synchronous, CPU-bound core in a
 worker thread, so one large problem cannot freeze the event loop and with it

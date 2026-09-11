@@ -72,6 +72,41 @@ async def test_recommend_output_schema_matches_recommendation_result():
     } <= set(entry["properties"])
 
 
+def _properties_without_description(schema: dict) -> list[str]:
+    """``Model.field`` for every schema property missing a description."""
+    missing: list[str] = []
+
+    def check(model_name: str, definition: dict) -> None:
+        for field, prop in definition.get("properties", {}).items():
+            description = prop.get("description")
+            if not isinstance(description, str) or not description.strip():
+                missing.append(f"{model_name}.{field}")
+
+    check(schema.get("title", "<root>"), schema)
+    for name, definition in schema.get("$defs", {}).items():
+        check(name, definition)
+    return missing
+
+
+@pytest.mark.parametrize("tool_name", EXPECTED_TOOLS)
+async def test_every_output_schema_property_has_a_description(tool_name):
+    """An agent reading a result must not have to guess what a field means.
+
+    The outputSchema is derived from the tool's return type, so this is the
+    interface-level guard behind the per-model checks in
+    tests/unit/test_models.py — and the only one that covers
+    ``OptimizationCapabilities``, which lives in ``interfaces``.
+    """
+    tools = await _list_tools()
+    tool = next(tool for tool in tools if tool.name == tool_name)
+
+    missing = _properties_without_description(tool.output_schema)
+
+    assert not missing, f"{tool_name}: properties without a description: " + ", ".join(
+        sorted(missing)
+    )
+
+
 async def test_solve_docstring_points_at_recommend_backend():
     tools = await _list_tools()
     solve = next(tool for tool in tools if tool.name == "solve_optimization")

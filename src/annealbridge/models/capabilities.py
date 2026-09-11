@@ -40,9 +40,24 @@ class ParameterLimit(BaseModel):
     the catalog code reported when the preference exceeds the limit.
     """
 
-    preference: str
-    limit: str
-    error_code: str
+    preference: str = Field(
+        description=(
+            "Dotted path into SolverPreferences, e.g. num_reads or "
+            "dwave_qpu.annealing_time_us."
+        )
+    )
+    limit: str = Field(
+        description=(
+            "The generic ExecutionPolicy limit key this preference is checked "
+            "against."
+        )
+    )
+    error_code: str = Field(
+        description=(
+            "The error-catalog code reported when the preference exceeds the "
+            "limit. The value is refused, never clamped."
+        )
+    )
 
 
 class CredentialDeclaration(BaseModel):
@@ -65,9 +80,29 @@ class CredentialDeclaration(BaseModel):
       the vendor, a token from another profile).
     """
 
-    env_vars: list[str] = Field(default_factory=list)
-    header_names: list[str] = Field(default_factory=list)
-    value_patterns: list[str] = Field(default_factory=list)
+    env_vars: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of environment variables holding a credential; each is "
+            "read live on every redaction and its non-empty value masked. "
+            "Names only — never values."
+        ),
+    )
+    header_names: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of HTTP headers carrying a credential; both the "
+            "'<Name>: <value>' line form and the JSON form are masked."
+        ),
+    )
+    value_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regular expressions matching the vendor's token shape, for a "
+            "value that reaches the text without ever having been in this "
+            "process's environment."
+        ),
+    )
 
     @field_validator("env_vars", "header_names")
     @classmethod
@@ -101,9 +136,27 @@ class AvailabilityStatus(BaseModel):
     from ``category`` (spec §8.2).
     """
 
-    category: AvailabilityCategory
-    detail: str | None = None
-    error_code: str | None = None
+    category: AvailabilityCategory = Field(
+        description=(
+            "Why the backend can or cannot run: available, not_installed, "
+            "credentials_missing, config_invalid, or the generic unavailable."
+        )
+    )
+    detail: str | None = Field(
+        default=None,
+        description=(
+            "Categorical explanation, e.g. 'dwave-system not installed'. "
+            "Never contains configuration values; null when there is nothing "
+            "to add."
+        ),
+    )
+    error_code: str | None = Field(
+        default=None,
+        description=(
+            "The error-catalog code this backend wants reported. Null lets "
+            "the service pick the default for the category."
+        ),
+    )
 
     @property
     def available(self) -> bool:
@@ -122,21 +175,67 @@ class SolverCapabilities(BaseModel):
     declaration to the shared redaction — no change to the solver layer.
     """
 
-    name: str
-    remote: bool
-    heuristic: bool
-    exhaustive: bool
-    supports_seed: bool
-    supports_num_reads: bool
-    supports_time_limit: bool
-    # Preference order; the service takes the first type it has a compiler for.
-    supported_model_types: list[ModelType]
-    returns_multiple_samples: bool
-    description: str
-    supports_num_sweeps: bool = False
-    requires_embedding: bool = False
-    parameter_limits: list[ParameterLimit] = Field(default_factory=list)
-    credentials: CredentialDeclaration = Field(default_factory=CredentialDeclaration)
+    name: str = Field(description="The backend's own name for itself.")
+    remote: bool = Field(
+        description="Whether running it sends the compiled model off this machine."
+    )
+    heuristic: bool = Field(
+        description="Whether it may return a sub-optimal answer."
+    )
+    exhaustive: bool = Field(
+        description=(
+            "Whether it enumerates every assignment, so a result can prove "
+            "optimality or infeasibility."
+        )
+    )
+    supports_seed: bool = Field(
+        description="Whether solver.seed has any effect on this backend."
+    )
+    supports_num_reads: bool = Field(
+        description="Whether it samples repeatedly and so honours solver.num_reads."
+    )
+    supports_time_limit: bool = Field(
+        description="Whether it takes a time budget rather than a read count."
+    )
+    supported_model_types: list[ModelType] = Field(
+        description=(
+            "The compiled model types it accepts, in preference order; the "
+            "service takes the first type it has a compiler for. At least one."
+        )
+    )
+    returns_multiple_samples: bool = Field(
+        description=(
+            "Whether one call can yield more than one candidate. False means "
+            "the effective top_k is at most 1."
+        )
+    )
+    description: str = Field(description="One-line description of the backend.")
+    supports_num_sweeps: bool = Field(
+        default=False,
+        description="Whether it honours solver.num_sweeps.",
+    )
+    requires_embedding: bool = Field(
+        default=False,
+        description=(
+            "Whether the model must be minor-embedded onto hardware before it "
+            "can run."
+        ),
+    )
+    parameter_limits: list[ParameterLimit] = Field(
+        default_factory=list,
+        description=(
+            "The user preferences this backend declares as policy-limited. "
+            "Empty means no preference of its own is capped."
+        ),
+    )
+    credentials: CredentialDeclaration = Field(
+        default_factory=CredentialDeclaration,
+        description=(
+            "What this backend's credential material looks like, so the "
+            "shared redaction can mask it. Shapes and names only, never "
+            "values; empty on a local backend."
+        ),
+    )
 
     @field_validator("supported_model_types")
     @classmethod

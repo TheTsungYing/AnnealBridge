@@ -25,7 +25,7 @@ import types
 import typing
 from collections import Counter
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from annealbridge.models import (
     Constraint,
@@ -266,15 +266,50 @@ class ProblemValidationResult(BaseModel):
     ``model_type`` records which compiler path the estimate assumed.
     """
 
-    valid: bool
-    errors: list[SolveError] = []
-    warnings: list[SolveError] = []
-    # BQM 路徑：binary 變數 + integer 編碼位元 + slack bits；
-    # CQM 路徑：變數 + integer slack（3b §9.4，依 model_type 決定用哪條）。
-    # 兩者都是純算術，不建模型。
-    estimated_compiled_variables: int | None = None
-    objective_scale: float | None = None
-    model_type: ModelType | None = None
+    valid: bool = Field(
+        description=(
+            "Decided by errors alone. Warnings are advisory and never make a "
+            "problem invalid."
+        )
+    )
+    errors: list[SolveError] = Field(
+        default=[],
+        description=(
+            "Every error found in one pass — validation does not stop at the "
+            "first. Empty means the problem is safe to compile."
+        ),
+    )
+    warnings: list[SolveError] = Field(
+        default=[],
+        description=(
+            "Advisory findings that do not block a solve. Only produced when "
+            "there are no errors."
+        ),
+    )
+    # 3b §9.4：依 model_type 決定用哪條路徑；兩者都是純算術，不建模型。
+    estimated_compiled_variables: int | None = Field(
+        default=None,
+        description=(
+            "Compiled size without building a model: on the BQM path, binary "
+            "variables + integer-encoding bits + slack bits; on the CQM path, "
+            "variables + integer slacks. Null when the problem is invalid."
+        ),
+    )
+    objective_scale: float | None = Field(
+        default=None,
+        description=(
+            "The upper bound on the objective's range, used to size hard "
+            "penalties and to judge whether a soft weight is meaningful. Null "
+            "when the problem is invalid."
+        ),
+    )
+    model_type: ModelType | None = Field(
+        default=None,
+        description=(
+            "Which compiler path the estimate assumed. Null when the problem "
+            "is invalid."
+        ),
+    )
 
 
 def validate_problem(problem: OptimizationProblem) -> list[SolveError]:

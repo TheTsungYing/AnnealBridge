@@ -11,7 +11,7 @@ import json
 from functools import cache
 from typing import get_args
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from annealbridge.models import Constraint, OptimizationProblem, Variable
 from annealbridge.orchestration import ExecutionPolicy
@@ -29,32 +29,100 @@ class BackendCapability(BaseModel):
     name a request can use.
     """
 
-    name: str
-    available: bool
-    enabled: bool
-    unavailable_reason: str | None
-    remote: bool
-    heuristic: bool
-    exhaustive: bool
-    supports_seed: bool
-    returns_multiple_samples: bool
-    limits: dict[str, float | int]
-    description: str
+    name: str = Field(
+        description=(
+            "The registry key: the value to put in solver.backend, and the "
+            "one ANNEALBRIDGE_ENABLED_BACKENDS is matched against."
+        )
+    )
+    available: bool = Field(
+        description=(
+            "Whether the backend can run right now — dependency installed, "
+            "credentials present, configuration valid."
+        )
+    )
+    enabled: bool = Field(
+        description=(
+            "Whether server policy permits it: in the enabled-backends list, "
+            "and remote execution allowed if it is remote. Independent of "
+            "available; both must be true for a solve to reach it."
+        )
+    )
+    unavailable_reason: str | None = Field(
+        description=(
+            "Categorical detail when available is false, e.g. 'dwave-system "
+            "not installed'. Never contains configuration values; null when "
+            "the backend is available."
+        )
+    )
+    remote: bool = Field(description="Whether running it leaves this machine.")
+    heuristic: bool = Field(
+        description="Whether it may return a sub-optimal answer."
+    )
+    exhaustive: bool = Field(
+        description=(
+            "Whether it enumerates every assignment and can therefore prove "
+            "optimality or infeasibility."
+        )
+    )
+    supports_seed: bool = Field(
+        description="Whether solver.seed has any effect on this backend."
+    )
+    returns_multiple_samples: bool = Field(
+        description=(
+            "False means the effective solver.top_k on this backend is at "
+            "most 1."
+        )
+    )
+    limits: dict[str, float | int] = Field(
+        description=(
+            "The server-side policy ceilings that apply to this backend. A "
+            "request beyond one of them is refused, never clamped."
+        )
+    )
+    description: str = Field(description="One-line description of the backend.")
 
 
 class OptimizationCapabilities(BaseModel):
     """Everything an agent needs before formulating and submitting a problem."""
 
-    # The newest problem schema version this server accepts; every version
-    # in ``schema_versions`` is accepted (3b §10: 1.1 is a superset of 1.0).
-    schema_version: str
-    schema_versions: list[str]
-    supported_variable_types: list[str]
-    supported_constraint_operators: list[str]
-    supported_objective_terms: list[str]
-    inequality_requires_integer_coefficients: bool
-    backends: list[BackendCapability]
-    problem_json_schema: dict
+    schema_version: str = Field(
+        description=(
+            "The newest problem schema version this server accepts; use it "
+            "unless an older one is needed."
+        )
+    )
+    schema_versions: list[str] = Field(
+        description=(
+            "Every accepted problem schema version. Derived from the model, "
+            'not hard-coded; "1.1" is a superset of "1.0".'
+        )
+    )
+    supported_variable_types: list[str] = Field(
+        description="The variable types a problem may declare."
+    )
+    supported_constraint_operators: list[str] = Field(
+        description="The operators a constraint may use."
+    )
+    supported_objective_terms: list[str] = Field(
+        description="The kinds of objective term a problem may carry."
+    )
+    inequality_requires_integer_coefficients: bool = Field(
+        description=(
+            "Whether <= / >= constraints need integral coefficients and rhs, "
+            "which the slack encoding requires."
+        )
+    )
+    backends: list[BackendCapability] = Field(
+        description="Every registered backend, with its flags and limits."
+    )
+    problem_json_schema: dict = Field(
+        description=(
+            "The full OptimizationProblem JSON Schema, identical to what "
+            "annealbridge export-schema prints. Its field descriptions "
+            "explain the document one level down."
+        )
+    )
 
 
 @cache
