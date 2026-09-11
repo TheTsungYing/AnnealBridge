@@ -40,6 +40,39 @@ Live tests skip individually unless their credential is present
 (`DWAVE_API_TOKEN` for the three D-Wave tests, `FUJITSU_DA_API_KEY` for the
 Fujitsu one). Do not run them casually.
 
+## Checking the built package
+
+`pytest` runs against the checkout. To reproduce what CI's *Built distribution*
+job does — install the actual wheel into a clean environment and drive it
+through its real console scripts — build the distribution and point the probe
+at it:
+
+```bash
+pip install build
+python -m build
+python -m venv /tmp/ab-core && /tmp/ab-core/bin/python -m pip install dist/*.whl
+/tmp/ab-core/bin/python -m pip check
+/tmp/ab-core/bin/python scripts/check_install.py --examples examples
+```
+
+And the same for the `[mcp]` extra, which adds an MCP stdio handshake and a
+tool call to the checks:
+
+```bash
+python -m venv /tmp/ab-mcp
+/tmp/ab-mcp/bin/python -m pip install "dist/annealbridge-<version>-py3-none-any.whl[mcp]"
+/tmp/ab-mcp/bin/python -m pip check
+/tmp/ab-mcp/bin/python scripts/check_install.py --examples examples --mcp
+```
+
+These commands work as written on macOS, Linux and Windows Git Bash; in Windows
+PowerShell the interpreter is `Scripts\python.exe` instead of `bin/python`.
+
+`scripts/check_install.py` copies the example problems to a temporary directory
+and runs everything from there, so a missing packaged file cannot be masked by
+the checkout. It only uses the local solvers, leaves remote execution disabled
+by policy, and consumes no vendor quota.
+
 ## Architecture rules (enforced by tests)
 
 The package is a self-contained **core** plus thin **interfaces**. The

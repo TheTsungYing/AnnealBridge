@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- CI `package` job builds the sdist and wheel and installs the wheel — core
+  and `[mcp]` — into clean virtual environments on Ubuntu and Windows, then
+  runs the new `scripts/check_install.py` from outside the checkout through
+  the real console scripts; the same probe reproduces the check locally
+  (2026-09-11 install verification, gap 4).
+
 ### Changed
 
 - Soft constraints are now scored from their **exact** residual: the

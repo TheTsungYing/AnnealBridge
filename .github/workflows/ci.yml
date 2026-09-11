@@ -1,6 +1,9 @@
 # CI — spec §29
 #
 # An ordinary push / PR runs: unit, scenarios, architecture, mcp, remote_mock.
+# The package job additionally builds the sdist and the wheel and exercises the
+# installed distribution — not the checkout — in clean virtual environments on
+# Linux and Windows (2026-09-11 install verification, gap 4).
 # The remote_live tests are deselected by default through the pytest addopts
 # (-m "not remote"), so this workflow consumes no vendor quota and needs
 # neither DWAVE_API_TOKEN nor FUJITSU_DA_API_KEY.
@@ -82,3 +85,73 @@ jobs:
           grep -q 'annealbridge\[mcp\]' err.txt
           ! grep -q Traceback err.txt
           test ! -s out.txt
+
+  # 2026-09-11 install verification (gap 4): the two jobs above only ever test
+  # the checkout. This one tests the artefact a user actually receives — the
+  # built wheel, installed into a clean environment, driven through its real
+  # console scripts from a directory outside the checkout.
+  package:
+    name: Built distribution (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Python 3.12 only: the test job already covers 3.11 / 3.12 on Linux,
+        # what is new here is the packaging and the second operating system.
+        os: [ubuntu-latest, windows-latest]
+    # One shell for both runners — the Windows runner ships Git Bash, so the
+    # steps below do not need a second, PowerShell-flavoured copy.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # `python -m build` builds the sdist first and then builds the wheel from
+      # that unpacked sdist. The wheel installed below is therefore exactly what
+      # a rebuild from the source distribution produces: a file missing from the
+      # sdist cannot survive into the wheel unnoticed.
+      - name: Build the sdist and the wheel
+        run: |
+          python -m pip install build
+          python -m build
+
+      - name: Install the wheel into a clean core-only environment
+        run: |
+          # $RUNNER_TEMP is outside the checkout on both runners. Git Bash
+          # accepts the native Windows value as-is, so it needs no conversion.
+          python -m venv "$RUNNER_TEMP/core"
+          if [ -x "$RUNNER_TEMP/core/bin/python" ]; then
+            PY="$RUNNER_TEMP/core/bin/python"
+          else
+            PY="$RUNNER_TEMP/core/Scripts/python.exe"
+          fi
+          "$PY" -m pip install dist/*.whl
+          "$PY" -m pip check
+          # The probe copies the example problems to a temporary directory and
+          # runs the installed console scripts from there, so nothing in the
+          # checkout can satisfy an import or a data file by accident. No
+          # extras installed: annealbridge-mcp --help must exit 2.
+          "$PY" scripts/check_install.py --examples examples
+
+      - name: Install the wheel with the [mcp] extra into a second clean environment
+        run: |
+          python -m venv "$RUNNER_TEMP/mcp"
+          if [ -x "$RUNNER_TEMP/mcp/bin/python" ]; then
+            PY="$RUNNER_TEMP/mcp/bin/python"
+          else
+            PY="$RUNNER_TEMP/mcp/Scripts/python.exe"
+          fi
+          # pip accepts a local wheel path carrying an extra suffix.
+          WHEEL=$(ls dist/*.whl)
+          "$PY" -m pip install "$WHEEL[mcp]"
+          "$PY" -m pip check
+          # --mcp adds the stdio handshake and a real tool call on top of the
+          # core checks.
+          "$PY" scripts/check_install.py --examples examples --mcp

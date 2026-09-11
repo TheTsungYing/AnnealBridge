@@ -95,7 +95,7 @@ Two workflows live in `.github/workflows/`.
 
 ### `ci.yml` — every push and pull request
 
-Runs on `push` and `pull_request`. Two jobs:
+Runs on `push` and `pull_request`. Three jobs:
 
 - **Test** — installs `.[all,dev]` on Python 3.11 and 3.12 (matrix, without
   fail-fast) and runs a plain `pytest`. No `-m` flag is passed, so the
@@ -107,6 +107,19 @@ Runs on `push` and `pull_request`. Two jobs:
   backends, `annealbridge export-schema` works, and `annealbridge validate` /
   `annealbridge recommend` run against a shipped example. This is the guard
   that keeps the optional dependencies genuinely optional.
+- **Built distribution** — the only job that tests what a `pip` user receives
+  rather than the checkout. It builds the sdist and then the wheel from that
+  sdist (`python -m build`), and on both `ubuntu-latest` and `windows-latest`
+  creates two clean virtual environments: one with the plain wheel, one with
+  `wheel[mcp]`. Each gets a `pip check`, then runs
+  `scripts/check_install.py` — a probe that copies the example problems to a
+  temporary directory outside the checkout and drives the installed `annealbridge`
+  and `annealbridge-mcp` **console scripts** from there, so nothing in the
+  repository can satisfy an import or a data file by accident. The core
+  environment also asserts that `annealbridge-mcp --help` exits 2 with an
+  install hint; the `[mcp]` environment adds a stdio handshake and a real tool
+  call. Where Minimal install proves the extras are genuinely optional, this
+  job proves the distribution itself is complete and usable once installed.
 
 ### `remote-live.yml` — manual only
 
