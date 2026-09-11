@@ -72,6 +72,7 @@ returned samples can set — is a proof. On a heuristic or remote backend an
 | `soft_violation_score` | number | `Σ weight × violation²` over **all** soft constraints, recomputed by the validator from the exact residual. The feasibility tolerance is deliberately not applied here, so this equals the soft energy the solver minimized. |
 | `ranking_score` | number | `objective_value + soft_violation_score` when minimizing, `objective_value − soft_violation_score` when maximizing. The sort key. |
 | `energy` | number \| null | The compiled model's energy. Debugging only. |
+| `sample_count` | integer | How many rows of this attempt's raw solver output carried this business assignment, before deduplication. Not a confidence measure: on an exhaustive backend every business assignment is enumerated once per combination of the slack and integer-encoding bits, so the count only reflects how many internal variables the compiled model happened to have. |
 | `hard_constraints_satisfied` | boolean | Always `true` for a returned solution — only feasible candidates are ranked. |
 | `constraint_evaluations` | array of [ConstraintEvaluation](#constraintevaluation) | One entry per constraint, hard and soft. |
 
@@ -194,6 +195,7 @@ Ranks 3–5 are elided below; they continue the same pattern down to
       "soft_violation_score": 0.0,
       "ranking_score": 17.0,
       "energy": -17.0,
+      "sample_count": 16,
       "hard_constraints_satisfied": true,
       "constraint_evaluations": [
         {
@@ -220,6 +222,7 @@ Ranks 3–5 are elided below; they continue the same pattern down to
       "soft_violation_score": 0.0,
       "ranking_score": 16.0,
       "energy": -16.0,
+      "sample_count": 16,
       "hard_constraints_satisfied": true,
       "constraint_evaluations": [
         {
@@ -263,7 +266,10 @@ Ranks 3–5 are elided below; they continue the same pattern down to
 Note the numbers. The `exact` backend enumerated all 256 assignments of the 8
 compiled variables (4 items plus 4 slack bits); after decoding and dropping the
 slack columns, 16 distinct business assignments remained, 10 of which satisfy
-the capacity constraint. `energy` is `-17.0` because the compiled model
+the capacity constraint. Each solution's `sample_count` is `16` for the same
+reason: every business assignment was enumerated once per setting of the 4
+slack bits, which is a fact about the encoding and not about the solution.
+`energy` is `-17.0` because the compiled model
 minimizes the negated objective — `objective_value` is the `17` the caller
 asked about, recomputed from the original JSON. `metadata` is `null` because a
 local backend reports no execution facts. `optimality_proven` is `true` because

@@ -180,11 +180,14 @@ class CandidateSet:
     order minus the internal ones); ``energies`` is the minimum energy the
     solver reported for that assignment — kept for reporting and debugging
     only, never used for feasibility or ranking (overview principle 2).
+    ``counts`` is how many rows of the solver's raw output collapsed into
+    each deduplicated assignment, so it sums to ``raw.num_samples``.
     """
 
     variables: list[str]
     samples: np.ndarray  # integer matrix, shape (candidates, len(variables))
     energies: np.ndarray  # float64, shape (candidates,)
+    counts: np.ndarray  # int64, shape (candidates,)
 
     def __len__(self) -> int:
         return int(self.samples.shape[0])
@@ -214,6 +217,7 @@ def deduplicate_samples(
     in order of first appearance, so the result is fully deterministic and
     identical to a row-by-row pass — it is just computed on the arrays.
     Energy is used here only to pick which duplicate's energy to report.
+    How many raw rows each survivor stands for is kept in ``counts``.
 
     ``internal_variables`` is optional since 3b: the service hands over a
     result the compiler has already decoded, so nothing is left to strip.
@@ -231,6 +235,7 @@ def deduplicate_samples(
             variables=variables,
             samples=business,
             energies=np.asarray(raw.energies, dtype=np.float64),
+            counts=np.zeros(0, dtype=np.int64),
         )
 
     keys = _row_keys(business)
@@ -247,12 +252,33 @@ def deduplicate_samples(
     starts = np.flatnonzero(group_start)
     representatives = order[starts]  # min-energy read of each assignment
     first_seen = np.minimum.reduceat(order, starts)  # earliest read of each
-    keep = representatives[np.argsort(first_seen, kind="stable")]
+    # Group ``g`` spans ``starts[g]`` up to the next start (or the end), so
+    # its size is how many raw rows carried that assignment.
+    group_sizes = np.diff(np.append(starts, count))
+    # One permutation for all three arrays, or ``counts`` would describe a
+    # different candidate than the row next to it.
+    permutation = np.argsort(first_seen, kind="stable")
+    keep = representatives[permutation]
     return CandidateSet(
         variables=variables,
         samples=np.ascontiguousarray(business[keep]),
         energies=energies[keep],
+        counts=group_sizes[permutation].astype(np.int64, copy=False),
     )
+
+
+@dataclass(frozen=True)
+class ProcessedCandidates:
+    """What :func:`process_candidates` found in one attempt's raw output.
+
+    ``unique_samples`` and ``feasible_samples`` are the candidate counts the
+    attempt reports; both are counted over deduplicated assignments, not
+    over the raw rows.
+    """
+
+    solutions: list[Solution]
+    unique_samples: int
+    feasible_samples: int
 
 
 def process_candidates(
@@ -260,7 +286,7 @@ def process_candidates(
     raw: RawSolverResult,
     internal_variables: Collection[str] = frozenset(),
     top_k: int = 5,
-) -> tuple[list[Solution], int, int]:
+) -> ProcessedCandidates:
     """Run the §25 candidate pipeline on raw solver output.
 
     Deduplicates, validates *every* candidate against the original problem,
@@ -277,13 +303,13 @@ def process_candidates(
     """
     candidates = deduplicate_samples(raw, internal_variables)
     if len(candidates) == 0:
-        return [], 0, 0
+        return ProcessedCandidates([], 0, 0)
     minimize = problem.objective.direction == "minimize"
 
     verdict = validate_batch(problem, candidates.variables, candidates.samples)
     feasible = np.flatnonzero(verdict.feasible)
     if len(feasible) == 0:
-        return [], len(candidates), 0
+        return ProcessedCandidates([], len(candidates), 0)
 
     feasible_samples = candidates.samples[feasible]
     objective_value = evaluate_objective_batch(
@@ -318,11 +344,12 @@ def process_candidates(
                 soft_violation_score=validation.soft_violation_score,
                 ranking_score=float(ranking_score[position]),
                 energy=float(candidates.energies[index]),
+                sample_count=int(candidates.counts[index]),
                 hard_constraints_satisfied=validation.feasible,
                 constraint_evaluations=validation.evaluations,
             )
         )
-    return solutions, len(candidates), int(len(feasible))
+    return ProcessedCandidates(solutions, len(candidates), int(len(feasible)))
 
 
 class OptimizationService:
@@ -895,9 +922,12 @@ class OptimizationService:
                 # ever sees business variables in problem order.
                 validate_started = time.perf_counter()
                 decoded = compiler.decode(compiled, raw)
-                solutions, unique_samples, feasible_samples = process_candidates(
+                processed = process_candidates(
                     problem, decoded, frozenset(), problem.solver.top_k
                 )
+                solutions = processed.solutions
+                unique_samples = processed.unique_samples
+                feasible_samples = processed.feasible_samples
                 validate_ms = _elapsed_ms(validate_started)
                 attempts.append(
                     SolveAttempt(

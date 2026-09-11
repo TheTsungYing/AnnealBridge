@@ -52,6 +52,21 @@ class TestKnapsackExact:
         for solution in result.solutions:
             assert set(solution.variables) == business_names
 
+    def test_sample_count_covers_every_slack_combination(self, load_problem):
+        # The compiled model has 8 variables: 4 items plus the 4 slack bits
+        # of the capacity constraint, and ``exact`` enumerates all 256 rows.
+        # Each business assignment therefore appears once per slack pattern,
+        # 2**4 = 16 times -- which is why this number says nothing about how
+        # good a solution is.
+        result = OptimizationService().solve(load_problem(backend="exact", top_k=5))
+
+        assert result.solutions
+        for solution in result.solutions:
+            assert solution.sample_count == 16
+        assert sum(s.sample_count for s in result.solutions) <= (
+            result.attempts[0].samples_received
+        )
+
     def test_ranking_is_descending_for_maximize(self, load_problem):
         result = OptimizationService().solve(load_problem(backend="exact", top_k=5))
         scores = [solution.ranking_score for solution in result.solutions]
@@ -72,6 +87,13 @@ class TestKnapsackSimulatedAnnealing:
         assert result.solutions
         for solution in result.solutions:
             assert solution.hard_constraints_satisfied is True
+            # A sampler reaches an assignment as often as it happens to; all
+            # that holds is that it was reached, and that the ranked
+            # solutions cannot claim more rows than the backend returned.
+            assert solution.sample_count >= 1
+        assert sum(s.sample_count for s in result.solutions) <= (
+            result.attempts[0].samples_received
+        )
 
     def test_sa_with_more_reads_finds_optimum(self, load_problem):
         # Asserting the optimum with only 100 reads would be brittle for a

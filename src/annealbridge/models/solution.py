@@ -39,6 +39,13 @@ class Solution(BaseModel):
     soft_violation_score: float
     ranking_score: float
     energy: float | None
+    # How many rows of this attempt's raw solver output carried this business
+    # assignment, before deduplication. Not a confidence measure: on an
+    # exhaustive backend every business assignment is enumerated once per
+    # combination of the slack and integer-encoding bits, so the count only
+    # reflects how many internal variables the compiled model happened to
+    # have.
+    sample_count: int
     hard_constraints_satisfied: bool
     constraint_evaluations: list[ConstraintEvaluation]
 

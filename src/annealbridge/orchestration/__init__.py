@@ -3,6 +3,7 @@
 from annealbridge.orchestration.optimizer import (
     CandidateSet,
     OptimizationService,
+    ProcessedCandidates,
     deduplicate_samples,
     evaluate_objective,
     evaluate_objective_batch,
@@ -15,6 +16,7 @@ __all__ = [
     "CandidateSet",
     "ExecutionPolicy",
     "OptimizationService",
+    "ProcessedCandidates",
     "REASON_DESCRIPTIONS",
     "recommend",
     "deduplicate_samples",

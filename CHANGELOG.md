@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs the new `scripts/check_install.py` from outside the checkout through
   the real console scripts; the same probe reproduces the check locally
   (2026-09-11 install verification, gap 4).
+- `Solution.sample_count`: how many rows of that attempt's raw solver output
+  carried this business assignment, before deduplication. It is not a
+  confidence measure — an exhaustive backend enumerates every business
+  assignment once per combination of the slack and integer-encoding bits, so
+  the count reflects the compiled model's internal variables rather than the
+  solution.
 
 ### Changed
 

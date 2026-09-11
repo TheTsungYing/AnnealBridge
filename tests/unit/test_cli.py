@@ -520,6 +520,7 @@ class TestRenderHumanErrorsAndWarnings:
                     soft_violation_score=0.0,
                     ranking_score=3.0,
                     energy=None,
+                    sample_count=1,
                     hard_constraints_satisfied=True,
                     constraint_evaluations=[],
                 )

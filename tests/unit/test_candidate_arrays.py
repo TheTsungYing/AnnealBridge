@@ -10,6 +10,7 @@ reports for the top-k.
 
 import itertools
 import random
+from collections import Counter
 
 import numpy as np
 import pytest
@@ -51,6 +52,35 @@ def reference_deduplicate(
         if kept is None or energy < kept[1]:
             best[key] = (business, energy)
     return list(best.values())
+
+
+def assignment_key(business: dict[str, int]) -> tuple[int, ...]:
+    """The name-sorted value tuple identifying a business assignment."""
+    return tuple(business[name] for name in sorted(business))
+
+
+def reference_tally(
+    raw: RawSolverResult, internal_variables: set[str]
+) -> Counter[tuple[int, ...]]:
+    """Raw rows per business assignment, tallied row by row.
+
+    The oracle for ``CandidateSet.counts`` / ``Solution.sample_count``: a
+    plain tally keyed by the assignment, so the array path cannot pass by
+    reusing its own grouping. ``Counter`` keeps first-seen key order, the
+    same order the deduplication returns candidates in.
+    """
+    tally: Counter[tuple[int, ...]] = Counter()
+    for sample in raw.as_dicts():
+        business = {
+            name: value for name, value in sample.items() if name not in internal_variables
+        }
+        tally[assignment_key(business)] += 1
+    return tally
+
+
+def reference_counts(raw: RawSolverResult, internal_variables: set[str]) -> list[int]:
+    """The tally above, in first-seen order."""
+    return list(reference_tally(raw, internal_variables).values())
 
 
 def random_problem(rng: random.Random, n_variables: int) -> OptimizationProblem:
@@ -361,6 +391,9 @@ class TestDeduplicationMatchesReference:
         assert candidates.variables == [v for v in variables if v not in internal]
         assert candidates.samples.dtype == np.int8
         assert candidates.as_pairs() == expected
+        assert candidates.counts.dtype == np.int64
+        assert candidates.counts.tolist() == reference_counts(raw, internal)
+        assert int(candidates.counts.sum()) == raw.num_samples
 
     def test_energy_ties_keep_the_earliest_read(self):
         raw = RawSolverResult.from_dicts(
@@ -370,6 +403,32 @@ class TestDeduplicationMatchesReference:
         )
         candidates = deduplicate_samples(raw, {"__s"})
         assert candidates.as_pairs() == [({"x": 1}, 2.0), ({"x": 0}, 5.0)]
+        # x=1 came back twice (same energy, different slack), x=0 once.
+        assert candidates.counts.tolist() == [2, 1]
+
+    def test_counts_follow_the_first_seen_reordering(self):
+        # The groups are built in assignment order (x=0 first), but the
+        # candidates come back in first-seen order (x=1 first). ``counts``
+        # must be permuted along with the rows, not left in group order.
+        raw = RawSolverResult.from_dicts(
+            [{"x": 1}, {"x": 0}, {"x": 1}, {"x": 1}],
+            [4.0, 3.0, 1.0, 2.0],
+            "exact",
+        )
+        candidates = deduplicate_samples(raw, set())
+        assert candidates.as_pairs() == [({"x": 1}, 1.0), ({"x": 0}, 3.0)]
+        assert candidates.counts.tolist() == [3, 1]
+        assert int(candidates.counts.sum()) == raw.num_samples
+
+    def test_duplicate_rows_with_differing_energies_count_once_each(self):
+        raw = RawSolverResult.from_dicts(
+            [{"x": 0, "y": 1}] * 5 + [{"x": 1, "y": 1}],
+            [3.0, 1.0, 2.0, 1.0, 7.0, 0.0],
+            "exact",
+        )
+        candidates = deduplicate_samples(raw, set())
+        assert candidates.as_pairs() == [({"x": 0, "y": 1}, 1.0), ({"x": 1, "y": 1}, 0.0)]
+        assert candidates.counts.tolist() == [5, 1]
 
     def test_empty_input(self):
         raw = RawSolverResult(variables=["x", "__s"], samples=[], energies=[], backend="b")
@@ -377,6 +436,8 @@ class TestDeduplicationMatchesReference:
         assert len(candidates) == 0
         assert candidates.variables == ["x"]
         assert candidates.as_pairs() == []
+        assert candidates.counts.shape == (0,)
+        assert candidates.counts.dtype == np.int64
 
     def test_more_than_64_business_variables(self):
         # The packed key spans several 64-bit words here; rows that agree on
@@ -401,6 +462,9 @@ class TestDeduplicationMatchesReference:
         assert _pack_rows(candidates.samples).shape == (5, 3)
         assert candidates.as_pairs() == reference_deduplicate(raw, set())
         assert [energy for _, energy in candidates.as_pairs()] == [5.0, 4.0, 3.0, 0.5, 1.0]
+        # Rows 0 and 6 are the same assignment, so are rows 3 and 5.
+        assert candidates.counts.tolist() == [2, 1, 1, 2, 1]
+        assert candidates.counts.tolist() == reference_counts(raw, set())
 
 
 class TestPackRows:
@@ -688,13 +752,17 @@ class TestProcessCandidatesMatchesRowByRow:
         raw = RawSolverResult.from_dicts(samples, energies, "exact")
         top_k = rng.randint(1, 8)
 
-        solutions, unique, feasible = process_candidates(problem, raw, internal, top_k)
+        processed = process_candidates(problem, raw, internal, top_k)
+        solutions = processed.solutions
         expected, expected_unique, expected_feasible = self.reference(
             problem, raw, internal, top_k
         )
+        # Tally the raw rows per business assignment independently of the
+        # pipeline's own grouping.
+        tally = reference_tally(raw, internal)
 
-        assert unique == expected_unique
-        assert feasible == expected_feasible
+        assert processed.unique_samples == expected_unique
+        assert processed.feasible_samples == expected_feasible
         assert len(solutions) == len(expected)
         for solution, (sample, energy, validation, objective_value, score) in zip(
             solutions, expected
@@ -707,7 +775,9 @@ class TestProcessCandidatesMatchesRowByRow:
             assert solution.soft_violation_score == validation.soft_violation_score
             assert solution.hard_constraints_satisfied is True
             assert solution.constraint_evaluations == validation.evaluations
+            assert solution.sample_count == tally[assignment_key(sample)]
         assert [s.rank for s in solutions] == list(range(1, len(solutions) + 1))
+        assert sum(tally.values()) == raw.num_samples
 
     def test_solutions_carry_full_evaluations_only_for_top_k(self):
         problem = random_problem(random.Random(3), 4)
@@ -717,11 +787,13 @@ class TestProcessCandidatesMatchesRowByRow:
             energies=np.zeros(16),
             backend="exact",
         )
-        solutions, unique, feasible = process_candidates(problem, raw, set(), top_k=2)
-        assert unique == 16
-        assert len(solutions) <= 2
-        for solution in solutions:
+        processed = process_candidates(problem, raw, set(), top_k=2)
+        assert processed.unique_samples == 16
+        assert len(processed.solutions) <= 2
+        for solution in processed.solutions:
             assert len(solution.constraint_evaluations) == len(problem.constraints)
+            # Every assignment was enumerated exactly once, no internals.
+            assert solution.sample_count == 1
 
 
 # --------------------------------------------------------------------------
@@ -846,6 +918,8 @@ class TestIntegerRowsMatchReference:
         assert candidates.variables == [v for v in variables if v not in internal]
         assert candidates.samples.dtype == np.int64
         assert candidates.as_pairs() == expected
+        assert candidates.counts.dtype == np.int64
+        assert candidates.counts.tolist() == reference_counts(raw, internal)
 
     @pytest.mark.parametrize("seed", range(25))
     def test_heavily_duplicated_int64_rows_keep_min_energy_and_first_seen(self, seed):
@@ -868,6 +942,8 @@ class TestIntegerRowsMatchReference:
 
         assert candidates.samples.dtype == np.int64
         assert candidates.as_pairs() == reference_deduplicate(raw, internal)
+        assert candidates.counts.tolist() == reference_counts(raw, internal)
+        assert int(candidates.counts.sum()) == raw.num_samples
 
     def test_int8_rows_holding_2_and_minus_1_do_not_take_the_bit_path(self):
         # np.packbits would flatten 2 and -1 to 1; _row_keys must notice the
@@ -888,6 +964,7 @@ class TestIntegerRowsMatchReference:
         assert candidates.samples.dtype == np.int8
         assert sorted(np.unique(candidates.samples).tolist()) == [-1, 0, 1, 2]
         assert candidates.as_pairs() == reference_deduplicate(raw, {"__s"})
+        assert candidates.counts.tolist() == reference_counts(raw, {"__s"})
 
     def test_more_than_64_integer_columns(self):
         # One int64 lexsort key per column, well past the single 64-bit word
@@ -913,6 +990,8 @@ class TestIntegerRowsMatchReference:
         assert candidates.samples.dtype == np.int64
         assert len(candidates) < rows
         assert candidates.as_pairs() == reference_deduplicate(raw, set())
+        assert candidates.counts.tolist() == reference_counts(raw, set())
+        assert int(candidates.counts.sum()) == rows
 
 
 class TestIntegerProcessCandidatesMatchesRowByRow:
@@ -945,15 +1024,17 @@ class TestIntegerProcessCandidatesMatchesRowByRow:
 
         assert raw.samples.dtype == np.int64
 
-        solutions, unique, feasible = process_candidates(problem, raw, internal, top_k)
+        processed = process_candidates(problem, raw, internal, top_k)
+        solutions = processed.solutions
         expected, expected_unique, expected_feasible = (
             TestProcessCandidatesMatchesRowByRow.reference(
                 problem, raw, internal, top_k
             )
         )
+        tally = reference_tally(raw, internal)
 
-        assert unique == expected_unique
-        assert feasible == expected_feasible
+        assert processed.unique_samples == expected_unique
+        assert processed.feasible_samples == expected_feasible
         assert len(solutions) == len(expected)
         for solution, (sample, energy, validation, objective_value, score) in zip(
             solutions, expected
@@ -966,4 +1047,6 @@ class TestIntegerProcessCandidatesMatchesRowByRow:
             assert solution.soft_violation_score == validation.soft_violation_score
             assert solution.hard_constraints_satisfied is True
             assert solution.constraint_evaluations == validation.evaluations
+            assert solution.sample_count == tally[assignment_key(sample)]
         assert [s.rank for s in solutions] == list(range(1, len(solutions) + 1))
+        assert sum(tally.values()) == raw.num_samples

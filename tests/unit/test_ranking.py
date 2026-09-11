@@ -50,21 +50,25 @@ class TestDeduplication:
             ],
             [5.0, 3.0, 4.0],
         )
-        solutions, unique, feasible = process_candidates(
-            problem, result, {"__slack_c_0"}, top_k=10
-        )
+        processed = process_candidates(problem, result, {"__slack_c_0"}, top_k=10)
+        solutions = processed.solutions
 
-        assert unique == 2
-        assert feasible == 2
+        assert processed.unique_samples == 2
+        assert processed.feasible_samples == 2
         assert len(solutions) == 2
         by_vars = {tuple(sorted(s.variables.items())): s for s in solutions}
         merged = by_vars[(("x", 1), ("y", 0))]
         assert merged.energy == 3.0
+        # Both slack values collapsed into this one business assignment.
+        assert merged.sample_count == 2
+        assert by_vars[(("x", 0), ("y", 1))].sample_count == 1
 
     def test_internal_variables_never_appear_in_solutions(self):
         problem = make_problem()
         result = raw([{"x": 1, "y": 1, "__slack_c_0": 1}], [0.0])
-        solutions, _, _ = process_candidates(problem, result, {"__slack_c_0"}, top_k=5)
+        solutions = process_candidates(
+            problem, result, {"__slack_c_0"}, top_k=5
+        ).solutions
         assert solutions[0].variables == {"x": 1, "y": 1}
 
 
@@ -88,9 +92,10 @@ class TestSoftViolationRanking:
         )
         result = raw([{"a": 1, "b": 0}, {"a": 0, "b": 1}], [-5.0, -4.0])
 
-        solutions, _, feasible = process_candidates(problem, result, set(), top_k=5)
+        processed = process_candidates(problem, result, set(), top_k=5)
+        solutions = processed.solutions
 
-        assert feasible == 2
+        assert processed.feasible_samples == 2
         assert solutions[0].variables == {"a": 0, "b": 1}
         assert solutions[0].ranking_score == pytest.approx(4.0)
         assert solutions[0].soft_violation_score == pytest.approx(0.0)
@@ -109,12 +114,12 @@ class TestTieBreak:
         samples = [{"a": 1, "b": 0}, {"a": 0, "b": 1}]
         energies = [1.0, 1.0]
 
-        forward, _, _ = process_candidates(
+        forward = process_candidates(
             problem, raw(samples, energies), set(), top_k=5
-        )
-        reverse, _, _ = process_candidates(
+        ).solutions
+        reverse = process_candidates(
             problem, raw(samples[::-1], energies[::-1]), set(), top_k=5
-        )
+        ).solutions
 
         expected_order = [{"a": 0, "b": 1}, {"a": 1, "b": 0}]
         assert [s.variables for s in forward] == expected_order
@@ -137,7 +142,7 @@ class TestTieBreak:
         # x=1,y=0: obj 2, soft 0 -> score 2; x=0,y=1: obj 1, soft 1 -> score 2.
         # Equal ranking_score, so the lower objective (minimize) ranks first.
         result = raw([{"x": 1, "y": 0}, {"x": 0, "y": 1}], [0.0, 0.0])
-        solutions, _, _ = process_candidates(problem, result, set(), top_k=5)
+        solutions = process_candidates(problem, result, set(), top_k=5).solutions
 
         assert solutions[0].ranking_score == pytest.approx(2.0)
         assert solutions[1].ranking_score == pytest.approx(2.0)
@@ -162,10 +167,11 @@ class TestFeasibilityFilterAndTopK:
             [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}],
             [0.0, 1.0, 3.0],
         )
-        solutions, unique, feasible = process_candidates(problem, result, set(), top_k=5)
+        processed = process_candidates(problem, result, set(), top_k=5)
+        solutions = processed.solutions
 
-        assert unique == 3
-        assert feasible == 1
+        assert processed.unique_samples == 3
+        assert processed.feasible_samples == 1
         assert len(solutions) == 1
         assert solutions[0].variables == {"x": 1, "y": 0}
         assert solutions[0].hard_constraints_satisfied is True
@@ -176,10 +182,11 @@ class TestFeasibilityFilterAndTopK:
             [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 0, "y": 1}, {"x": 1, "y": 1}],
             [0.0, 1.0, 2.0, 3.0],
         )
-        solutions, unique, feasible = process_candidates(problem, result, set(), top_k=2)
+        processed = process_candidates(problem, result, set(), top_k=2)
+        solutions = processed.solutions
 
-        assert unique == 4
-        assert feasible == 4
+        assert processed.unique_samples == 4
+        assert processed.feasible_samples == 4
         assert [s.rank for s in solutions] == [1, 2]
         assert solutions[0].variables == {"x": 0, "y": 0}
         assert solutions[1].variables == {"x": 1, "y": 0}
