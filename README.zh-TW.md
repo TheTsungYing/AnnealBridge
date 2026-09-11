@@ -1,6 +1,6 @@
 # AnnealBridge
 
-[![CI](https://github.com/OWNER/AnnealBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/AnnealBridge/actions/workflows/ci.yml)
+[![CI](https://github.com/TheTsungYing/AnnealBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/TheTsungYing/AnnealBridge/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -92,7 +92,7 @@ pip install "annealbridge[all]"       # everything
 在套件發佈到 PyPI 之前，可以直接從 checkout 安裝：
 
 ```bash
-pip install "annealbridge[all] @ git+https://github.com/OWNER/AnnealBridge.git"
+pip install "annealbridge[all] @ git+https://github.com/TheTsungYing/AnnealBridge.git"
 ```
 
 ## 快速開始
@@ -272,7 +272,7 @@ repository 裡有四個可直接執行的範例：[背包問題](examples/knapsa
 ## 開發
 
 ```bash
-git clone https://github.com/OWNER/AnnealBridge.git
+git clone https://github.com/TheTsungYing/AnnealBridge.git
 cd AnnealBridge
 pip install -e ".[all,dev]"
 pytest

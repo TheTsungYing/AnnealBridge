@@ -108,5 +108,5 @@ First public release.
   penalty ← compiler ← solvers ← orchestration ← CLI / MCP`) and prove that a
   new backend plugs into the pipeline without changing it.
 
-[Unreleased]: https://github.com/OWNER/AnnealBridge/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/OWNER/AnnealBridge/releases/tag/v0.1.0
+[Unreleased]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/TheTsungYing/AnnealBridge/releases/tag/v0.1.0

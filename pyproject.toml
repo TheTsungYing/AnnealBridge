@@ -55,13 +55,12 @@ all = ["mcp>=2,<3", "dwave-system"]
 # 0.0.0 placeholder); anyio ships its own pytest plugin, so depend on anyio.
 dev = ["pytest>=8.0", "anyio>=4", "mcp[cli]>=2,<3"]
 
-# Replace OWNER with the GitHub account or organisation that hosts the repository.
 [project.urls]
-Homepage = "https://github.com/OWNER/AnnealBridge"
-Repository = "https://github.com/OWNER/AnnealBridge"
-Documentation = "https://github.com/OWNER/AnnealBridge/tree/main/docs"
-Issues = "https://github.com/OWNER/AnnealBridge/issues"
-Changelog = "https://github.com/OWNER/AnnealBridge/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/TheTsungYing/AnnealBridge"
+Repository = "https://github.com/TheTsungYing/AnnealBridge"
+Documentation = "https://github.com/TheTsungYing/AnnealBridge/tree/main/docs"
+Issues = "https://github.com/TheTsungYing/AnnealBridge/issues"
+Changelog = "https://github.com/TheTsungYing/AnnealBridge/blob/main/CHANGELOG.md"
 
 [project.scripts]
 annealbridge = "annealbridge.interfaces.cli.main:main"

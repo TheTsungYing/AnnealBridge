@@ -1,6 +1,6 @@
 # AnnealBridge
 
-[![CI](https://github.com/OWNER/AnnealBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/AnnealBridge/actions/workflows/ci.yml)
+[![CI](https://github.com/TheTsungYing/AnnealBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/TheTsungYing/AnnealBridge/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -101,7 +101,7 @@ standard library and only waits for `FUJITSU_DA_API_KEY`.
 Until the package is published on PyPI, install from a checkout:
 
 ```bash
-pip install "annealbridge[all] @ git+https://github.com/OWNER/AnnealBridge.git"
+pip install "annealbridge[all] @ git+https://github.com/TheTsungYing/AnnealBridge.git"
 ```
 
 ## Quick start
@@ -286,7 +286,7 @@ Credentials never appear in results, logs or error messages. Details in
 ## Development
 
 ```bash
-git clone https://github.com/OWNER/AnnealBridge.git
+git clone https://github.com/TheTsungYing/AnnealBridge.git
 cd AnnealBridge
 pip install -e ".[all,dev]"
 pytest

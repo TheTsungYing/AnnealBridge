@@ -10,7 +10,7 @@ pull request looks like. Everyone taking part is expected to follow the
 Requires Python 3.11 or newer.
 
 ```bash
-git clone https://github.com/OWNER/AnnealBridge.git
+git clone https://github.com/TheTsungYing/AnnealBridge.git
 cd AnnealBridge
 python -m venv .venv
 # Windows: .venv\Scripts\activate  —  macOS / Linux: source .venv/bin/activate
