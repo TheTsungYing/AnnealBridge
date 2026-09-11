@@ -30,8 +30,8 @@ request, and no setting can be changed by a problem JSON.
 | `ANNEALBRIDGE_MAX_TOP_K` | int ≥ 1 | `1000` | Upper bound on `top_k` (`TOP_K_LIMIT`) |
 | `ANNEALBRIDGE_ENABLED_BACKENDS` | comma-separated names | unset | Registry names allowed to run. Unset or empty means every registered backend |
 | `ANNEALBRIDGE_LIMITS` | JSON object | `{}` | Generic policy limits for backends that declare custom limit keys. Not needed by the built-in backends |
-| `ANNEALBRIDGE_HTTP_HOST` | str | `127.0.0.1` | Default bind host for the MCP streamable-http transport |
-| `ANNEALBRIDGE_HTTP_PORT` | int | `8000` | Default port for the MCP streamable-http transport |
+| `ANNEALBRIDGE_HTTP_HOST` | non-empty str, no whitespace | `127.0.0.1` | Default bind host for the MCP streamable-http transport. An empty or blank value is a configuration error, never a request to bind every interface |
+| `ANNEALBRIDGE_HTTP_PORT` | int 1–65535 | `8000` | Default port for the MCP streamable-http transport. `0` is refused: an ephemeral port no host can be pointed at |
 
 The two retry ceilings allow `0`, which still admits `max_retries: 0`. Every
 other ceiling must be positive: a zero or negative limit would reject every
@@ -188,10 +188,11 @@ of the host configuration.
   agent from being offered anything else, and survives a future backend being
   added to the registry.
 - **Bind the HTTP transport to `127.0.0.1`.** That is the default for
-  `ANNEALBRIDGE_HTTP_HOST`, and the server has no authentication of any kind:
-  do not bind it to `0.0.0.0` or expose it to a public network. If remote
-  access is genuinely needed, put it behind an authenticating reverse proxy or
-  on a private network. See [Security](security.md).
+  `ANNEALBRIDGE_HTTP_HOST` — an empty or blank value is refused rather than
+  falling back to every interface — and the server has no authentication of
+  any kind: do not bind it to `0.0.0.0` or expose it to a public network. If
+  remote access is genuinely needed, put it behind an authenticating reverse
+  proxy or on a private network. See [Security](security.md).
 - **Tune the ceilings to the host.** `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES`,
   `ANNEALBRIDGE_MAX_LOCAL_READS`, `ANNEALBRIDGE_MAX_SWEEPS` and
   `ANNEALBRIDGE_MAX_TOP_K` together bound how long one request can hold a

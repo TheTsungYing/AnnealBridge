@@ -17,10 +17,12 @@ tolerance is ``1e-3``, which absorbs the accumulation error of summing
 coefficients of that size (``1e9 + 0.1 + 0.2`` lands 1.19e-7 away from
 ``1e9 + 0.3``) without accepting a real violation of one unit.
 
-Three callers share this rule and must never drift apart:
+Four callers share this rule and must never drift apart:
 
-- :mod:`annealbridge.validation.solution_validator` judges every candidate
-  with it, in both its scalar and its numpy kernel.
+- :mod:`annealbridge.validation.solution_validator` judges every candidate's
+  ``satisfied`` flag with it, in both its scalar and its numpy kernel. A
+  *soft* constraint's score deliberately does **not** use the tolerance: see
+  that module's docstring (review F-05, 2026-09-11).
 - :mod:`annealbridge.validation.problem_validator` uses the same rule to
   decide ``TRIVIALLY_INFEASIBLE`` (review F-25) and, for soft constraints,
   ``SOFT_ALWAYS_VIOLATED`` (review F-04 / F-12), so a constraint that is
@@ -29,6 +31,11 @@ Three callers share this rule and must never drift apart:
 - :mod:`annealbridge.compiler.cqm` decides its constant-constraint branch
   (``0 <op> rhs``) with :func:`satisfies`, so the compiler never refuses a
   constraint the validator accepted (review F-04).
+- :func:`annealbridge.validation.estimates.analyze_inequality` reports a
+  slack range of ``0`` instead of a negative one when :func:`satisfies`
+  accepts ``lhs_min`` (review F-04, 2026-09-11), so a hard inequality that
+  is only satisfiable *within the tolerance* is estimated and encoded rather
+  than raising past the validator.
 
 :func:`tolerance` is pure Python and :func:`tolerance_array` is the numpy
 version; they perform the same IEEE operations in the same order, so their

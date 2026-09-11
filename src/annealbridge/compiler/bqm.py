@@ -1,7 +1,6 @@
 """BQM compiler: OptimizationProblem -> dimod.BinaryQuadraticModel (spec §15)."""
 
 import logging
-import math
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
@@ -15,7 +14,7 @@ from annealbridge.compiler.integer_encoding import (
     expand_square,
     substitute_linear,
 )
-from annealbridge.compiler.objective import build_objective_bqm
+from annealbridge.compiler.objective import build_objective_bqm, has_finite_biases
 from annealbridge.compiler.slack import encode_slack, nonzero_coefficients
 from annealbridge.exceptions import CompilationError, NonFiniteModelError
 from annealbridge.models import (
@@ -65,13 +64,13 @@ def _add_squared_penalty(
 def _check_finite(
     bqm: dimod.BinaryQuadraticModel, problem: OptimizationProblem, hard_penalty: float
 ) -> None:
-    """Raise :class:`NonFiniteModelError` if any bias of ``bqm`` is not finite."""
-    finite = (
-        math.isfinite(bqm.offset)
-        and all(math.isfinite(bias) for bias in bqm.linear.values())
-        and all(math.isfinite(bias) for bias in bqm.quadratic.values())
-    )
-    if not finite:
+    """Raise :class:`NonFiniteModelError` if any bias of ``bqm`` is not finite.
+
+    The test itself is :func:`has_finite_biases`, shared with the CQM path
+    (review F-06); the wording stays here because the hard penalty is this
+    path's own.
+    """
+    if not has_finite_biases(bqm):
         raise NonFiniteModelError(
             f"Compiled model of problem {problem.name} has a non-finite bias "
             f"at hard_penalty={hard_penalty!r}: the penalty or coefficient "

@@ -31,6 +31,7 @@ factories (spec §4).
 """
 
 import importlib.util
+import logging
 import os
 import re
 import threading
@@ -62,6 +63,8 @@ __all__ = [
     "register_ocean_config_token",
     "resolved",
 ]
+
+logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
@@ -100,8 +103,9 @@ _CONFIG_SELECTOR_ENVS = ("DWAVE_CONFIG_FILE", "DWAVE_PROFILE")
 # when the file cannot be parsed by Ocean itself.
 _TOKEN_LINE = re.compile(r"\s*token\s*=\s*(\S+)")
 
-# Single-entry cache: {fingerprint: config-file secrets}. Module-level so
-# tests can swap it out; a race between two threads merely recomputes.
+# Single-entry cache: {(env token, config fingerprint): config-file secrets}.
+# Module-level so tests can swap it out; a race between two threads merely
+# recomputes.
 _CONFIG_SECRET_CACHE: dict[tuple, tuple[str, ...]] = {}
 
 
@@ -243,19 +247,31 @@ def _compute_config_secrets(paths: list[str] | None) -> tuple[str, ...]:
 def _ocean_config_secrets() -> tuple[str, ...]:
     """The D-Wave secret source for the shared redaction (F-19).
 
-    Config-file tokens, cached by :func:`_config_fingerprint`: the files are
-    re-read only when a file or a selector env var changed. Without a
-    fingerprint (helper unavailable) every call reads live, exactly as
-    before the cache existed. Never raises.
+    Config-file tokens, cached by ``(env token, config fingerprint)`` — the
+    same key shape as :func:`credential_fingerprint` — so the files are
+    re-read only when a config file, a selector env var or
+    :data:`TOKEN_ENV` changed. Without a fingerprint (helper unavailable)
+    every call reads live, exactly as before the cache existed. Never
+    raises.
+
+    The env token belongs in the key even though only *config-file* tokens
+    come out of here (2026-09-11 review F-02): what
+    :func:`_resolve_ocean_config` sees is what Ocean's ``load_config()``
+    merged, and there the env var wins over the file, so with it set the
+    cached tuple holds the env token rather than the file's. Unsetting the
+    env var touches no file, so the fingerprint alone would not move — and
+    the stale tuple would keep masking the gone env token while the file
+    token, now the effective credential, reached log lines unmasked.
     """
     fingerprint = _config_fingerprint()
     if fingerprint is None:
         return _compute_config_secrets(None)
-    secrets = _CONFIG_SECRET_CACHE.get(fingerprint)
+    key = (_env_token(), fingerprint)
+    secrets = _CONFIG_SECRET_CACHE.get(key)
     if secrets is None:
         secrets = _compute_config_secrets([entry[0] for entry in fingerprint[1]])
         _CONFIG_SECRET_CACHE.clear()
-        _CONFIG_SECRET_CACHE[fingerprint] = secrets
+        _CONFIG_SECRET_CACHE[key] = secrets
     return secrets
 
 
@@ -264,8 +280,8 @@ def register_ocean_config_token() -> None:
 
     Every D-Wave backend calls this from its constructor; the registration
     is idempotent, so three backends registering is the same as one. The
-    source is :func:`_ocean_config_secrets`, which caches by config
-    fingerprint; :func:`ocean_config_token` itself stays a live read.
+    source is :func:`_ocean_config_secrets`, which caches by env token and
+    config fingerprint; :func:`ocean_config_token` itself stays a live read.
     """
     register_secret_source("ocean_config", _ocean_config_secrets)
 
@@ -388,6 +404,36 @@ def resolved(sampleset: Any) -> Any:
     return sampleset
 
 
+def _close_sampler(sampler: Any) -> None:
+    """Release a sampler that is being dropped, best effort (review F-07).
+
+    An Ocean sampler owns a ``dwave.cloud.Client``: a worker thread pool and
+    an HTTP session. A :class:`LazySampler` that swaps one out (rotated
+    credential) or throws one away (:meth:`LazySampler.invalidate` after
+    ``REMOTE_AUTH_FAILED``) must hand those back, or a long-lived process —
+    an MCP server especially — accumulates both once per rotation.
+
+    A sampler without a callable ``close`` is left alone: that covers every
+    test fake as well as any Ocean version or composite that does not expose
+    one. A failing ``close()`` is logged at WARNING and swallowed — dropping
+    the reference is what matters and the caller is usually already handling
+    a failure, so this must never raise. The log line names only the sampler
+    and exception classes, never the exception text, which could quote
+    credential material.
+    """
+    close = getattr(sampler, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception as exc:  # best effort: a close failure is never fatal
+        logger.warning(
+            "Closing the %s sampler failed (%s); dropping it anyway",
+            type(sampler).__name__,
+            type(exc).__name__,
+        )
+
+
 class LazySampler:
     """A sampler built on first use and cached while its credentials stand.
 
@@ -411,6 +457,16 @@ class LazySampler:
     share one build. Raw factory exceptions propagate from :meth:`get`;
     callers wrap the call in :func:`call_ocean` with
     :data:`SAMPLER_INIT_EXCEPTION_CODES`.
+
+    A sampler this holder stops caching is closed through
+    :func:`_close_sampler` (review F-07), each one exactly once. Known
+    limitation: that close is best effort and deliberately unsynchronised
+    with in-flight work. The solve paths read the sampler outside this lock,
+    and a lazy sampleset only reaches the cloud when :func:`resolved` runs,
+    so a request still holding a reference to the closed sampler may fail —
+    as an ordinary classified solver error, which the service already
+    retries or reports. Reference counting the sampler to avoid that is out
+    of scope for this project.
     """
 
     def __init__(
@@ -427,19 +483,40 @@ class LazySampler:
         self._lock = threading.Lock()
 
     def get(self) -> Any:
-        """Return the cached sampler, (re)building it when the fingerprint moved."""
-        with self._lock:
-            current = self._fingerprint()
-            if self._sampler is None or current != self._built_for:
-                self._sampler = None
-                self._sampler = self._factory()
-                self._built_for = current
-            return self._sampler
+        """Return the cached sampler, (re)building it when the fingerprint moved.
+
+        The superseded sampler is closed only after the lock is released:
+        ``close()`` shuts down a thread pool and an HTTP session and may
+        block, and holding the lock across that would stall every other
+        caller behind a sampler nobody wants any more. It is closed even
+        when the rebuild then fails, because it has already left the cache.
+        """
+        stale: Any | None = None
+        try:
+            with self._lock:
+                current = self._fingerprint()
+                if self._sampler is None or current != self._built_for:
+                    stale = self._sampler
+                    self._sampler = None
+                    self._sampler = self._factory()
+                    self._built_for = current
+                return self._sampler
+        finally:
+            if stale is not None:
+                _close_sampler(stale)
 
     def invalidate(self) -> None:
-        """Forget the cached sampler; the next :meth:`get` builds a new one."""
+        """Forget the cached sampler; the next :meth:`get` builds a new one.
+
+        The dropped sampler is closed outside the lock, exactly once: a
+        second :meth:`invalidate` finds the slot already empty and closes
+        nothing.
+        """
         with self._lock:
+            stale = self._sampler
             self._sampler = None
+        if stale is not None:
+            _close_sampler(stale)
 
 
 # ---------------------------------------------------------------------------

@@ -66,7 +66,7 @@ returned samples can set — is a proof. On a heuristic or remote backend an
 | `rank` | integer | 1-based rank; 1 is the best `ranking_score`. |
 | `variables` | object of string → integer | The business variables only. Slack and integer-encoding bits are stripped, and integers are decoded to plain `int` values inside their declared bounds. |
 | `objective_value` | number | The objective recomputed from the original problem, including its `constant`. |
-| `soft_violation_score` | number | `Σ weight × violation²` over the soft constraints, recomputed by the validator. |
+| `soft_violation_score` | number | `Σ weight × violation²` over **all** soft constraints, recomputed by the validator from the exact residual. The feasibility tolerance is deliberately not applied here, so this equals the soft energy the solver minimized. |
 | `ranking_score` | number | `objective_value + soft_violation_score` when minimizing, `objective_value − soft_violation_score` when maximizing. The sort key. |
 | `energy` | number \| null | The compiled model's energy. Debugging only. |
 | `hard_constraints_satisfied` | boolean | Always `true` for a returned solution — only feasible candidates are ranked. |
@@ -95,8 +95,8 @@ ladder is visible: attempt 2 carries double attempt 1's penalty.
 | `actual_value` | number | The left-hand side evaluated at this assignment. |
 | `operator` | string | The constraint's operator (`==`, `<=`, `>=`). |
 | `expected_value` | number | The constraint's `rhs`. |
-| `violation_amount` | number | How far the constraint is from being satisfied; `0` when it holds. |
-| `weighted_penalty` | number \| null | `weight × violation²` for a soft constraint; `null` for a hard one. |
+| `violation_amount` | number | How far the constraint is from being satisfied. For a **hard** constraint it is `0` whenever the constraint holds. For a **soft** constraint it is always the exact residual (`\|actual − rhs\|`, or the one-sided excess/shortfall for an inequality), so it can be a tiny non-zero value while `satisfied` is still `true` — that is what the solver was charged for. |
+| `weighted_penalty` | number \| null | `weight × violation_amount²` for a soft constraint; `null` for a hard one. |
 
 ### SolveError
 

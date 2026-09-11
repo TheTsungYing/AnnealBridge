@@ -27,6 +27,11 @@ import numpy as np
 import pytest
 
 from annealbridge.compiler import CQMCompiler, expand_square_qm
+# The rhs half of the non-finite guard has no route through a validated
+# problem, so it is pinned on the helper directly (as
+# ``test_candidate_arrays.py`` does with the optimizer's private helpers).
+from annealbridge.compiler.cqm import _check_finite as check_cqm_finite
+from annealbridge.exceptions import CompilationError, NonFiniteModelError
 from annealbridge.models import (
     Constraint,
     LinearTerm,
@@ -546,6 +551,103 @@ class TestExpandSquareQM:
         qm.add_variable("INTEGER", "x", lower_bound=0, upper_bound=4)
         with pytest.raises(ValueError):
             expand_square_qm(qm, {"x": 1.0, "ghost": 1.0}, 0.0, 1.0)
+
+
+# --------------------------------------------------------------------------
+# 非有限模型攔截（2026-09-11 review F06）
+# --------------------------------------------------------------------------
+
+# 問題本身只帶有限數字，validator 因此接受；但編譯時的
+# ``weight * coefficient²`` 展開或係數累加會溢位成 ``inf``，此時 compiler
+# 是唯一防線——BQM 路徑早就有 ``_check_finite``，CQM 路徑必須一致。
+
+
+def overflowing_soft_problem() -> OptimizationProblem:
+    """Soft equality whose objective-form penalty expands to ``inf``.
+
+    ``weight * coefficient**2 == 1.0 * 1e200**2`` leaves the float range
+    inside ``expand_square_qm``; the resulting ``(x, x)`` bias is ``inf``.
+    """
+    return make_problem(
+        [integer("x", 0, 1)],
+        constraints=[
+            constraint("huge", "==", 0.0, [lin("x", 1e200)], type="soft", weight=1.0)
+        ],
+        name="cqm soft weight overflow",
+    )
+
+
+def overflowing_hard_problem() -> OptimizationProblem:
+    """Hard native constraint whose *accumulated* lhs coefficient is ``inf``.
+
+    Two finite terms on the same variable: ``nonzero_coefficients`` sums
+    them to ``inf``, which lands in the constraint's QM lhs rather than in
+    the objective, so the guard must look at the constraints too.
+    """
+    return make_problem(
+        [integer("x", 0, 1)],
+        constraints=[constraint("huge", "==", 0.0, [lin("x", 1e308), lin("x", 1e308)])],
+        name="cqm hard lhs overflow",
+    )
+
+
+class TestNonFiniteModelIsRefused:
+    def test_non_finite_error_is_a_compilation_error(self):
+        # The service reports it as invalid_problem / COMPILATION_FAILED on
+        # this path (no hard penalty), which needs the subclass relation.
+        assert issubclass(NonFiniteModelError, CompilationError)
+
+    @pytest.mark.parametrize(
+        "problem",
+        [overflowing_soft_problem(), overflowing_hard_problem()],
+        ids=["soft weight expansion", "hard constraint lhs"],
+    )
+    def test_valid_problem_that_compiles_to_inf_is_refused(self, problem):
+        # The problem passes full validation: every declared number is
+        # finite, so nothing before the compiler can catch this.
+        assert validate_problem_full(problem, model_type="cqm").valid is True
+
+        with pytest.raises(NonFiniteModelError) as info:
+            compile_problem(problem)
+
+        message = str(info.value)
+        assert problem.name in message
+        assert "non-finite" in message
+        # §10.4: there is no hard penalty on the CQM path, so the message
+        # must not blame one.
+        assert "penalty" not in message
+
+    def test_large_but_finite_coefficients_still_compile(self):
+        # The guard refuses ``inf``, not merely big numbers: 1e100² is
+        # 1e200, still finite, and must compile as before.
+        problem = make_problem(
+            [integer("x", 0, 1)],
+            constraints=[
+                constraint(
+                    "large", "==", 0.0, [lin("x", 1e100)], type="soft", weight=1.0
+                )
+            ],
+            name="cqm large but finite",
+        )
+        compiled = compile_problem(problem)
+
+        assert compiled.model.objective.get_quadratic("x", "x") == pytest.approx(1e200)
+
+    def test_the_rhs_of_a_native_constraint_is_covered(self):
+        # A non-finite rhs cannot come from a validated problem
+        # (NON_FINITE_COEFFICIENT rejects it), so the guard's rhs check is
+        # defence in depth; pinned directly on the helper instead.
+        cqm = dimod.ConstrainedQuadraticModel()
+        cqm.add_variable("BINARY", "b")
+        lhs = dimod.QuadraticModel()
+        lhs.add_variable("BINARY", "b")
+        lhs.add_linear("b", 1.0)
+        cqm.add_constraint_from_model(
+            lhs, sense="<=", rhs=float("inf"), label="c", weight=None
+        )
+
+        with pytest.raises(NonFiniteModelError):
+            check_cqm_finite(cqm, make_problem([binary("b")], version="1.0"))
 
 
 # --------------------------------------------------------------------------

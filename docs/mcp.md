@@ -231,15 +231,16 @@ annealbridge-mcp --transport streamable-http --host 127.0.0.1 --port 8000
 | Argument | Default | Notes |
 | --- | --- | --- |
 | `--transport` | `stdio` | `stdio` or `streamable-http` |
-| `--host` | `ANNEALBRIDGE_HTTP_HOST`, i.e. `127.0.0.1` | Ignored for stdio |
-| `--port` | `ANNEALBRIDGE_HTTP_PORT`, i.e. `8000` | Ignored for stdio |
+| `--host` | `ANNEALBRIDGE_HTTP_HOST`, i.e. `127.0.0.1` | Non-empty, no whitespace. Ignored for stdio |
+| `--port` | `ANNEALBRIDGE_HTTP_PORT`, i.e. `8000` | `1`–`65535` (`0` is refused). Ignored for stdio |
 
 > **Security.** The server has **no authentication or authorization of any
 > kind.** It binds `127.0.0.1` by default, and binding beyond localhost must
-> be requested explicitly. Do not expose it directly to a public network or
-> bind it to `0.0.0.0`. If remote access is genuinely needed, put it behind an
-> authenticating reverse proxy or on a private network. Read
-> [Security](security.md) before changing the bind address.
+> be requested explicitly: an empty host is rejected as a configuration error,
+> never read as a request to bind every interface. Do not expose it directly
+> to a public network or bind it to `0.0.0.0`. If remote access is genuinely
+> needed, put it behind an authenticating reverse proxy or on a private
+> network. Read [Security](security.md) before changing the bind address.
 
 ## MCP Inspector
 

@@ -240,11 +240,14 @@ class TestConfigSecretCache:
     2026-09-09 review F-19: ``redact()`` runs on every log line and every
     error message, and the source used to call ``load_config()`` — which
     reads and parses files off disk — each time. The value is now cached
-    against ``(DWAVE_CONFIG_FILE, DWAVE_PROFILE, [(path, mtime, size)…])``,
-    so a rotated token is still picked up but an unchanged config is read
-    once. When the fingerprint cannot be computed (no
-    ``get_configfile_paths``), nothing is cached and the old live
+    against ``(DWAVE_API_TOKEN, (DWAVE_CONFIG_FILE, DWAVE_PROFILE,
+    [(path, mtime, size)…]))``, so a rotated token is still picked up but an
+    unchanged config is read once. When the fingerprint cannot be computed
+    (no ``get_configfile_paths``), nothing is cached and the old live
     behaviour stands.
+
+    The env token is in that key since 2026-09-11 review F-02; the
+    ``load_config`` fakes below merge it the way Ocean's own does.
 
     All tokens here are synthetic test values, never real credentials.
     """
@@ -252,6 +255,8 @@ class TestConfigSecretCache:
     TOKEN_A = "s3cr3t-config-token-alpha"
     TOKEN_B = "s3cr3t-config-token-bravo-and-longer"
     RAW_TOKEN = "s3cr3t-raw-config-token-value"
+    ENV_TOKEN = "s3cr3t-env-token-charlie-value"
+    ENV_TOKEN_ROTATED = "s3cr3t-env-token-delta-rotated"
 
     @pytest.fixture(autouse=True)
     def _isolated_registration(self, monkeypatch):
@@ -259,11 +264,15 @@ class TestConfigSecretCache:
 
         ``_CONFIG_SECRET_CACHE`` is process-level, so it is swapped for a
         fresh dict (and restored) exactly like the declaration tables.
-        The two Ocean config env vars are cleared so a developer machine
-        that sets them cannot change a fingerprint mid-test.
+        The Ocean config env vars — the two selectors and the API token —
+        are cleared so a developer machine that sets them cannot change a
+        cache key mid-test. With ``_DECLARATIONS`` empty, nothing masks the
+        env token *except* the config secret source, which is what makes
+        the F-02 assertions below meaningful.
         """
         monkeypatch.delenv("DWAVE_CONFIG_FILE", raising=False)
         monkeypatch.delenv("DWAVE_PROFILE", raising=False)
+        monkeypatch.delenv(TOKEN_ENV, raising=False)
         monkeypatch.setattr(ocean_module, "_CONFIG_SECRET_CACHE", {})
         monkeypatch.setattr(metadata_module, "_DECLARATIONS", {})
         monkeypatch.setattr(metadata_module, "_SECRET_SOURCES", {})
@@ -271,9 +280,18 @@ class TestConfigSecretCache:
 
     @staticmethod
     def _counting_load_config(calls: list[int], token: str):
+        """A counting ``load_config()`` that merges the env var as Ocean does.
+
+        Ocean's real ``load_config()`` lets ``DWAVE_API_TOKEN`` override the
+        config file's ``token``, so whenever the env var is set the value the
+        secret source caches is the env token and *not* the file's — the
+        reason the env token has to be part of the cache key (F-02).
+        """
+
         def load_config():
             calls.append(1)
-            return {"token": token}
+            env_token = os.environ.get(TOKEN_ENV)
+            return {"token": env_token or token}
 
         return load_config
 
@@ -368,4 +386,87 @@ class TestConfigSecretCache:
         for _ in range(3):
             assert redact("x " + FAKE_CONFIG_TOKEN) == "x ***"
 
+        assert len(calls) == 3
+
+    def test_removing_the_env_token_uncovers_the_config_file_token(
+        self, monkeypatch
+    ) -> None:
+        """2026-09-11 review F-02: the fix, stated as the leak it closes.
+
+        The config file holds ``TOKEN_B`` while the env var holds
+        ``ENV_TOKEN``; Ocean's merge means the secret source sees only the
+        env token. Unsetting the env var edits no file, so the config
+        fingerprint does not move — with the fingerprint as the whole cache
+        key, the source kept masking the env token that is gone and the file
+        token, now the effective credential, went out unmasked.
+        """
+        calls: list[int] = []
+        _install_fake_ocean_config(
+            monkeypatch,
+            self._counting_load_config(calls, self.TOKEN_B),
+            get_configfile_paths=lambda: [],
+        )
+        monkeypatch.setenv(TOKEN_ENV, self.ENV_TOKEN)
+
+        assert redact("x " + self.ENV_TOKEN) == "x ***"
+        assert len(calls) == 1
+
+        monkeypatch.delenv(TOKEN_ENV)
+
+        assert redact("x " + self.TOKEN_B) == "x ***"
+        # The config was genuinely re-read: the cached tuple could not have
+        # held TOKEN_B.
+        assert len(calls) == 2
+
+    def test_rotating_the_env_token_invalidates_the_cache(self, monkeypatch) -> None:
+        """Same key, other direction: a replaced env token is re-read."""
+        calls: list[int] = []
+        _install_fake_ocean_config(
+            monkeypatch,
+            self._counting_load_config(calls, self.TOKEN_A),
+            get_configfile_paths=lambda: [],
+        )
+        monkeypatch.setenv(TOKEN_ENV, self.ENV_TOKEN)
+
+        assert redact("x " + self.ENV_TOKEN) == "x ***"
+        assert len(calls) == 1
+
+        monkeypatch.setenv(TOKEN_ENV, self.ENV_TOKEN_ROTATED)
+
+        assert redact("x " + self.ENV_TOKEN_ROTATED) == "x ***"
+        assert len(calls) == 2
+
+    def test_an_unchanged_env_token_still_hits_the_cache(self, monkeypatch) -> None:
+        """Adding the env token to the key must not defeat the cache."""
+        calls: list[int] = []
+        _install_fake_ocean_config(
+            monkeypatch,
+            self._counting_load_config(calls, self.TOKEN_A),
+            get_configfile_paths=lambda: [],
+        )
+        monkeypatch.setenv(TOKEN_ENV, self.ENV_TOKEN)
+
+        for _ in range(5):
+            assert redact("x " + self.ENV_TOKEN) == "x ***"
+
+        assert len(calls) == 1
+
+    def test_the_cache_stays_a_single_slot(self, monkeypatch) -> None:
+        """Env tokens come and go; the cache never grows past one entry."""
+        calls: list[int] = []
+        _install_fake_ocean_config(
+            monkeypatch,
+            self._counting_load_config(calls, self.TOKEN_A),
+            get_configfile_paths=lambda: [],
+        )
+
+        for token in (self.ENV_TOKEN, self.ENV_TOKEN_ROTATED):
+            monkeypatch.setenv(TOKEN_ENV, token)
+            assert redact("x " + token) == "x ***"
+            assert len(ocean_module._CONFIG_SECRET_CACHE) == 1
+
+        monkeypatch.delenv(TOKEN_ENV)
+
+        assert redact("x " + self.TOKEN_A) == "x ***"
+        assert len(ocean_module._CONFIG_SECRET_CACHE) == 1
         assert len(calls) == 3

@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Soft constraints are now scored from their **exact** residual: the
+  feasibility tolerance that decides `satisfied` no longer zeroes
+  `violation_amount` / `weighted_penalty` for a soft constraint, and
+  `soft_violation_score` sums `weight × residual²` over every soft constraint.
+  This is what the BQM and CQM compilers already charge for, so the ranking
+  can no longer prefer an assignment the solver was paying to avoid (a
+  residual inside the tolerance under a huge weight). `satisfied`,
+  `soft_violations` and every hard-constraint field are unchanged.
+- A hard inequality whose minimal left-hand side overshoots the right-hand
+  side by less than the feasibility tolerance (only reachable at magnitude
+  ≥ 1e12) now compiles with zero slack bits instead of escaping as an
+  uncaught `ValueError` from `validate_problem_full()` /
+  `OptimizationService.solve()`. Constraints outside the tolerance are still
+  rejected as `TRIVIALLY_INFEASIBLE`.
+- `ANNEALBRIDGE_HTTP_HOST` must be a non-empty value without whitespace and
+  `ANNEALBRIDGE_HTTP_PORT` must be in `1–65535`; invalid values are a
+  `SettingsError` (exit code 2) instead of an empty host silently binding
+  every interface or an out-of-range port raising at socket bind. The
+  `annealbridge-mcp --host` / `--port` overrides obey the same rule.
+
+### Fixed
+
+- CQM compilation now refuses a model whose objective or native constraint
+  carries a non-finite bias (a soft weight × coefficient product that
+  overflowed) with `COMPILATION_FAILED`, matching the BQM path; no backend
+  is called with such a model.
+- A `PENALTY_OVERFLOW` failure after at least one completed attempt keeps
+  that attempt's solver metadata (solver id, timing, usage), as the other
+  failure paths already did.
+- Remote backends (`fujitsu_da`, `dwave_qpu`, `leap_hybrid_bqm`,
+  `leap_hybrid_cqm`) declare their credentials to the shared redaction in
+  their own constructor, so a directly constructed backend masks its key in
+  error messages even when no `SolverRegistry` was built.
+- The Ocean config-file token cache is keyed by the `DWAVE_API_TOKEN` value
+  too, so unsetting the environment token after it was cached no longer
+  leaves the config-file token unmasked.
+- `LazySampler` closes an Ocean sampler it stops caching (credential
+  rotation or `REMOTE_AUTH_FAILED` invalidation), best effort and outside
+  its lock, instead of leaking the underlying client's threads and session
+  in a long-running MCP server.
+
 ## [0.1.0] - 2026-09-09
 
 First public release.

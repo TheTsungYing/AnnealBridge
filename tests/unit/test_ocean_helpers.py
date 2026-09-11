@@ -7,6 +7,7 @@ backend-level tests in ``tests/remote_mock`` still exercise each backend
 through the shared code. Nothing here imports ``dwave.system``.
 """
 
+import logging
 import threading
 import time
 
@@ -43,7 +44,12 @@ class SolverAuthenticationError(Exception):
 
 
 class CountingFactory:
-    """Returns a brand-new object per call and counts the calls."""
+    """Returns a brand-new object per call and counts the calls.
+
+    A bare ``object()`` has no ``close`` attribute, which is also what the
+    ``tests/remote_mock`` fake samplers look like: dropping one must stay a
+    no-op (review F-07).
+    """
 
     def __init__(self) -> None:
         self.calls = 0
@@ -51,6 +57,33 @@ class CountingFactory:
     def __call__(self) -> object:
         self.calls += 1
         return object()
+
+
+class ClosableSampler:
+    """A sampler that records how often it was closed (review F-07)."""
+
+    def __init__(self, name: str = "s", fail: bool = False) -> None:
+        self.name = name
+        self.fail = fail
+        self.closed = 0
+
+    def close(self) -> None:
+        self.closed += 1
+        if self.fail:
+            raise RuntimeError("client shutdown failed")
+
+
+class ClosableFactory:
+    """Hands out a fresh :class:`ClosableSampler` per call, keeping them all."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.built: list[ClosableSampler] = []
+
+    def __call__(self) -> ClosableSampler:
+        sampler = ClosableSampler(name=f"s{len(self.built)}", fail=self.fail)
+        self.built.append(sampler)
+        return sampler
 
 
 def holder_of(sampler: object) -> LazySampler:
@@ -232,6 +265,127 @@ class TestLazySamplerCache:
         assert factory.calls == 2
 
 
+class TestLazySamplerClosesWhatItDrops:
+    """2026-09-11 review F-07: a dropped sampler is released, not leaked.
+
+    A real Ocean sampler owns a ``dwave.cloud.Client`` — worker threads and
+    an HTTP session — and the holder used to drop its reference and nothing
+    more, so every credential rotation and every ``REMOTE_AUTH_FAILED`` left
+    one behind in a long-running MCP server. ``close()`` is best effort: a
+    sampler that has none is left alone and a failing one is logged, never
+    raised.
+    """
+
+    def test_a_superseded_sampler_is_closed_once_and_the_new_one_is_not(self):
+        state = {"fp": "a"}
+        factory = ClosableFactory()
+        holder = LazySampler(factory, factory, fingerprint=lambda: state["fp"])
+        first = holder.get()
+
+        state["fp"] = "b"
+        second = holder.get()
+
+        assert second is not first
+        assert first.closed == 1
+        assert second.closed == 0
+        # Still cached, so nothing more is closed.
+        assert holder.get() is second
+        assert first.closed == 1 and second.closed == 0
+
+    def test_invalidate_closes_the_dropped_sampler(self):
+        factory = ClosableFactory()
+        holder = LazySampler(factory, factory, fingerprint=lambda: "fixed")
+        first = holder.get()
+
+        holder.invalidate()
+
+        assert first.closed == 1
+
+        second = holder.get()
+
+        assert second is not first
+        assert first.closed == 1
+        assert second.closed == 0
+
+    def test_repeated_invalidate_does_not_close_twice(self):
+        """The slot is already empty: there is nothing left to close."""
+        factory = ClosableFactory()
+        holder = LazySampler(factory, factory, fingerprint=lambda: "fixed")
+        first = holder.get()
+
+        holder.invalidate()
+        holder.invalidate()
+        holder.invalidate()
+
+        assert first.closed == 1
+
+    def test_invalidate_before_any_get_closes_nothing(self):
+        factory = ClosableFactory()
+        holder = LazySampler(factory, factory, fingerprint=lambda: "fixed")
+
+        holder.invalidate()
+
+        assert factory.built == []
+
+    def test_a_sampler_without_close_is_dropped_silently(self):
+        """What every test fake (and ``tests/remote_mock``) looks like."""
+        state = {"fp": "a"}
+        factory = CountingFactory()
+        holder = LazySampler(factory, factory, fingerprint=lambda: state["fp"])
+        holder.get()
+
+        state["fp"] = "b"
+        holder.get()
+        holder.invalidate()
+
+        assert factory.calls == 2
+
+    def test_a_failing_close_is_logged_and_never_propagates(self, caplog):
+        state = {"fp": "a"}
+        factory = ClosableFactory(fail=True)
+        holder = LazySampler(factory, factory, fingerprint=lambda: state["fp"])
+        first = holder.get()
+        caplog.set_level(logging.WARNING, logger="annealbridge.solvers.ocean")
+
+        state["fp"] = "b"
+        second = holder.get()  # must not raise
+        holder.invalidate()  # must not raise either
+
+        assert second is not first
+        assert first.closed == 1 and second.closed == 1
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 2
+        for record in warnings:
+            message = record.getMessage()
+            assert "ClosableSampler" in message
+            assert "RuntimeError" in message
+            # The exception text itself is not logged: it could quote a
+            # credential the vendor echoed back.
+            assert "client shutdown failed" not in message
+
+    def test_a_failed_rebuild_still_closes_the_sampler_it_evicted(self):
+        """The old sampler has already left the cache, so it must be closed
+        even though the replacement never arrived."""
+        first = ClosableSampler()
+        state = {"fp": "a", "boom": False}
+
+        def factory():
+            if state["boom"]:
+                raise ValueError("bad region")
+            return first
+
+        holder = LazySampler(factory, factory, fingerprint=lambda: state["fp"])
+
+        assert holder.get() is first
+
+        state["fp"] = "b"
+        state["boom"] = True
+        with pytest.raises(ValueError):
+            holder.get()
+
+        assert first.closed == 1
+
+
 class TestCallOceanInvalidation:
     """F-21, second half: an auth failure drops the cached sampler.
 
@@ -279,6 +433,21 @@ class TestCallOceanInvalidation:
         holder.get()
 
         assert factory.calls == 1
+
+    def test_an_auth_failure_closes_the_sampler_it_drops(self):
+        """F-07 on this path too: the known-bad client is released, not just
+        forgotten."""
+        factory = ClosableFactory()
+        holder = LazySampler(factory, factory, fingerprint=lambda: "fixed")
+        sampler = holder.get()
+
+        def boom():
+            raise SolverAuthenticationError("denied")
+
+        with pytest.raises(SolverExecutionError):
+            call_ocean("solve", HYBRID_SAMPLE_EXCEPTION_CODES, boom, holder=holder)
+
+        assert sampler.closed == 1
 
     def test_an_auth_failure_without_a_holder_still_raises(self):
         """``create_sampler`` passes no holder: there is nothing to drop."""

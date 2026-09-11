@@ -5,6 +5,15 @@ from annealbridge.config.settings import (
     SettingsError,
     load_settings,
     unknown_settings_variables,
+    validate_http_host,
+    validate_http_port,
 )
 
-__all__ = ["ServerSettings", "SettingsError", "load_settings", "unknown_settings_variables"]
+__all__ = [
+    "ServerSettings",
+    "SettingsError",
+    "load_settings",
+    "unknown_settings_variables",
+    "validate_http_host",
+    "validate_http_port",
+]

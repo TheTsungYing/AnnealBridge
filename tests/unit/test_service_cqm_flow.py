@@ -98,6 +98,33 @@ def contradictory_problem() -> OptimizationProblem:
     )
 
 
+def overflowing_soft_problem() -> OptimizationProblem:
+    """Valid problem whose CQM compilation leaves the floating-point range.
+
+    One integer variable and one soft equality with a ``1e200``
+    coefficient: ``weight * coefficient**2`` is ``inf`` once
+    ``expand_square_qm`` squares it into the objective.
+    """
+    return route_to_fake(
+        OptimizationProblem(
+            version="1.1",
+            name="cqm soft weight overflow",
+            variables=[Variable(name="x", type="integer", lower_bound=0, upper_bound=1)],
+            objective=Objective(direction="minimize", linear_terms=[]),
+            constraints=[
+                Constraint(
+                    id="huge",
+                    type="soft",
+                    weight=1.0,
+                    terms=[LinearTerm(variable="x", coefficient=1e200)],
+                    operator="==",
+                    rhs=0.0,
+                )
+            ],
+        )
+    )
+
+
 @pytest.fixture
 def fake() -> FakeLocalCQMBackend:
     return FakeLocalCQMBackend()
@@ -261,6 +288,32 @@ class TestInfeasibilityIsProven:
         assert result.metadata is not None
         assert result.metadata.sampler_reported_feasible == 0
         assert fake.solve_calls == 1
+
+
+class TestNonFiniteModelNeverReachesTheBackend:
+    """2026-09-11 review F06, through the service.
+
+    The soft penalty ``weight * coefficient**2`` (here ``1.0 * 1e200**2``)
+    overflows to ``inf`` while the problem itself carries only finite
+    numbers, so validation passes and the compiler's guard is the only
+    thing between the backend and an infinite bias. With no hard penalty on
+    this path the service reports it as ``invalid_problem`` /
+    COMPILATION_FAILED, never PENALTY_OVERFLOW.
+    """
+
+    def test_overflowing_soft_penalty_is_an_invalid_problem(self, service, fake):
+        assert service.validate(overflowing_soft_problem()).valid is True
+
+        result = service.solve(overflowing_soft_problem())
+
+        assert result.status == "invalid_problem"
+        assert [e.code for e in result.errors] == ["COMPILATION_FAILED"]
+        assert result.backend == FAKE_LOCAL_CQM_NAME
+        assert result.solutions == []
+        assert result.attempts == []
+        assert result.metadata is None
+        # The whole point: the backend was never called with the inf model.
+        assert fake.solve_calls == 0
 
 
 class TestNoCqmCompiler:

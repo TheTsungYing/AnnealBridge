@@ -418,11 +418,17 @@ system dispatches on — never the backend's name:
   service reads the preference by that dotted path.
 - `credentials` — a `CredentialDeclaration` listing the backend's credential
   environment variables, HTTP header names and, if needed, value patterns.
-  **Declaring is all that is required for redaction:** registering the backend
-  feeds the declaration to the shared redaction layer, so every error message,
-  log line and metadata field masks those values from then on. The shared
+  **Declaring is all that is required for redaction:** the declaration is fed
+  to the shared redaction layer both by the backend's own `__init__` and by
+  `SolverRegistry` when the backend is registered, so every error message, log
+  line and metadata field masks those values from then on — including on a
+  backend that was constructed directly, without a registry. (Declaring twice
+  is idempotent: the layer keys declarations by backend name.) The shared
   layer knows no vendor, so a new backend is protected without touching the
-  solver layer. See [Security](security.md).
+  solver layer. A backend that carries credentials should therefore call
+  `declare_credentials(self.capabilities.name, self.capabilities.credentials)`
+  in its constructor, as the four built-in remote backends do. See
+  [Security](security.md).
 - `description` — the text an agent sees in
   `get_optimization_capabilities`.
 

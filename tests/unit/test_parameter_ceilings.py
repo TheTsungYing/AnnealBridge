@@ -19,6 +19,7 @@ from annealbridge.interfaces.capabilities import build_capabilities
 from annealbridge.models import (
     CompiledProblem,
     OptimizationProblem,
+    SolverExecutionMetadata,
     SolverPreferences,
 )
 from annealbridge.orchestration import OptimizationService
@@ -91,9 +92,14 @@ class AlwaysZeroBackend:
         description="test-only",
     )
 
-    def __init__(self) -> None:
+    def __init__(self, metadata: SolverExecutionMetadata | None = None) -> None:
         self.solve_calls = 0
         self.penalties: list[float] = []
+        # A backend that reports execution facts (F-08): the ladder's last
+        # completed attempt must keep them even when the ladder then stops.
+        # ``None`` (the default) is the metadata-free backend the other
+        # tests use.
+        self._metadata = metadata
 
     @property
     def name(self) -> str:
@@ -116,12 +122,14 @@ class AlwaysZeroBackend:
         row = {v: 0 for v in variables}
         return RawSolverResult.from_dicts(
             [row], [float(compiled.model.energy(row))], backend=self.name,
-            variables=variables,
+            variables=variables, metadata=self._metadata,
         )
 
 
-def make_zero_service(**policy_kwargs) -> tuple[AlwaysZeroBackend, OptimizationService]:
-    backend = AlwaysZeroBackend()
+def make_zero_service(
+    *, metadata: SolverExecutionMetadata | None = None, **policy_kwargs
+) -> tuple[AlwaysZeroBackend, OptimizationService]:
+    backend = AlwaysZeroBackend(metadata)
     registry = SolverRegistry({"simulated_annealing": backend})
     return backend, OptimizationService(
         registry=registry, policy=ExecutionPolicy(**policy_kwargs)
@@ -433,6 +441,47 @@ class TestPenaltyOverflow:
         assert result.status == "resource_limit_exceeded"
         assert codes(result) == ["PENALTY_OVERFLOW"]
         assert backend.solve_calls == 0
+
+    def test_last_completed_attempt_metadata_survives_the_ladder(
+        self, warnings_are_errors
+    ):
+        # F-08: climbing the ladder may have spent real quota, so the
+        # PENALTY_OVERFLOW result must carry the last completed attempt's
+        # facts, exactly like the infeasible and solver_error paths do.
+        backend, service = make_zero_service(
+            metadata=SolverExecutionMetadata(
+                backend="always_zero", remote=False, solver_id="zero-attempt"
+            )
+        )
+        result = service.solve(
+            make_problem(penalty_multiplier=3.3e306, max_retries=10)
+        )
+
+        assert result.status == "resource_limit_exceeded"
+        assert codes(result) == ["PENALTY_OVERFLOW"]
+        assert len(result.attempts) >= 1
+        assert backend.solve_calls == len(result.attempts)
+        assert result.metadata is not None
+        assert result.metadata.solver_id == "zero-attempt"
+        # The service, not the backend, stamps the model type (3a §22).
+        assert result.metadata.model_type == "bqm"
+
+    def test_no_metadata_is_invented_when_no_attempt_ran(self, warnings_are_errors):
+        # The mirror image: the very first penalty is already inf, so no
+        # attempt completed and there is nothing to report — the backend's
+        # metadata must not be conjured out of a solve that never happened.
+        backend, service = make_zero_service(
+            metadata=SolverExecutionMetadata(
+                backend="always_zero", remote=False, solver_id="zero-attempt"
+            )
+        )
+        result = service.solve(make_problem(penalty_multiplier=1e308))
+
+        assert result.status == "resource_limit_exceeded"
+        assert codes(result) == ["PENALTY_OVERFLOW"]
+        assert result.attempts == []
+        assert backend.solve_calls == 0
+        assert result.metadata is None
 
     def test_result_serialises_with_finite_penalties_only(self, warnings_are_errors):
         _, service = make_zero_service()

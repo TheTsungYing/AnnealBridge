@@ -30,6 +30,39 @@ class SettingsError(ValueError):
     """
 
 
+def validate_http_host(value: str) -> str:
+    """Return ``value`` unchanged if it can serve as a bind address.
+
+    Rejects an empty, blank or whitespace-bearing host (2026-09-11 review
+    F01 / F09). An empty string is not an authorization to bind every
+    interface: in asyncio (and uvicorn) it means exactly that, and this
+    server has no authentication of any kind, so a mis-set variable must
+    fail loudly rather than open the service to the network. A value with a
+    stray space is a typo, not a host, and is not silently stripped either.
+
+    Anything else is accepted verbatim — an operator who deliberately names
+    a non-loopback address keeps that ability. The message never echoes the
+    value (review F-20).
+    """
+    if not value or any(character.isspace() for character in value):
+        raise ValueError("host must not be empty, blank or contain whitespace")
+    return value
+
+
+def validate_http_port(value: int) -> int:
+    """Return ``value`` unchanged if it is a usable TCP port (1–65535).
+
+    ``0`` is rejected along with everything outside the range (2026-09-11
+    review F01 / F09): the kernel would pick an arbitrary free port, which
+    no MCP host can then be pointed at. Out-of-range values used to survive
+    until the socket bind raised ``OverflowError`` with a traceback. The
+    message never echoes the value (review F-20).
+    """
+    if not 1 <= value <= 65535:
+        raise ValueError("port must be between 1 and 65535")
+    return value
+
+
 class ServerSettings(BaseSettings):
     """Environment-driven configuration with the ``ANNEALBRIDGE_`` prefix.
 
@@ -63,6 +96,8 @@ class ServerSettings(BaseSettings):
     # the operator writes ``exact,simulated_annealing`` instead.
     enabled_backends: Annotated[set[str] | None, NoDecode] = None
     limits: dict[str, float] = Field(default_factory=dict)
+    # Validated by the module-level functions below, which the MCP entry
+    # point reuses for ``--host`` / ``--port`` so both paths share one rule.
     http_host: str = "127.0.0.1"
     http_port: int = 8000
 
@@ -74,6 +109,19 @@ class ServerSettings(BaseSettings):
             names = {part.strip() for part in value.split(",") if part.strip()}
             return names or None
         return value
+
+    @field_validator("http_host")
+    @classmethod
+    def _validate_http_host(cls, value: str) -> str:
+        # Same rule the ``--host`` argument obeys (2026-09-11 review F01 /
+        # F09), so the environment and a CLI override cannot disagree.
+        return validate_http_host(value)
+
+    @field_validator("http_port")
+    @classmethod
+    def _validate_http_port(cls, value: int) -> int:
+        # Same rule the ``--port`` argument obeys (2026-09-11 review F01 / F09).
+        return validate_http_port(value)
 
     @field_validator("limits")
     @classmethod

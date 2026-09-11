@@ -32,6 +32,7 @@ from annealbridge.models import (
     Objective,
     OptimizationProblem,
 )
+from annealbridge.validation.tolerance import satisfies
 
 Bounds = Mapping[str, tuple[int, int]]
 
@@ -316,10 +317,10 @@ class InequalityAnalysis:
 
     ``coefficients`` and ``rhs`` are normalized to the ``<=`` form (a ``>=``
     constraint has both sides multiplied by -1) with zero coefficients
-    dropped. ``slack_range`` keeps the raw ``int(round(rhs - lhs_min))``
-    value — it is negative for a trivially infeasible constraint (a hard one
-    is rejected by the validator before compilation; the compiler clamps a
-    soft one) and is ``None`` when ``redundant``.
+    dropped. ``slack_range`` is ``int(round(rhs - lhs_min))`` — negative for
+    a trivially infeasible constraint (a hard one is rejected by the
+    validator before compilation; the compiler clamps a soft one) — and is
+    ``None`` when ``redundant``.
 
     That ``int(round(...))`` is exact, not approximate, for every problem
     the validator accepts (2026-09-09 review F-24): inequality coefficients
@@ -327,6 +328,19 @@ class InequalityAnalysis:
     rejects a constraint whose ``sum(|c| * max|bound|) + |rhs|`` exceeds
     2^53, so every product and every partial sum in :func:`lhs_bounds` is
     an integer float64 represents exactly.
+
+    The one exception is the tolerance band (review F-04, 2026-09-11). At
+    magnitude ``1e12`` and above the §23.1 hybrid tolerance reaches one
+    whole unit, so ``lhs_min = rhs + 1`` is a *satisfied* assignment as far
+    as the problem validator and the solution validator are concerned even
+    though ``rhs - lhs_min`` is ``-1``. A negative raw range that
+    :func:`annealbridge.validation.tolerance.satisfies` still accepts is
+    therefore reported as ``slack_range = 0``: the validator says
+    ``lhs_min`` is feasible, so no slack is needed, and the BQM penalty
+    degrades to ``lambda * (lhs - rhs)**2``, still minimal exactly at
+    ``lhs = lhs_min``. A range outside the tolerance keeps its negative
+    value, so the ``< 0`` branches of :func:`count_slack_bits` and
+    ``compiler.slack.encode_slack`` behave exactly as before.
     """
 
     coefficients: dict[str, float]
@@ -355,7 +369,21 @@ def analyze_inequality(
 
     lhs_min, lhs_max = lhs_bounds(coefficients, bounds)
     redundant = lhs_max <= rhs
-    slack_range = None if redundant else int(round(rhs - lhs_min))
+    slack_range: int | None
+    if redundant:
+        slack_range = None
+    else:
+        raw = rhs - lhs_min
+        # A raw range the §23.1 tolerance still accepts needs no slack
+        # (review F-04): the validators call ``lhs_min`` feasible, so the
+        # estimate and the encoding must agree instead of raising. The
+        # normalized ``<=`` form is equivalent to the problem validator's
+        # ``satisfies(">=", lhs_max, rhs)`` test for a ``>=`` constraint,
+        # because the tolerance only depends on the magnitudes.
+        if raw < 0 and satisfies("<=", lhs_min, rhs):
+            slack_range = 0
+        else:
+            slack_range = int(round(raw))
     return InequalityAnalysis(
         coefficients=coefficients,
         rhs=rhs,
@@ -377,6 +405,11 @@ def count_slack_bits(constraint: Constraint, bounds: Bounds | None = None) -> in
     here is a programming error and raises. The count goes through
     :func:`compute_slack_coefficients` — the same function ``encode_slack``
     uses — so the two can never drift.
+
+    "Trivially infeasible" here means the same thing it means to the
+    validator: :func:`analyze_inequality` already reports ``slack_range = 0``
+    for a negative raw range that the §23.1 tolerance accepts (review F-04),
+    so such a constraint counts zero bits rather than raising.
     """
     if constraint.operator not in ("<=", ">="):
         return 0

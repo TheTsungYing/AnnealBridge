@@ -330,6 +330,15 @@ for integer variables and that would not be the formula the validator scores
 with. Either way the solver's soft energy equals the validator's
 `soft_violation_score`.
 
+Keeping those two equal means a soft constraint is scored from its **exact**
+residual: the feasibility tolerance that decides `satisfied` is not applied to
+the score. A residual small enough to leave `satisfied: true` therefore still
+contributes `weight × residual²`, because that is what the compiled model
+charges for it — with a large enough weight a residual of 1e-9 is worth real
+energy, and rounding it away would make the ranking prefer assignments the
+solver was paying to avoid. Hard constraints are unaffected: a hard constraint
+that holds within the tolerance reports `violation_amount: 0`.
+
 ### Hard constraint penalties
 
 The hard-constraint penalty λ is computed by the penalty strategy, never taken

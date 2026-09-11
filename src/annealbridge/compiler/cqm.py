@@ -42,20 +42,28 @@ problem never compiles on one path and fails on the other.
 The objective is built by :func:`build_objective_qm` (maximize negates
 everything, constant included) and the squared penalties are expanded by
 :func:`expand_square_qm`, a thin adapter over the same ``expand_square``
-the BQM penalty terms use (review F-13a). Nothing here degrades the model to a BQM (that conversion is a
+the BQM penalty terms use (review F-13a). Both expansions are plain float
+arithmetic, so the finished model is checked for non-finite biases before
+it leaves ``compile`` (:func:`_check_finite`, review F-06), exactly as the
+BQM path does. Nothing here degrades the model to a BQM (that conversion is a
 test-only cross-check, never production code) and the compiler takes no
 options (§15.2).
 """
 
 import logging
+import math
 from typing import TYPE_CHECKING
 
 import dimod
 
 from annealbridge.compiler.base import select_business_columns
 from annealbridge.compiler.integer_encoding import expand_square_qm
-from annealbridge.compiler.objective import add_model_variable, build_objective_qm
-from annealbridge.exceptions import CompilationError
+from annealbridge.compiler.objective import (
+    add_model_variable,
+    build_objective_qm,
+    has_finite_biases,
+)
+from annealbridge.exceptions import CompilationError, NonFiniteModelError
 from annealbridge.models import (
     CompiledProblem,
     Constraint,
@@ -89,6 +97,36 @@ def _constant_constraint_holds(operator: str, rhs: float) -> bool:
     ``rhs == 0.0`` used to refuse ``rhs = 1e-9`` that the validator accepts.
     """
     return satisfies(operator, 0.0, rhs)
+
+
+def _check_finite(
+    cqm: dimod.ConstrainedQuadraticModel, problem: OptimizationProblem
+) -> None:
+    """Raise :class:`NonFiniteModelError` unless every bias of ``cqm`` is finite.
+
+    The CQM twin of the BQM path's guard (2026-09-11 review F06), sharing
+    its :func:`has_finite_biases` test: a finite problem can still compile
+    to a model holding ``inf``, either because an objective-form soft
+    penalty expanded ``weight * coefficient**2`` past the float range
+    (``expand_square_qm``) or because a constraint's accumulated lhs
+    coefficients overflowed. Both the objective and every constraint (lhs
+    biases and rhs) are checked, so the promise that no backend is ever
+    called with a non-finite model holds on this path too.
+
+    There is no hard penalty here (§10.4), and the soft weights themselves
+    come from a validated problem, so nothing re-checks them: only what the
+    compiler's own arithmetic produced.
+    """
+    finite = has_finite_biases(cqm.objective) and all(
+        math.isfinite(comparison.rhs) and has_finite_biases(comparison.lhs)
+        for comparison in cqm.constraints.values()
+    )
+    if not finite:
+        raise NonFiniteModelError(
+            f"Compiled model of problem {problem.name} has a non-finite bias: "
+            f"the soft weight and coefficient arithmetic overflowed the "
+            f"floating-point range while expanding the model"
+        )
 
 
 class CQMCompiler:
@@ -138,6 +176,11 @@ class CQMCompiler:
             for constraint in problem.constraints
         ]
         cqm.set_objective(objective)
+        # 2026-09-11 review (F06): the soft-penalty expansion and the
+        # accumulated constraint coefficients are plain float arithmetic,
+        # which overflows to ``inf`` silently; a model with a non-finite
+        # bias must never reach a backend.
+        _check_finite(cqm, problem)
 
         compiled = CompiledProblem(
             model_type=self.model_type,

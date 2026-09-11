@@ -21,7 +21,10 @@ from annealbridge.solvers.base import (
     SolverCapabilities,
     sampleset_to_arrays,
 )
-from annealbridge.solvers.metadata import sanitize_sampleset_info
+from annealbridge.solvers.metadata import (
+    declare_credentials,
+    sanitize_sampleset_info,
+)
 from annealbridge.solvers.ocean import (
     OCEAN_CREDENTIALS,
     LazySampler,
@@ -144,6 +147,10 @@ class DWaveQPUBackend(BackendAliases):
     def __init__(self, sampler_factory: Callable[[], Any] | None = None) -> None:
         self._sampler = LazySampler(sampler_factory, _default_sampler_factory)
         register_ocean_config_token()
+        # Review F-03: declared here, not only by ``SolverRegistry``, so a
+        # directly constructed backend redacts its token too. Idempotent; the
+        # registry declares the same thing again under the same name.
+        declare_credentials(_CAPABILITIES.name, _CAPABILITIES.credentials)
 
     @property
     def capabilities(self) -> SolverCapabilities:

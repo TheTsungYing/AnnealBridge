@@ -9,7 +9,11 @@ from pydantic import ValidationError
 from pydantic_settings import SettingsError as PydanticSettingsError
 
 from annealbridge.config import ServerSettings, SettingsError, load_settings
-from annealbridge.config.settings import unknown_settings_variables
+from annealbridge.config.settings import (
+    unknown_settings_variables,
+    validate_http_host,
+    validate_http_port,
+)
 from annealbridge.orchestration.policy import ExecutionPolicy
 
 ENV_PREFIX = "ANNEALBRIDGE_"
@@ -267,6 +271,89 @@ class TestLimitBounds:
         clean_env.setenv(ENV_PREFIX + suffix, "1")
 
         assert getattr(ServerSettings(), suffix.lower()) == 1
+
+
+class TestHttpBindValidation:
+    """2026-09-11 review (F01 / F09): the bind address and the port.
+
+    ``ANNEALBRIDGE_HTTP_HOST=""`` used to be accepted, and an empty host means
+    *every interface* to asyncio and uvicorn — on a server with no
+    authentication. An out-of-range port used to survive until the socket bind
+    raised ``OverflowError`` with a traceback. Both rules now live in one pure
+    function each, shared by the settings and by the MCP ``--host`` / ``--port``
+    arguments, so the environment and an override cannot disagree.
+    """
+
+    UNUSABLE_HOSTS = ["", " ", "   ", "\t", "127.0.0.1 ", " 127.0.0.1", "local host"]
+
+    @pytest.mark.parametrize("value", UNUSABLE_HOSTS)
+    def test_function_rejects_empty_blank_or_whitespace_bearing_host(self, value):
+        with pytest.raises(ValueError, match="host"):
+            validate_http_host(value)
+
+    @pytest.mark.parametrize(
+        "value", ["127.0.0.1", "0.0.0.0", "localhost", "::1", "annealbridge.internal"]
+    )
+    def test_function_returns_any_other_host_unchanged(self, value):
+        # Not stripped, not rewritten: an operator who names a non-loopback
+        # address keeps that ability, and nothing is silently corrected.
+        assert validate_http_host(value) == value
+
+    @pytest.mark.parametrize("value", [0, -1, -65535, 65536, 100000])
+    def test_function_rejects_a_port_outside_1_65535(self, value):
+        # 0 included: the kernel would pick an arbitrary free port, which no
+        # MCP host can then be pointed at.
+        with pytest.raises(ValueError, match="1 and 65535"):
+            validate_http_port(value)
+
+    @pytest.mark.parametrize("value", [1, 8000, 65535])
+    def test_function_accepts_a_port_inside_the_range(self, value):
+        assert validate_http_port(value) == value
+
+    @pytest.mark.parametrize("value", UNUSABLE_HOSTS)
+    def test_env_host_is_rejected_naming_the_variable(self, clean_env, value):
+        clean_env.setenv("ANNEALBRIDGE_HTTP_HOST", value)
+
+        with pytest.raises(SettingsError) as exc_info:
+            load_settings()
+
+        message = str(exc_info.value)
+        assert "Invalid server settings" in message
+        assert "ANNEALBRIDGE_HTTP_HOST" in message
+
+    def test_rejected_host_is_not_echoed(self, clean_env):
+        # review F-20: the variable is named, the value never repeated.
+        clean_env.setenv("ANNEALBRIDGE_HTTP_HOST", "10.11.12.13 ")
+
+        with pytest.raises(SettingsError) as exc_info:
+            load_settings()
+
+        message = str(exc_info.value)
+        assert "ANNEALBRIDGE_HTTP_HOST" in message
+        assert "10.11.12.13" not in message
+
+    def test_explicit_non_loopback_host_is_still_accepted(self, clean_env):
+        clean_env.setenv("ANNEALBRIDGE_HTTP_HOST", "0.0.0.0")
+
+        assert load_settings().http_host == "0.0.0.0"
+
+    @pytest.mark.parametrize("value", ["0", "-1", "65536"])
+    def test_env_port_outside_the_range_is_rejected(self, clean_env, value):
+        clean_env.setenv("ANNEALBRIDGE_HTTP_PORT", value)
+
+        with pytest.raises(SettingsError) as exc_info:
+            load_settings()
+
+        message = str(exc_info.value)
+        assert "Invalid server settings" in message
+        assert "ANNEALBRIDGE_HTTP_PORT" in message
+        assert value not in message
+
+    @pytest.mark.parametrize("value", ["1", "65535"])
+    def test_env_port_at_the_boundaries_is_accepted(self, clean_env, value):
+        clean_env.setenv("ANNEALBRIDGE_HTTP_PORT", value)
+
+        assert load_settings().http_port == int(value)
 
 
 class TestLoadSettings:

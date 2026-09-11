@@ -6,11 +6,13 @@ F-10): this module names no environment variable, no HTTP header and no
 token shape of any vendor. Every backend declares what its credential
 material looks like in ``SolverCapabilities.credentials``
 (:class:`~annealbridge.models.capabilities.CredentialDeclaration`), and
-``SolverRegistry`` hands each declaration to :func:`declare_credentials`
-when the backend is registered. A credential that is not an environment
-variable at all (e.g. a token in a vendor config file) is contributed by
-the backend through :func:`register_secret_source`. :func:`redact` reads
-both process-level tables live on every call.
+that declaration reaches :func:`declare_credentials` twice: the backend
+declares it in its own ``__init__`` (so a directly constructed instance is
+masked too) and ``SolverRegistry`` declares it again when the backend is
+registered. A credential that is not an environment variable at all (e.g.
+a token in a vendor config file) is contributed by the backend through
+:func:`register_secret_source`. :func:`redact` reads both process-level
+tables live on every call.
 
 The D-Wave availability / Ocean-config helpers that used to live here are
 in ``solvers.ocean`` — the one module that may lazy-import
@@ -145,9 +147,16 @@ _SECRET_SOURCES: dict[str, Callable[[], "str | Iterable[str] | None"]] = {}
 def declare_credentials(backend_name: str, declaration: CredentialDeclaration) -> None:
     """Make ``declaration`` part of what :func:`redact` masks.
 
-    Called by ``SolverRegistry`` for every registered backend; a backend
-    author never calls it directly. An empty declaration is recorded too
-    (it replaces a stale one under the same name).
+    Called twice for a shipped backend, on purpose (2026-09-11 review F-03):
+    a backend that carries credentials declares its own in ``__init__``, so
+    the masking is in place for a backend *constructed directly* — the
+    public ``solve()`` of a hand-built instance is a supported path and must
+    not leak a key just because no registry was involved — and
+    ``SolverRegistry`` declares every registered backend again at
+    registration time. Both are plain dict writes keyed by backend name:
+    idempotent, and a second call under the same name replaces the first
+    rather than accumulating. An empty declaration is recorded too (it
+    replaces a stale one under the same name).
     """
     _DECLARATIONS[backend_name] = _CompiledDeclaration(declaration)
 

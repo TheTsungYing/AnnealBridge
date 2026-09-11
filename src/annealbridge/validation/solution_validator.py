@@ -23,6 +23,23 @@ term order, compare with the same hybrid tolerance rule of
 results are bit-identical — not merely close. ``tests/unit`` asserts that
 equality on random problems; keep the two kernels in lock-step when
 touching either.
+
+Soft scores do not use the feasibility tolerance
+------------------------------------------------
+The tolerance decides ``satisfied`` for every constraint, and it zeroes a
+*hard* constraint's ``violation_amount`` once it holds. A **soft**
+constraint's ``violation_amount`` is instead the *exact* residual
+(``abs(actual - rhs)``, ``max(0, actual - rhs)`` or ``max(0, rhs - actual)``),
+whatever ``satisfied`` says, and ``weighted_penalty`` squares it. That is
+what the compilers write into the model: the BQM squared penalty and the
+CQM's native weighted constraint both cost ``weight * residual**2`` with no
+tolerance band, so rounding a residual inside the band down to zero would
+make the ranking prefer assignments the solver is paying to avoid — visibly
+so at a huge weight (review F-05, 2026-09-11). ``soft_violation_score`` is
+therefore the sum of ``weighted_penalty`` over **every** soft constraint,
+which is exactly the solver's soft energy. ``soft_violations`` still lists
+only the soft constraints whose ``satisfied`` is false, so a residual inside
+the tolerance scores a tiny penalty without being reported as a violation.
 """
 
 import logging
@@ -61,9 +78,15 @@ def validate(problem: OptimizationProblem, sample: dict[str, int]) -> Validation
         for evaluation in evaluations
         if evaluation.constraint_type == "soft" and not evaluation.satisfied
     ]
+    # Every soft constraint contributes, not just the violated ones: the
+    # compiled model pays ``weight * residual**2`` for a residual inside the
+    # tolerance too (review F-05). Accumulated in constraint order so
+    # :func:`validate_batch` stays bit-identical.
     soft_violation_score = 0.0
-    for evaluation in soft_violations:
-        soft_violation_score += evaluation.weighted_penalty
+    for evaluation in evaluations:
+        if evaluation.constraint_type == "soft":
+            assert evaluation.weighted_penalty is not None  # set for every soft
+            soft_violation_score += evaluation.weighted_penalty
     return ValidationResult(
         feasible=not hard_violations,
         evaluations=evaluations,
@@ -90,11 +113,16 @@ def _evaluate(constraint: Constraint, sample: dict[str, int]) -> ConstraintEvalu
         satisfied = actual >= rhs - tol
         violation = max(0.0, rhs - actual)
 
-    violation_amount = 0.0 if satisfied else violation
-
+    # Hard: the tolerance decides, and a satisfied constraint reports no
+    # violation at all. Soft: the exact residual, because that is what the
+    # compiled model charges for (review F-05); ``satisfied`` above still
+    # uses the tolerance and still drives ``soft_violations``.
     weighted_penalty: float | None = None
     if constraint.type == "soft":
+        violation_amount = violation
         weighted_penalty = constraint.weight * violation_amount * violation_amount
+    else:
+        violation_amount = 0.0 if satisfied else violation
 
     return ConstraintEvaluation(
         constraint_id=constraint.id,
@@ -165,7 +193,10 @@ def validate_batch(
         if constraint.type == "hard":
             feasible &= satisfied
         else:
-            violation_amount = np.where(satisfied, 0.0, violation)
+            # Exact residual, no tolerance band (review F-05) — the same
+            # value, in the same association and the same constraint order,
+            # as the scalar kernel above.
+            violation_amount = violation
             soft_violation_score += (
                 constraint.weight * violation_amount * violation_amount
             )

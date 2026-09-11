@@ -67,9 +67,12 @@ def encode_slack(
 
     Raises :class:`CompilationError` for a hard constraint that can never be
     satisfied. The validator judges trivial infeasibility on the same
-    accumulated coefficients, so a validated problem never reaches this
-    branch; it stays as a defence for callers that skip validation. A soft
-    constraint in the same situation is clamped to zero slack bits with a
+    accumulated coefficients — and, since review F-04 (2026-09-11), under the
+    same §23.1 tolerance: ``analyze_inequality`` reports ``slack_range = 0``
+    for a negative raw range the tolerance still accepts, so a constraint the
+    validators call satisfiable is encoded with no slack instead of reaching
+    this branch. It stays as a defence for callers that skip validation. A
+    soft constraint in the same situation is clamped to zero slack bits with a
     warning: its penalty then degrades to the squared minimal violation,
     which is exactly the pressure a violated soft constraint should exert.
     """

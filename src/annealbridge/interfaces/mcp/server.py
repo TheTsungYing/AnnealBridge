@@ -15,7 +15,12 @@ from importlib.metadata import PackageNotFoundError, version
 
 from mcp.server import MCPServer
 
-from annealbridge.config import SettingsError, load_settings
+from annealbridge.config import (
+    SettingsError,
+    load_settings,
+    validate_http_host,
+    validate_http_port,
+)
 from annealbridge.interfaces.composition import (  # noqa: F401  (re-exports)
     AppState,
     build_service,
@@ -134,13 +139,43 @@ def reset_state(state: AppState | None = None) -> None:
     _state = state
 
 
+def _host_argument(value: str) -> str:
+    """argparse ``type`` for ``--host``: the environment's rule, verbatim.
+
+    Raising :class:`argparse.ArgumentTypeError` keeps argparse's own reason
+    (which would only say "invalid value") from replacing ours, and ends the
+    process with exit code 2 and one line instead of a traceback.
+    """
+    try:
+        return validate_http_host(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def _port_argument(value: str) -> int:
+    """argparse ``type`` for ``--port``: an integer in 1–65535, 0 included in
+    the refusal (an ephemeral port no host can be pointed at)."""
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "port must be an integer between 1 and 65535"
+        ) from None
+    try:
+        return validate_http_port(port)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def main() -> None:
     """Entry point for ``annealbridge-mcp`` (spec §25).
 
     stdio is the default transport. Streamable HTTP binds 127.0.0.1:8000
     unless overridden; exposing it beyond localhost requires an explicit
-    ``--host``. Tool registration happens at import time via the tools
-    module; this function only parses arguments and runs the transport.
+    ``--host`` — an empty one is refused, never read as "every interface".
+    Host and port obey the same rule whether they come from the environment
+    or from an override. Tool registration happens at import time via the
+    tools module; this function only parses arguments and runs the transport.
     Invalid ``ANNEALBRIDGE_*`` settings are reported on stderr and end the
     process with exit code 2 instead of a traceback.
     """
@@ -161,19 +196,21 @@ def main() -> None:
     )
     parser.add_argument(
         "--host",
+        type=_host_argument,
         default=settings.http_host,
         help=(
-            "Bind address for streamable-http (default: "
-            f"{settings.http_host}; ignored for stdio). Binding beyond "
-            "localhost must be requested explicitly."
+            "Bind address for streamable-http (non-empty, no whitespace; "
+            f"default: {settings.http_host}; ignored for stdio). Binding "
+            "beyond localhost must be requested explicitly; an empty value "
+            "is refused rather than treated as every interface."
         ),
     )
     parser.add_argument(
         "--port",
-        type=int,
+        type=_port_argument,
         default=settings.http_port,
         help=(
-            f"Port for streamable-http (default: {settings.http_port}; "
+            f"Port for streamable-http (1-65535; default: {settings.http_port}; "
             "ignored for stdio)."
         ),
     )

@@ -1,8 +1,12 @@
 """Tests for the Solution Validator (spec §23 / §23.1)."""
 
+import itertools
+
 import pytest
 
+from annealbridge.compiler import BQMCompiler
 from annealbridge.models import OptimizationProblem
+from annealbridge.orchestration.optimizer import evaluate_objective
 from annealbridge.validation import tolerance, validate_solution
 
 # At magnitude 1 the hybrid tolerance is exactly the absolute floor, 1e-8.
@@ -268,3 +272,111 @@ class TestSmallScaleUnchanged:
         result = validate_solution(problem, {"x1": 1, "x2": 0, "x3": 0})
         assert result.feasible is False
         assert result.evaluations[0].violation_amount == pytest.approx(2e-8)
+
+
+class TestSoftScoreIgnoresTheFeasibilityTolerance:
+    """Review F-05 (2026-09-11): a soft score must equal the solver's energy.
+
+    The feasibility tolerance decides ``satisfied``, and it zeroes a *hard*
+    constraint's ``violation_amount``. A soft constraint's score used to be
+    zeroed the same way, which inverted the ranking against the compiled
+    model: the compilers charge ``weight * residual**2`` with no tolerance
+    band, so a residual just inside the band was free to the validator and
+    expensive to the solver. ``violation_amount`` for a soft constraint is
+    now the exact residual, while ``satisfied`` (and therefore
+    ``soft_violations``) still uses the tolerance.
+    """
+
+    # Residual 1e-9 is inside the 1e-8 floor; at weight 1e20 it is worth 100.
+    WEIGHT = 1e20
+    COEFFICIENT = 1e-9
+
+    def inversion_problem(self):
+        return make_problem(
+            [soft("==", 0, {"x1": self.COEFFICIENT}, weight=self.WEIGHT)]
+        )
+
+    def test_tiny_residual_scores_without_counting_as_a_violation(self):
+        result = validate_solution(self.inversion_problem(), {"x1": 1, "x2": 0, "x3": 0})
+        (evaluation,) = result.evaluations
+
+        assert evaluation.satisfied is True
+        assert evaluation.violation_amount == pytest.approx(1e-9)
+        assert evaluation.weighted_penalty == pytest.approx(100.0)
+        assert result.feasible is True
+        assert result.soft_violations == []  # inside the tolerance
+        assert result.soft_violation_score == pytest.approx(100.0)
+
+    def test_exactly_zero_residual_still_scores_zero(self):
+        result = validate_solution(self.inversion_problem(), {"x1": 0, "x2": 0, "x3": 0})
+        (evaluation,) = result.evaluations
+
+        assert evaluation.violation_amount == 0.0
+        assert evaluation.weighted_penalty == 0.0
+        assert result.soft_violation_score == 0.0
+
+    def test_hard_constraint_inside_the_tolerance_still_reports_no_violation(self):
+        """The hard branch is deliberately untouched."""
+        problem = make_problem([hard("==", 0, {"x1": self.COEFFICIENT})])
+        result = validate_solution(problem, {"x1": 1, "x2": 0, "x3": 0})
+        (evaluation,) = result.evaluations
+
+        assert evaluation.satisfied is True
+        assert evaluation.violation_amount == 0.0
+        assert evaluation.weighted_penalty is None
+
+    def landscape_problem(self, direction: str) -> OptimizationProblem:
+        """Two variables inside the tolerance band, one outside the constraint.
+
+        Residuals over the box are 0, 1e-9 and 2e-9 — every one of them inside
+        the 1e-8 floor, so before the fix the soft score was zero everywhere
+        while the compiled energy ranged up to 400.
+        """
+        problem = make_problem(
+            [
+                soft(
+                    "==",
+                    0,
+                    {"x1": self.COEFFICIENT, "x2": self.COEFFICIENT},
+                    weight=self.WEIGHT,
+                )
+            ]
+        )
+        objective = problem.objective.model_copy(update={"direction": direction})
+        return problem.model_copy(update={"objective": objective})
+
+    @pytest.mark.parametrize(("direction", "sign"), [("minimize", 1.0), ("maximize", -1.0)])
+    def test_bqm_energy_equals_objective_plus_soft_score_everywhere(self, direction, sign):
+        """The whole landscape, the way ``test_cqm_compiler`` pins the CQM's.
+
+        ``maximize`` is included because the compiled energy negates the
+        objective while the soft penalty stays positive; both sides must come
+        out of the same number.
+        """
+        problem = self.landscape_problem(direction)
+        compiled = BQMCompiler().compile(problem, hard_penalty=1.0)
+        assert compiled.internal_variables == set()
+
+        scores = {}
+        for bits in itertools.product((0, 1), repeat=3):
+            sample = dict(zip(("x1", "x2", "x3"), bits))
+            validation = validate_solution(problem, sample)
+            scores[bits] = validation.soft_violation_score
+            expected = sign * evaluate_objective(problem.objective, sample)
+            expected += validation.soft_violation_score
+
+            assert compiled.model.energy(sample) == pytest.approx(expected), sample
+
+        # The point of the fix: those scores are not all zero, even though
+        # every residual sits inside the tolerance.
+        assert all(
+            evaluation.satisfied
+            for bits in scores
+            for evaluation in validate_solution(
+                problem, dict(zip(("x1", "x2", "x3"), bits))
+            ).evaluations
+        )
+        assert scores[(0, 0, 0)] == 0.0
+        assert scores[(1, 0, 0)] == pytest.approx(100.0)
+        assert scores[(0, 1, 1)] == pytest.approx(100.0)
+        assert scores[(1, 1, 0)] == pytest.approx(400.0)

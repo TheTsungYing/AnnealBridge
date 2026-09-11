@@ -7,7 +7,24 @@ import pytest
 
 from annealbridge.compiler import compute_slack_coefficients, encode_slack
 from annealbridge.exceptions import CompilationError
-from annealbridge.models import Constraint
+from annealbridge.models import (
+    Constraint,
+    LinearTerm,
+    Objective,
+    OptimizationProblem,
+    SolverPreferences,
+    Variable,
+)
+from annealbridge.validation import (
+    validate_problem,
+    validate_problem_full,
+    validate_solution,
+)
+from annealbridge.validation.estimates import (
+    analyze_inequality,
+    count_slack_bits,
+    variable_bounds,
+)
 
 
 def make_constraint(
@@ -167,3 +184,104 @@ class TestTriviallyInfeasible:
         assert encoding.slack_range == 0
         assert encoding.slack_coefficients == {}
         assert any("can never be satisfied" in record.message for record in caplog.records)
+
+
+# --------------------------------------------------------------------------
+# Review F-04 (2026-09-11): the tolerance band and the slack range
+# --------------------------------------------------------------------------
+
+# ``x`` sits at 1e9 with a coefficient of 1000, so both sides of the
+# constraint are at magnitude 1e12 and the §23.1 hybrid tolerance is
+# ``1e-12 * 1e12 == 1`` -- one whole unit.
+_LOWER = 1_000_000_000
+_UPPER = 1_000_000_001
+_LHS_MIN = 1000 * _LOWER  # 1e12
+_WITHIN_RHS = _LHS_MIN - 1  # raw slack range -1, satisfied within the tolerance
+_BEYOND_RHS = _LHS_MIN - 2  # raw slack range -2, a real violation
+
+
+def tolerance_band_problem(rhs: int, operator: str = "<=") -> OptimizationProblem:
+    """``1000 x <= rhs`` (or its ``>=`` mirror) with ``x`` pinned near 1e9.
+
+    The ``>=`` mirror multiplies both sides by -1, which is exactly the
+    normalization :func:`analyze_inequality` applies, so the two forms must be
+    judged identically by the validator, the estimate and the encoder.
+    """
+    sign = 1 if operator == "<=" else -1
+    return OptimizationProblem(
+        version="1.1",
+        name="tolerance-band-inequality",
+        variables=[
+            Variable(name="x", type="integer", lower_bound=_LOWER, upper_bound=_UPPER)
+        ],
+        objective=Objective(direction="minimize", linear_terms=[]),
+        constraints=[
+            Constraint(
+                id="h",
+                type="hard",
+                terms=[LinearTerm(variable="x", coefficient=sign * 1000)],
+                operator=operator,
+                rhs=sign * rhs,
+            )
+        ],
+        solver=SolverPreferences(backend="exact"),
+    )
+
+
+@pytest.mark.parametrize("operator", ["<=", ">="])
+class TestToleranceBandSlackRange:
+    """A hard inequality satisfiable only *within* the tolerance is encodable.
+
+    Before review F-04 the three judgements disagreed: ``validate_solution``
+    and ``validate_problem`` accepted ``lhs_min == rhs + 1`` at magnitude 1e12
+    (the tolerance is 1 there), while ``analyze_inequality`` computed the
+    exact ``rhs - lhs_min == -1`` and both ``count_slack_bits`` and
+    ``encode_slack`` took it for trivially infeasible and raised — an
+    uncaught ``ValueError`` escaping ``validate_problem_full`` and therefore
+    ``OptimizationService.solve``. The range is now reported as 0: the
+    validator calls ``lhs_min`` feasible, so no slack is needed.
+    """
+
+    def test_validators_accept_the_assignment_at_lhs_min(self, operator):
+        problem = tolerance_band_problem(_WITHIN_RHS, operator)
+
+        assert validate_solution(problem, {"x": _LOWER}).feasible is True
+        assert validate_problem(problem) == []
+
+    def test_estimate_and_encoding_need_no_slack(self, operator):
+        problem = tolerance_band_problem(_WITHIN_RHS, operator)
+        constraint = problem.constraints[0]
+        bounds = variable_bounds(problem)
+
+        analysis = analyze_inequality(constraint, bounds)
+        assert analysis.redundant is False
+        assert analysis.slack_range == 0
+
+        assert count_slack_bits(constraint, bounds) == 0
+
+        encoding = encode_slack(constraint, bounds)
+        assert encoding.redundant is False
+        assert encoding.slack_range == 0
+        assert encoding.slack_coefficients == {}
+
+    def test_full_validation_does_not_raise(self, operator):
+        result = validate_problem_full(tolerance_band_problem(_WITHIN_RHS, operator))
+
+        assert result.valid is True
+        assert result.errors == []
+
+    def test_beyond_the_tolerance_is_unchanged(self, operator):
+        """Two units out: rejected by the validator, raised on by both callers."""
+        problem = tolerance_band_problem(_BEYOND_RHS, operator)
+        constraint = problem.constraints[0]
+        bounds = variable_bounds(problem)
+
+        assert validate_solution(problem, {"x": _LOWER}).feasible is False
+        assert [error.code for error in validate_problem(problem)] == [
+            "TRIVIALLY_INFEASIBLE"
+        ]
+        assert analyze_inequality(constraint, bounds).slack_range == -2
+        with pytest.raises(ValueError):
+            count_slack_bits(constraint, bounds)
+        with pytest.raises(CompilationError):
+            encode_slack(constraint, bounds)

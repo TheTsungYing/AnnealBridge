@@ -8,7 +8,9 @@ objective, so it lives in one place and the two cannot drift apart:
 INTEGER model variables with their bounds.
 """
 
+import math
 from collections.abc import Iterable, Mapping
+from typing import Any, Protocol
 
 import dimod
 
@@ -19,7 +21,50 @@ from annealbridge.compiler.integer_encoding import (
 )
 from annealbridge.models import Objective, Variable
 
-__all__ = ["add_model_variable", "build_objective_bqm", "build_objective_qm"]
+__all__ = [
+    "add_model_variable",
+    "build_objective_bqm",
+    "build_objective_qm",
+    "has_finite_biases",
+]
+
+
+class QuadraticBiases(Protocol):
+    """The bias surface every dimod quadratic model and model view shares.
+
+    ``BinaryQuadraticModel``, ``QuadraticModel`` and a CQM's ``objective``
+    / constraint-``lhs`` views are unrelated classes in dimod 0.12 (the
+    views only share a ``QuadraticViewsMixin``), but all of them expose
+    these three members, which is all :func:`has_finite_biases` reads.
+    """
+
+    @property
+    def offset(self) -> float: ...
+
+    @property
+    def linear(self) -> Mapping[Any, float]: ...
+
+    @property
+    def quadratic(self) -> Mapping[Any, float]: ...
+
+
+def has_finite_biases(model: QuadraticBiases) -> bool:
+    """Whether ``model``'s offset and every linear/quadratic bias is finite.
+
+    The compilers' one overflow test (2026-09-09 review F-07, 2026-09-11 review F06): the
+    penalty, weight and coefficient arithmetic is plain float
+    multiplication, which reaches ``inf`` silently, and no backend may ever
+    be handed a model with a non-finite bias. Shared so the BQM path (the
+    whole model) and the CQM path (the objective plus every constraint lhs)
+    cannot drift apart; each compiler words its own
+    :class:`~annealbridge.exceptions.NonFiniteModelError`, because only it
+    knows which arithmetic could have overflowed.
+    """
+    return (
+        math.isfinite(model.offset)
+        and all(math.isfinite(bias) for bias in model.linear.values())
+        and all(math.isfinite(bias) for bias in model.quadratic.values())
+    )
 
 
 def add_model_variable(

@@ -38,6 +38,7 @@ from annealbridge.solvers.base import (
 )
 from annealbridge.solvers.metadata import (
     REMOTE_ERROR_FALLBACK_CODE,
+    declare_credentials,
     guarded_call,
     redact,
     sanitize_sampleset_info,
@@ -409,6 +410,12 @@ class FujitsuDABackend(BackendAliases):
         self._request_timeout = float(request_timeout_seconds)
         self._clock = clock
         self._sleep = sleep
+        # Review F-03: declared here, not only by ``SolverRegistry``, so a
+        # directly constructed backend redacts its key too — otherwise the
+        # public ``solve()`` of a hand-built instance could quote a response
+        # body that carries the key verbatim. Idempotent; the registry
+        # declares the same thing again under the same name.
+        declare_credentials(_CAPABILITIES.name, _CAPABILITIES.credentials)
 
     @property
     def capabilities(self) -> SolverCapabilities:

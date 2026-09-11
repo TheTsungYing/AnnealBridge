@@ -14,7 +14,10 @@ capabilities view must handle it purely from its declaration:
   declaration (3a step 9);
 * its credential (env var / header declared in ``capabilities.credentials``)
   is masked by the shared redaction the moment it is registered — no edit
-  to ``solvers/metadata.py`` (2026-09-09 review F-10).
+  to ``solvers/metadata.py`` (2026-09-09 review F-10);
+* and every *shipped* backend that declares a credential env var declares it
+  from its own ``__init__`` too, so a directly constructed backend (no
+  registry involved) redacts its key as well (2026-09-11 review F-03).
 
 The proof that none of this needed a code change is
 ``test_core_sources_never_mention_the_fake``: the files the fake flows
@@ -67,6 +70,24 @@ CORE_FILES_THE_FAKE_FLOWS_THROUGH = [
 # Never a real key; hyphenated so no vendor token-shape pattern could match
 # it — only the declared env var can mask it.
 FAKE_KEY = "sk-7thvendor-SUPERSECRET-0123456789"
+
+
+def _credential_bearing_backends() -> list:
+    """``(backend_class, env_vars)`` for every default backend that declares
+    credential environment variables — derived from the registry, never a
+    fixed list, so a new backend joins the check by declaring (review F-03)."""
+    defaults = SolverRegistry.default()
+    params = []
+    for name in defaults.names():
+        backend = defaults.get(name)
+        env_vars = tuple(backend.capabilities.credentials.env_vars)
+        if env_vars:
+            params.append(pytest.param(type(backend), env_vars, id=name))
+    assert params, "the default registry must contain credential-bearing backends"
+    return params
+
+
+CREDENTIAL_BEARING_BACKENDS = _credential_bearing_backends()
 
 
 def make_registry(fake: FakeDeclaredBackend) -> SolverRegistry:
@@ -341,6 +362,50 @@ class TestCredentialsFollowTheDeclaration:
         SolverRegistry(local)
         assert redact(f"key {FAKE_KEY}") == f"key {FAKE_KEY}"
         assert metadata_module.credential_env_vars() == []
+
+
+class TestEveryCredentialBearingBackendDeclaresOnConstruction:
+    """Review F-03: a registry is not the only way a backend is used.
+
+    A caller may build a backend directly (``FujitsuDABackend(...)``,
+    ``DWaveQPUBackend(sampler_factory=...)``) and call its public ``solve()``.
+    If the credential declaration only reached the redaction layer through
+    ``SolverRegistry``, that path would quote vendor response bodies with the
+    key unmasked. So every backend that declares credential env vars must
+    declare them in its own ``__init__`` as well — generated from
+    ``SolverRegistry.default()`` so a seventh backend is covered the moment
+    it declares a credential, with no edit to this test.
+    """
+
+    @pytest.mark.parametrize("backend_class, env_vars", CREDENTIAL_BEARING_BACKENDS)
+    def test_construction_alone_declares_the_env_vars(
+        self, backend_class, env_vars, monkeypatch
+    ):
+        # Cleared first: what follows can only come from the constructor.
+        monkeypatch.setattr(metadata_module, "_DECLARATIONS", {})
+        assert metadata_module.credential_env_vars() == []
+
+        # Every constructor argument of a shipped backend is optional.
+        backend = backend_class()
+
+        declared = metadata_module.credential_env_vars()
+        for env_var in env_vars:
+            assert env_var in declared, backend.name
+
+    @pytest.mark.parametrize("backend_class, env_vars", CREDENTIAL_BEARING_BACKENDS)
+    def test_the_live_value_is_masked_without_any_registry(
+        self, backend_class, env_vars, monkeypatch
+    ):
+        monkeypatch.setattr(metadata_module, "_DECLARATIONS", {})
+        for env_var in env_vars:
+            monkeypatch.setenv(env_var, FAKE_KEY)
+        # FAKE_KEY matches no vendor value pattern, so only the declared env
+        # var can mask it — and nothing is declared yet.
+        assert redact(f"key {FAKE_KEY}") == f"key {FAKE_KEY}"
+
+        backend_class()
+
+        assert redact(f"key {FAKE_KEY}") == "key ***"
 
 
 def test_core_sources_never_mention_the_fake() -> None:

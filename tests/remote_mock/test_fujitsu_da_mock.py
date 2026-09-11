@@ -46,6 +46,8 @@ from annealbridge.solvers.fujitsu_da import (
     REASON_URL_NOT_HTTPS,
     SOLVER_ID,
 )
+import annealbridge.solvers.metadata as metadata_module
+from annealbridge.solvers.metadata import redact
 from tests.fakes import (
     FAKE_JOB_ID,
     FakeDATransport,
@@ -54,6 +56,7 @@ from tests.fakes import (
     json_response,
 )
 from tests.remote_mock.conftest import make_problem
+from tests.remote_mock.test_credential_leak import assert_no_key_fragment
 from tests.remote_mock.test_service_remote_flow import (
     assert_actions_present,
     make_service,
@@ -1428,3 +1431,75 @@ class TestRedaction:
         assert len(summary) <= 201  # the 200-character cap plus the ellipsis
         for start in range(len(FAKE_KEY) - 7):
             assert FAKE_KEY[start : start + 8] not in summary
+
+
+class TestRedactionWithoutARegistry:
+    """F-03 (2026-09-11 review): a *directly constructed* backend must redact.
+
+    ``declare_credentials`` used to have exactly one production caller,
+    ``SolverRegistry.__init__``. In a process that builds
+    ``FujitsuDABackend(...)`` by hand and calls its public ``solve()`` —
+    a supported use — the declaration table was therefore empty and
+    ``redact`` did not know the key, so a vendor exception or response body
+    quoting it reached the caller verbatim. The whole suite missed it because
+    ``tests/conftest.py`` builds ``SolverRegistry.default()`` at import time;
+    clearing ``_DECLARATIONS`` reproduces the clean-process state. The fix is
+    the backend declaring its own credentials in ``__init__``.
+    ``_SECRET_SOURCES`` is not touched: this backend registers none.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_process(self, monkeypatch):
+        monkeypatch.setattr(metadata_module, "_DECLARATIONS", {})
+        monkeypatch.setenv("FUJITSU_DA_URL", "https://da.example.invalid")
+        set_key(monkeypatch)
+
+    def solve_directly(self, fake: FakeDATransport) -> SolverExecutionError:
+        """One direct ``solve()`` on a hand-built backend; returns its error."""
+        backend = FujitsuDABackend(transport=fake)
+        with pytest.raises(SolverExecutionError) as exc_info:
+            backend.solve(make_compiled(), make_preferences())
+        return exc_info.value
+
+    def test_the_cleared_table_really_is_the_reproduction(self):
+        # Guard for the test itself: with nothing declared and the backend not
+        # yet built, the key is not a redaction candidate at all.
+        assert metadata_module.credential_env_vars() == []
+        assert redact(f"bare={FAKE_KEY}") == f"bare={FAKE_KEY}"
+
+    def test_a_vendor_exception_quoting_the_key_is_masked(self):
+        error = self.solve_directly(
+            FakeDATransport(submit_response=RuntimeError(f"bare={FAKE_KEY}"))
+        )
+
+        message = str(error)
+        assert_no_key_fragment(message, FAKE_KEY)
+        assert "***" in message
+        assert_no_key_fragment("".join(traceback.format_exception(error)), FAKE_KEY)
+
+    def test_a_response_body_quoting_the_key_is_masked(self):
+        body = json.dumps({"message": f"Invalid request header: bare={FAKE_KEY}"}).encode()
+
+        error = self.solve_directly(FakeDATransport(submit_response=(400, body)))
+
+        message = str(error)
+        assert error.code == "BACKEND_CONFIG_INVALID"
+        assert_no_key_fragment(message, FAKE_KEY)
+        assert "***" in message
+
+    def test_a_best_effort_cleanup_warning_is_masked_too(self, caplog):
+        # The DELETE/cancel path only logs; its warning goes through the same
+        # redaction and must not leak either.
+        fake = FakeDATransport(
+            poll_responses={0: (500, f"bare={FAKE_KEY}".encode())},
+            delete_response=(500, f"bare={FAKE_KEY}".encode()),
+            cancel_response=(500, f"bare={FAKE_KEY}".encode()),
+        )
+        caplog.set_level(logging.DEBUG, logger="annealbridge")
+
+        error = self.solve_directly(fake)
+
+        assert_no_key_fragment(str(error), FAKE_KEY)
+        assert caplog.records
+        for record in caplog.records:
+            assert_no_key_fragment(record.getMessage(), FAKE_KEY)

@@ -642,6 +642,8 @@ class OptimizationService:
         direction: str,
         attempts: list[SolveAttempt],
         penalty: float,
+        *,
+        metadata: SolverExecutionMetadata | None,
     ) -> SolveResult:
         """Structured stop of the penalty ladder (2026-09-09 review F-07).
 
@@ -649,6 +651,11 @@ class OptimizationService:
         floating-point range is a hard ceiling the request ran into, the
         attempts made so far are kept, and no backend is called with a
         non-finite model.
+
+        ``metadata`` is the last completed attempt's facts, the same thing
+        the infeasible and error paths pass on (2026-09-11 review F08):
+        climbing the ladder may have spent real quota, and stopping at the
+        ceiling must not throw that away. ``None`` when no attempt finished.
         """
         made = len(attempts)
         last = attempts[-1].penalty if attempts else None
@@ -666,6 +673,7 @@ class OptimizationService:
                 )
             ],
             attempts=attempts,
+            metadata=metadata,
         )
 
     @staticmethod
@@ -819,7 +827,11 @@ class OptimizationService:
                 # every recorded attempt keeps a finite value.
                 if penalty is not None and not math.isfinite(penalty):
                     return self._penalty_overflow(
-                        backend, direction, attempts, penalty
+                        backend,
+                        direction,
+                        attempts,
+                        penalty,
+                        metadata=raw.metadata if raw is not None else None,
                     )
                 compiled = self._compile(compiler, problem, penalty)
                 # §14 step 9 on the compiled model (slack included): the
@@ -973,7 +985,13 @@ class OptimizationService:
             # problem and falls through to the compilation error below.
             if penalty is not None:
                 logger.warning("Problem %s penalty overflow: %s", problem.name, exc)
-                return self._penalty_overflow(backend, direction, attempts, penalty)
+                return self._penalty_overflow(
+                    backend,
+                    direction,
+                    attempts,
+                    penalty,
+                    metadata=raw.metadata if raw is not None else None,
+                )
             logger.warning("Problem %s compilation error: %s", problem.name, exc)
             return self._failure(
                 "invalid_problem",

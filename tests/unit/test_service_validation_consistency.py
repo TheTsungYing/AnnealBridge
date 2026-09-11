@@ -31,6 +31,7 @@ from tests.fakes.declared_backend import (
     FAKE_LIMIT_KEY,
     FakeDeclaredBackend,
 )
+from tests.fakes.local_cqm_backend import FAKE_LOCAL_CQM_NAME, FakeLocalCQMBackend
 
 BACKENDS = ["simulated_annealing", "exact"]
 
@@ -376,3 +377,143 @@ class TestExhaustiveZeroSamples:
         assert result.infeasibility_proven is True
         assert len(result.attempts) == 1
         assert result.attempts[0].samples_received > 0
+
+
+# --------------------------------------------------------------------------
+# Review F-04 / F-05 (2026-09-11)
+# --------------------------------------------------------------------------
+
+
+def make_registry(fake: FakeLocalCQMBackend) -> SolverRegistry:
+    defaults = SolverRegistry.default()
+    backends = {name: defaults.get(name) for name in defaults.names()}
+    backends[FAKE_LOCAL_CQM_NAME] = fake
+    return SolverRegistry(backends)
+
+
+def on_fake(problem: OptimizationProblem) -> OptimizationProblem:
+    solver = SolverPreferences.model_construct(backend=FAKE_LOCAL_CQM_NAME)
+    return problem.model_copy(update={"solver": solver})
+
+
+# ``x`` is pinned near 1e9 and carries a coefficient of 1000, so both sides of
+# the constraint sit at magnitude 1e12 where the §23.1 tolerance is one whole
+# unit. ``lhs_min`` is then one unit *past* the rhs and still satisfied.
+_TOLERANCE_BAND_LOWER = 1_000_000_000
+
+
+def tolerance_band_problem(backend: str = "exact") -> OptimizationProblem:
+    return OptimizationProblem(
+        version="1.1",
+        name="tolerance-band-inequality",
+        variables=[
+            Variable(
+                name="x",
+                type="integer",
+                lower_bound=_TOLERANCE_BAND_LOWER,
+                upper_bound=_TOLERANCE_BAND_LOWER + 1,
+            )
+        ],
+        objective=Objective(direction="minimize", linear_terms=[]),
+        constraints=[
+            Constraint(
+                id="h",
+                type="hard",
+                terms=[LinearTerm(variable="x", coefficient=1000)],
+                operator="<=",
+                rhs=1000 * _TOLERANCE_BAND_LOWER - 1,
+            )
+        ],
+        solver=SolverPreferences(backend=backend),
+    )
+
+
+class TestToleranceBandInequalityReachesASolver:
+    """F-04: a hard inequality satisfiable only inside the tolerance solves.
+
+    ``validate_solution`` accepted ``x = 1e9`` here all along, but the slack
+    estimate computed the exact range ``-1`` and raised ``ValueError`` from
+    inside ``validate_problem_full`` — a domain error escaping ``solve``,
+    which promises never to raise for one.
+    """
+
+    def test_exact_backend_solves_it(self):
+        result = OptimizationService().solve(tolerance_band_problem())
+
+        assert result.status == "success"
+        assert result.solutions[0].variables == {"x": _TOLERANCE_BAND_LOWER}
+
+    def test_cqm_backend_solves_it_identically(self):
+        service = OptimizationService(registry=make_registry(FakeLocalCQMBackend()))
+
+        result = service.solve(on_fake(tolerance_band_problem()))
+
+        assert result.status == "success"
+        assert result.solutions[0].variables == {"x": _TOLERANCE_BAND_LOWER}
+
+    def test_validate_reports_it_as_valid(self):
+        result = OptimizationService().validate(tolerance_band_problem())
+
+        assert result.valid is True
+        assert result.errors == []
+
+
+def tiny_residual_problem(backend: str = "exact") -> OptimizationProblem:
+    """``minimize -x`` against a soft ``1e-9 x == 0`` weighted 1e20.
+
+    The residual at ``x = 1`` is 1e-9, inside the 1e-8 tolerance floor, but
+    the compiled model charges ``1e20 * (1e-9)**2 == 100`` for it.
+    """
+    return OptimizationProblem(
+        name="tiny-residual-soft",
+        variables=[Variable(name="x", type="binary")],
+        objective=Objective(
+            direction="minimize",
+            linear_terms=[LinearTerm(variable="x", coefficient=-1.0)],
+        ),
+        constraints=[
+            Constraint(
+                id="s",
+                type="soft",
+                terms=[LinearTerm(variable="x", coefficient=1e-9)],
+                operator="==",
+                rhs=0,
+                weight=1e20,
+            )
+        ],
+        solver=SolverPreferences(backend=backend),
+    )
+
+
+class TestRankingFollowsTheCompiledSoftCost:
+    """F-05: the ranking must not prefer what the solver pays to avoid.
+
+    The soft score used to be zeroed inside the feasibility tolerance, so the
+    service ranked ``x = 1`` first (score -1) while the compiled model made it
+    the *worse* assignment by 99. Both now agree.
+    """
+
+    def test_best_solution_is_the_one_the_solver_prefers(self):
+        result = OptimizationService().solve(tiny_residual_problem())
+
+        assert result.status == "success"
+        assert result.solutions[0].variables == {"x": 0}
+        assert result.solutions[0].ranking_score == 0.0
+
+    def test_the_tiny_residual_is_priced_into_the_runner_up(self):
+        result = OptimizationService().solve(tiny_residual_problem())
+
+        (runner_up,) = [s for s in result.solutions if s.variables == {"x": 1}]
+        assert runner_up.ranking_score == pytest.approx(99.0)  # -1 + 100
+        assert runner_up.soft_violation_score == pytest.approx(100.0)
+        # Inside the tolerance, so still not reported as a violated constraint.
+        assert runner_up.constraint_evaluations[0].satisfied is True
+
+    def test_cqm_backend_ranks_it_the_same_way(self):
+        service = OptimizationService(registry=make_registry(FakeLocalCQMBackend()))
+
+        result = service.solve(on_fake(tiny_residual_problem()))
+
+        assert result.status == "success"
+        assert result.solutions[0].variables == {"x": 0}
+        assert result.solutions[0].ranking_score == 0.0

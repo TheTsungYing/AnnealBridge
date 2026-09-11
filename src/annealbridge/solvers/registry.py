@@ -13,11 +13,14 @@ from annealbridge.solvers.simulated_annealing import SimulatedAnnealingBackend
 class SolverRegistry:
     """Lookup table from backend name to ``SolverBackend`` instance.
 
-    Registering a backend is also what makes its credential declaration
-    (``capabilities.credentials``) part of the shared redaction (review
+    Registering a backend also feeds its credential declaration
+    (``capabilities.credentials``) into the shared redaction (review
     F-10): a backend only has to *declare* its env vars / headers, and
     every error message, log line and metadata field that passes through
-    ``metadata.redact`` masks them from then on.
+    ``metadata.redact`` masks them from then on. Since the 2026-09-11
+    review (F03) a shipped backend declares the same thing in its own
+    ``__init__`` too, so a directly constructed instance is masked as well;
+    the registry's declaration is the idempotent second write.
     """
 
     def __init__(self, backends: dict[str, SolverBackend]) -> None:
