@@ -1,0 +1,103 @@
+# Release — publishes the built distribution to PyPI.
+#
+# Trigger: a pushed tag `vX.Y.Z` that matches the version in pyproject.toml.
+# Authentication is PyPI Trusted Publishing (OpenID Connect): the `pypi`
+# GitHub environment is registered on PyPI as the trusted publisher of the
+# `annealbridge` project, so no API token is stored anywhere. Running the
+# workflow by hand (workflow_dispatch) publishes to TestPyPI through the
+# `testpypi` environment instead — a rehearsal that spends no real version
+# number, since PyPI accepts each version exactly once.
+#
+# The build is the same `python -m build` the CI package job exercises. The
+# publish jobs never check out the repository; they only touch the artefact.
+# This file deliberately contains no printenv / env dump / debug step.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # A tag that disagrees with pyproject.toml would publish a version
+      # nobody meant to release; refuse it before building anything.
+      - name: Check that the tag matches the package version
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match pyproject.toml version $version" >&2
+            exit 1
+          fi
+
+      - name: Install build tools
+        run: python -m pip install --upgrade build twine
+
+      - name: Build the sdist and the wheel
+        run: python -m build
+
+      - name: Check the distribution metadata
+        run: python -m twine check dist/*
+
+      - name: Upload the distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/annealbridge/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/annealbridge/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true

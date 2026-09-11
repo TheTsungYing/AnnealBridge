@@ -90,7 +90,16 @@ pip install "annealbridge[all]"       # everything
 遠端 backend 回報為不可用。Fujitsu backend 完全不需要任何 extra；它用標準
 函式庫直接跟廠商的 HTTPS API 溝通，只等一個 `FUJITSU_DA_API_KEY`。
 
-在套件發佈到 PyPI 之前，可以直接從 checkout 安裝：
+只需要 MCP server 的話，[uv](https://docs.astral.sh/uv/) 或
+[pipx](https://pipx.pypa.io/) 可以省掉自己管理虛擬環境：`uvx` 會在需要時從
+獨立的快取環境執行 server，`pipx` 則把 `annealbridge-mcp` 裝到 `PATH` 上：
+
+```bash
+uvx --from "annealbridge[mcp]" annealbridge-mcp     # 不安裝、直接執行
+pipx install "annealbridge[mcp]"                    # 或安裝成指令
+```
+
+要安裝 checkout 上的開發版本：
 
 ```bash
 pip install "annealbridge[all] @ git+https://github.com/TheTsungYing/AnnealBridge.git"
@@ -152,20 +161,27 @@ print(result.solutions[0].objective_value)    # 17.0
 
 ### MCP（Claude Desktop 與其他 host）
 
-```bash
-pip install "annealbridge[mcp]"
-```
-
-把 server 加進 `claude_desktop_config.json`，然後重啟 host：
+把 server 加進 `claude_desktop_config.json`，然後重啟 host。裝好
+[uv](https://docs.astral.sh/uv/) 之後不需要別的：host 第一次啟動 server 時，
+`uvx` 會把套件抓進它自己的快取環境。
 
 ```json
 {
   "mcpServers": {
     "annealbridge": {
-      "command": "annealbridge-mcp"
+      "command": "uvx",
+      "args": ["--from", "annealbridge[mcp]", "annealbridge-mcp"]
     }
   }
 }
+```
+
+沒有 uv 的話，先 `pip install "annealbridge[mcp]"`（或 `pipx install`），再把
+`"command"` 指向 `annealbridge-mcp` 執行檔；它在虛擬環境裡時要寫絕對路徑。
+Claude Code 一行就能註冊：
+
+```bash
+claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
 ```
 
 server 提供四個工具：`get_optimization_capabilities`、

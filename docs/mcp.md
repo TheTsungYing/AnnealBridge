@@ -23,6 +23,18 @@ pip install "annealbridge[mcp]"
 That adds the `mcp>=2,<3` dependency. The core install (and the
 `annealbridge` CLI) does not depend on `mcp` at all.
 
+With [uv](https://docs.astral.sh/uv/) there is nothing to install by hand:
+`uvx` resolves the package with its extra into an isolated, cached environment
+and runs the console script from there. This is the form the host
+configurations below use.
+
+```bash
+uvx --from "annealbridge[mcp]" annealbridge-mcp
+```
+
+`pipx install "annealbridge[mcp]"` is the equivalent that puts
+`annealbridge-mcp` on the `PATH` permanently.
+
 The `annealbridge-mcp` command itself is installed either way, extra or not.
 Without the extra it does not start: it prints one line on stderr,
 
@@ -197,30 +209,33 @@ Things worth knowing before calling it:
 
 ## Claude Desktop (stdio)
 
-Add the server to `claude_desktop_config.json`:
+Add the server to `claude_desktop_config.json`. With uv installed this is the
+whole configuration: `uvx` fetches the package the first time the host starts
+the server and reuses its cache afterwards. Configuration goes through `env`:
 
 ```json
 {
   "mcpServers": {
     "annealbridge": {
-      "command": "annealbridge-mcp"
+      "command": "uvx",
+      "args": ["--from", "annealbridge[mcp]", "annealbridge-mcp"],
+      "env": {
+        "ANNEALBRIDGE_ALLOW_REMOTE": "false"
+      }
     }
   }
 }
 ```
 
-If `annealbridge-mcp` is installed in a virtual environment that is not on the
-host's `PATH` — the usual case — use its absolute path, and pass any
-configuration through `env`:
+If you installed the package with pip instead, `"command"` is the
+`annealbridge-mcp` executable. A virtual environment is not on the host's
+`PATH`, so use the absolute path:
 
 ```json
 {
   "mcpServers": {
     "annealbridge": {
-      "command": "/path/to/venv/bin/annealbridge-mcp",
-      "env": {
-        "ANNEALBRIDGE_ALLOW_REMOTE": "false"
-      }
+      "command": "/path/to/venv/bin/annealbridge-mcp"
     }
   }
 }
@@ -237,6 +252,12 @@ client built on an MCP SDK — is configured the same way: run
 `annealbridge-mcp` as the server command, with no arguments for stdio, and put
 the `ANNEALBRIDGE_*` settings in whatever environment block the host provides.
 Only the surrounding configuration file format differs.
+
+Claude Code registers the server from the command line:
+
+```bash
+claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
+```
 
 ## Streamable HTTP
 

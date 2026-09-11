@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/TheTsungYing/AnnealBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/TheTsungYing/AnnealBridge/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/TheTsungYing/AnnealBridge/blob/main/LICENSE)
 
-English | [繁體中文](README.zh-TW.md)
+English | [繁體中文](https://github.com/TheTsungYing/AnnealBridge/blob/main/README.zh-TW.md)
 
 **Combinatorial optimization middleware for AI agents.** An agent describes
 *what* to optimize as structured JSON; AnnealBridge decides *how* to encode
@@ -99,7 +99,17 @@ loads and simply reports the remote backends as unavailable. The Fujitsu
 backend needs no extra at all; it talks to the vendor's HTTPS API through the
 standard library and only waits for `FUJITSU_DA_API_KEY`.
 
-Until the package is published on PyPI, install from a checkout:
+For the MCP server alone, [uv](https://docs.astral.sh/uv/) or
+[pipx](https://pipx.pypa.io/) save you a virtual environment: `uvx` runs the
+server from an isolated, cached environment on demand, and `pipx` puts
+`annealbridge-mcp` on your `PATH`:
+
+```bash
+uvx --from "annealbridge[mcp]" annealbridge-mcp     # run without installing
+pipx install "annealbridge[mcp]"                    # or install the command
+```
+
+To install the development version from a checkout:
 
 ```bash
 pip install "annealbridge[all] @ git+https://github.com/TheTsungYing/AnnealBridge.git"
@@ -136,7 +146,7 @@ Soft constraints: 0 violations
 
 Add `--json` for the full `SolveResult`, `--backend simulated_annealing` to
 override the backend, or try `validate`, `recommend`, `capabilities` and
-`export-schema`. See [docs/cli.md](docs/cli.md).
+`export-schema`. See [docs/cli.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/cli.md).
 
 ### Python
 
@@ -158,36 +168,44 @@ print(result.solutions[0].objective_value)    # 17.0
 Domain failures come back as results, never as exceptions: `result.status`
 is one of `success`, `infeasible`, `invalid_problem`,
 `resource_limit_exceeded`, `backend_unavailable`, `configuration_error` or
-`solver_error`. See [docs/output-format.md](docs/output-format.md).
+`solver_error`. See [docs/output-format.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/output-format.md).
 
 ### MCP (Claude Desktop and other hosts)
 
-```bash
-pip install "annealbridge[mcp]"
-```
-
-Add the server to `claude_desktop_config.json` and restart the host:
+Add the server to `claude_desktop_config.json` and restart the host. With
+[uv](https://docs.astral.sh/uv/) installed nothing else is needed: `uvx`
+fetches the package into its own cached environment the first time the host
+starts the server.
 
 ```json
 {
   "mcpServers": {
     "annealbridge": {
-      "command": "annealbridge-mcp"
+      "command": "uvx",
+      "args": ["--from", "annealbridge[mcp]", "annealbridge-mcp"]
     }
   }
 }
 ```
 
+Without uv, `pip install "annealbridge[mcp]"` (or `pipx install`) and set
+`"command"` to the `annealbridge-mcp` executable, by absolute path when it
+lives in a virtual environment. Claude Code registers it in one line:
+
+```bash
+claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
+```
+
 The server exposes four tools: `get_optimization_capabilities`,
 `validate_optimization_problem`, `recommend_backend` and
 `solve_optimization`. Any stdio-capable MCP host is configured the same way;
-a streamable-http transport is available too. See [docs/mcp.md](docs/mcp.md).
+a streamable-http transport is available too. See [docs/mcp.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/mcp.md).
 
 ## The problem JSON at a glance
 
 This is the file the quick start above solves: a 0/1 knapsack with capacity
 10, the reduced form of the repository's
-[examples/knapsack.json](examples/knapsack.json). Save it as `knapsack.json`
+[examples/knapsack.json](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/knapsack.json). Save it as `knapsack.json`
 anywhere you like.
 
 ```json
@@ -230,13 +248,13 @@ anywhere you like.
 Integer variables (`"type": "integer"` with bounds, `"version": "1.1"`),
 quadratic objective terms, soft constraints with weights, and per-backend
 solver preferences are described in
-[docs/problem-format.md](docs/problem-format.md). `annealbridge export-schema`
+[docs/problem-format.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/problem-format.md). `annealbridge export-schema`
 prints the JSON Schema an agent can use for structured output.
 
 Four ready-to-run examples live in the repository —
-[knapsack](examples/knapsack.json),
-[assignment](examples/assignment.json), [TSP](examples/tsp.json) and
-[integer knapsack](examples/integer_knapsack.json). The installed wheel does
+[knapsack](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/knapsack.json),
+[assignment](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/assignment.json), [TSP](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/tsp.json) and
+[integer knapsack](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/integer_knapsack.json). The installed wheel does
 not ship them; take them from a checkout or from GitHub.
 
 ## Solver backends
@@ -254,25 +272,25 @@ Remote backends need their vendor credential **and**
 `ANNEALBRIDGE_ALLOW_REMOTE=true`; without both they report
 `backend_unavailable`. `annealbridge recommend` ranks the backends for a
 given problem without solving it and never changes the one you asked for.
-Setup steps and per-backend behaviour: [docs/backends.md](docs/backends.md).
+Setup steps and per-backend behaviour: [docs/backends.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/backends.md).
 
 ## Documentation
 
-The pages below live under [docs/](docs/README.md).
+The pages below live under [docs/](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/README.md).
 
 | Page                                             | What it covers                                                        |
 | ------------------------------------------------ | --------------------------------------------------------------------- |
-| [docs/problem-format.md](docs/problem-format.md) | The input JSON: variables, objective, constraints, solver preferences |
-| [docs/output-format.md](docs/output-format.md)   | `SolveResult` and every field it carries                              |
-| [docs/errors.md](docs/errors.md)                 | Error catalog, warning codes, reason codes, exit codes                |
-| [docs/cli.md](docs/cli.md)                       | The `annealbridge` command line                                       |
-| [docs/mcp.md](docs/mcp.md)                       | The MCP server, tools, host configuration, Inspector                  |
-| [docs/backends.md](docs/backends.md)             | The six backends, D-Wave and Fujitsu setup, adding a backend          |
-| [docs/configuration.md](docs/configuration.md)   | Every `ANNEALBRIDGE_*` variable and the vendor credentials            |
-| [docs/architecture.md](docs/architecture.md)     | Layers, package layout, design principles                             |
-| [docs/security.md](docs/security.md)             | Defaults, limits, credential redaction, what reaches a vendor         |
-| [docs/testing.md](docs/testing.md)               | Test layout, golden tests, live tests, CI                             |
-| [docs/limitations.md](docs/limitations.md)       | Known limits and what is out of scope                                 |
+| [docs/problem-format.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/problem-format.md) | The input JSON: variables, objective, constraints, solver preferences |
+| [docs/output-format.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/output-format.md)   | `SolveResult` and every field it carries                              |
+| [docs/errors.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/errors.md)                 | Error catalog, warning codes, reason codes, exit codes                |
+| [docs/cli.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/cli.md)                       | The `annealbridge` command line                                       |
+| [docs/mcp.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/mcp.md)                       | The MCP server, tools, host configuration, Inspector                  |
+| [docs/backends.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/backends.md)             | The six backends, D-Wave and Fujitsu setup, adding a backend          |
+| [docs/configuration.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/configuration.md)   | Every `ANNEALBRIDGE_*` variable and the vendor credentials            |
+| [docs/architecture.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/architecture.md)     | Layers, package layout, design principles                             |
+| [docs/security.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/security.md)             | Defaults, limits, credential redaction, what reaches a vendor         |
+| [docs/testing.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/testing.md)               | Test layout, golden tests, live tests, CI                             |
+| [docs/limitations.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/limitations.md)       | Known limits and what is out of scope                                 |
 
 ## Security in one paragraph
 
@@ -282,7 +300,7 @@ than clamped, so a request can never quietly become several billed
 submissions. The streamable-http transport binds `127.0.0.1` and has **no
 authentication**; keep it behind a reverse proxy or a private network.
 Credentials never appear in results, logs or error messages. Details in
-[docs/security.md](docs/security.md); reporting in [SECURITY.md](SECURITY.md).
+[docs/security.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/security.md); reporting in [SECURITY.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/SECURITY.md).
 
 ## Development
 
@@ -296,7 +314,7 @@ pytest
 `pytest` runs the full suite with no skip and no xfail and never touches the
 network; the live vendor tests are opt-in (`pytest -m remote`). Architecture
 rules, design principles and the pull-request checklist are in
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/CONTRIBUTING.md).
 
 ## Status
 
@@ -305,9 +323,9 @@ CLI and the MCP tools are complete and covered by tests. Not supported, by
 design for now: real-valued or unbounded variables, alternative integer
 encodings (one-hot, unary), nonlinear constraints, automatic soft-weight
 normalization, and the Fujitsu annealer's native inequality / one-hot
-features. See [docs/limitations.md](docs/limitations.md) and
-[CHANGELOG.md](CHANGELOG.md).
+features. See [docs/limitations.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/limitations.md) and
+[CHANGELOG.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/CHANGELOG.md).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/TheTsungYing/AnnealBridge/blob/main/LICENSE)

@@ -73,6 +73,23 @@ and runs everything from there, so a missing packaged file cannot be masked by
 the checkout. It only uses the local solvers, leaves remote execution disabled
 by policy, and consumes no vendor quota.
 
+## Releasing
+
+Releases are published to PyPI by the *Release* workflow
+(`.github/workflows/release.yml`) through PyPI Trusted Publishing; no API
+token is stored in the repository or its secrets. To cut a release:
+
+1. Set the new version in `pyproject.toml` and turn the `[Unreleased]`
+   section of `CHANGELOG.md` into a dated `[X.Y.Z]` section.
+2. Commit, then tag that commit `vX.Y.Z` and push the tag. The workflow
+   refuses a tag that does not match the version in `pyproject.toml`.
+3. Approve the `pypi` environment run on GitHub if the environment requires a
+   reviewer, then check <https://pypi.org/project/annealbridge/>.
+
+A version number can be uploaded to PyPI only once. To rehearse without
+spending one, run the workflow by hand from the Actions tab: a manual run
+publishes the same artefact to TestPyPI through the `testpypi` environment.
+
 ## Architecture rules (enforced by tests)
 
 The package is a self-contained **core** plus thin **interfaces**. The

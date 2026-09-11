@@ -7,8 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-11
+
+First public release.
+
 ### Added
 
+- Structured `OptimizationProblem` JSON contract (schema versions `1.0` and
+  `1.1`) with binary and bounded-integer variables, linear/quadratic
+  objectives, and hard/soft linear constraints.
+- Deterministic pipeline: validate → compile → solve → re-validate every
+  candidate against the original problem → rank. Feasibility and objective
+  values are never inferred from solver energy.
+- BQM compiler (automatic hard-constraint penalties, binary slack for
+  inequalities, binary encoding of integers) and CQM compiler (native
+  constraints, native integers).
+- Six solver backends behind one `SolverBackend` protocol: `exact`,
+  `simulated_annealing`, `dwave_qpu`, `leap_hybrid_bqm`, `leap_hybrid_cqm`
+  and `fujitsu_da` (Fujitsu Digital Annealer over its HTTPS API, no vendor
+  SDK).
+- Backend recommendation (`recommend_backend` / `annealbridge recommend`),
+  advisory only.
+- MCP server (`annealbridge-mcp`, stdio and streamable-http) exposing
+  `get_optimization_capabilities`, `validate_optimization_problem`,
+  `recommend_backend` and `solve_optimization`.
+- CLI (`annealbridge`) with `solve`, `validate`, `recommend`, `capabilities`
+  and `export-schema`.
+- Policy layer driven by `ANNEALBRIDGE_*` environment variables: remote
+  execution and remote retries off by default, every resource limit enforced
+  as an error and never silently clamped, no silent fallback between
+  backends.
+- Credential redaction for every remote backend, declared per backend and
+  covered by a credential-leak test suite.
+- Architecture tests that enforce the layering (`models ← validation ←
+  penalty ← compiler ← solvers ← orchestration ← CLI / MCP`) and prove that a
+  new backend plugs into the pipeline without changing it.
+
+- A `Release` workflow (`.github/workflows/release.yml`) publishes the built
+  distribution to PyPI through Trusted Publishing when a `vX.Y.Z` tag is
+  pushed; it refuses a tag that does not match the `pyproject.toml` version.
+  Running the workflow by hand publishes the same artefact to TestPyPI.
+- The READMEs and `docs/mcp.md` document `uvx` / `pipx` as the way to run
+  `annealbridge-mcp` without managing a virtual environment, give the
+  `uvx`-based `claude_desktop_config.json` entry first, and show Claude Code's
+  `claude mcp add`. The links in `README.md` are absolute, so they survive on
+  the PyPI project page.
 - `SolveResult` now reports the service's own wall clock: `elapsed_ms` on
   the result (whatever the status) and `compile_ms` / `solve_ms` /
   `validate_ms` on every recorded attempt, for local and remote backends
@@ -148,42 +191,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fewer entries in `solutions` than `feasible_samples` means the list was
   truncated to `solver.top_k`. The previous wording ("how many satisfied
   every hard constraint") read as a count of raw solver rows.
-
-## [0.1.0] - 2026-09-09
-
-First public release.
-
-### Added
-
-- Structured `OptimizationProblem` JSON contract (schema versions `1.0` and
-  `1.1`) with binary and bounded-integer variables, linear/quadratic
-  objectives, and hard/soft linear constraints.
-- Deterministic pipeline: validate → compile → solve → re-validate every
-  candidate against the original problem → rank. Feasibility and objective
-  values are never inferred from solver energy.
-- BQM compiler (automatic hard-constraint penalties, binary slack for
-  inequalities, binary encoding of integers) and CQM compiler (native
-  constraints, native integers).
-- Six solver backends behind one `SolverBackend` protocol: `exact`,
-  `simulated_annealing`, `dwave_qpu`, `leap_hybrid_bqm`, `leap_hybrid_cqm`
-  and `fujitsu_da` (Fujitsu Digital Annealer over its HTTPS API, no vendor
-  SDK).
-- Backend recommendation (`recommend_backend` / `annealbridge recommend`),
-  advisory only.
-- MCP server (`annealbridge-mcp`, stdio and streamable-http) exposing
-  `get_optimization_capabilities`, `validate_optimization_problem`,
-  `recommend_backend` and `solve_optimization`.
-- CLI (`annealbridge`) with `solve`, `validate`, `recommend`, `capabilities`
-  and `export-schema`.
-- Policy layer driven by `ANNEALBRIDGE_*` environment variables: remote
-  execution and remote retries off by default, every resource limit enforced
-  as an error and never silently clamped, no silent fallback between
-  backends.
-- Credential redaction for every remote backend, declared per backend and
-  covered by a credential-leak test suite.
-- Architecture tests that enforce the layering (`models ← validation ←
-  penalty ← compiler ← solvers ← orchestration ← CLI / MCP`) and prove that a
-  new backend plugs into the pipeline without changing it.
 
 [Unreleased]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/TheTsungYing/AnnealBridge/releases/tag/v0.1.0
