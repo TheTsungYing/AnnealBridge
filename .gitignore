@@ -9,6 +9,10 @@ build/
 # Local tool settings
 .claude/settings.local.json
 
+# Local AI agent instructions (not versioned)
+/AGENTS.md
+/CLAUDE.md
+
 # Credentials — D-Wave config and env files must never be committed
 .env
 .env.*
