@@ -214,7 +214,8 @@ def expand_square(
             linear[variable] = weight * (2.0 * constant * value)
             quadratic[(variable, variable)] = weight * (value * value)
     for i, (var_i, value_i) in enumerate(items):
-        for var_j, value_j in items[i + 1 :]:
+        for j in range(i + 1, len(items)):
+            var_j, value_j = items[j]
             quadratic[(var_i, var_j)] = 2.0 * weight * value_i * value_j
     return linear, quadratic, weight * constant * constant
 

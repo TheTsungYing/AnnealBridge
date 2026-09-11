@@ -69,6 +69,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than a two-key sort, and the first-seen order is recovered with
   a counting pass instead of another sort (a 2^20-row enumeration
   deduplicates in about 230 ms instead of 490).
+- The BQM compiler gathers every linear, quadratic and offset contribution
+  in Python and lets dimod build the model once from numpy vectors,
+  instead of feeding each penalty term into a live model through
+  `add_linear` / `add_quadratic` (about a microsecond per call). Every
+  bias is the same chain of float additions in the same order, so the
+  compiled model -- variable order, offset, each linear and quadratic bias
+  -- is bit-for-bit what it was (checked against the previous compiler on
+  the 40 golden problems, the examples and 900-odd random binary and
+  integer problems, including fractional equality coefficients and soft
+  weights); a 200-integer-variable, 25-constraint problem compiles in
+  about 31 ms instead of 65. The estimates and the validator analyse each
+  inequality once per pass: `count_slack_bits` and `constraint_bit_count`
+  accept the caller's `analyze_inequality` result, so
+  `estimate_compiled_variables`, `estimate_encoded_interactions` and the
+  inequality warnings no longer analyse the same constraint twice (full
+  validation of the same problem about 2.0 ms instead of 3.0), and
+  `expand_square` indexes its pair loop instead of slicing a new list per
+  variable. Every estimate and warning is unchanged.
 
 ## [0.1.0] - 2026-09-11
 

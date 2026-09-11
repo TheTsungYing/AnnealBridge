@@ -39,13 +39,81 @@ logger = logging.getLogger(__name__)
 _COMPILER_NAME = "BQMCompiler"
 
 
+class _BiasAccumulator:
+    """Linear, quadratic and offset contributions gathered before dimod builds the model.
+
+    The penalty terms used to go into a live ``dimod.BinaryQuadraticModel``
+    one ``add_linear`` / ``add_quadratic`` call at a time, about a
+    microsecond each through the cython layer, which was most of a compile
+    on a model with tens of thousands of interactions (2026-09-11 batch 4
+    performance fix). This accumulator keeps the very same arithmetic:
+    every bias is the same chain of float additions in the very order the
+    ``add_*`` calls ran (the objective first, then each constraint's
+    penalty in constraint order), and :meth:`to_bqm` hands the finished
+    vectors to ``from_numpy_vectors``, which only copies them. A pair is
+    keyed by variable index without orientation, exactly as dimod keys an
+    interaction, so a contribution to ``(v, u)`` lands on the ``(u, v)``
+    entry; the first contribution sets the entry (dimod inserts a new
+    interaction's bias as given) and every later one adds. A variable is
+    registered with linear bias ``0.0``, as ``add_variable`` does, and the
+    registration order is the model's variable order, which the 3a golden
+    test pins.
+    """
+
+    def __init__(self) -> None:
+        self._order: list[str] = []
+        self._index: dict[str, int] = {}
+        self._linear: list[float] = []
+        self._quadratic: dict[tuple[int, int], float] = {}
+        self.offset: float = 0.0
+
+    def add_variable(self, name: str) -> None:
+        if name in self._index:
+            return
+        self._index[name] = len(self._order)
+        self._order.append(name)
+        self._linear.append(0.0)
+
+    def add_linear(self, name: str, bias: float) -> None:
+        self._linear[self._index[name]] += bias
+
+    def add_quadratic(self, u: str, v: str, bias: float) -> None:
+        i = self._index[u]
+        j = self._index[v]
+        if i == j:
+            raise ValueError(f"{u!r} cannot have an interaction with itself")
+        key = (i, j) if i < j else (j, i)
+        if key in self._quadratic:
+            self._quadratic[key] += bias
+        else:
+            self._quadratic[key] = bias
+
+    def to_bqm(self) -> dimod.BinaryQuadraticModel:
+        count = len(self._quadratic)
+        pairs = np.fromiter(
+            self._quadratic.keys(), dtype=np.dtype((np.int64, 2)), count=count
+        ).reshape(count, 2)
+        biases = np.fromiter(self._quadratic.values(), dtype=np.float64, count=count)
+        return dimod.BinaryQuadraticModel.from_numpy_vectors(
+            np.array(self._linear, dtype=np.float64),
+            (
+                np.ascontiguousarray(pairs[:, 0]),
+                np.ascontiguousarray(pairs[:, 1]),
+                biases,
+            ),
+            self.offset,
+            "BINARY",
+            variable_order=self._order,
+        )
+
+
 def _add_squared_penalty(
-    bqm: dimod.BinaryQuadraticModel,
+    model: _BiasAccumulator,
     coefficients: dict[str, float],
     constant: float,
     lam: float,
 ) -> None:
-    """Add ``lam * (sum(c_i * y_i) + constant)^2`` to ``bqm``.
+    """Add ``lam * (sum(c_i * y_i) + constant)^2`` to ``model``.
 
     A thin adapter over :func:`expand_square` (2026-09-09 review F-13a: the
     same expansion the CQM path's ``expand_square_qm`` uses). Every
@@ -55,10 +123,10 @@ def _add_squared_penalty(
     """
     linear, quadratic, offset = expand_square(coefficients, constant, lam)
     for variable, value in linear.items():
-        bqm.add_linear(variable, value)
+        model.add_linear(variable, value)
     for (var_i, var_j), value in quadratic.items():
-        bqm.add_quadratic(var_i, var_j, value)
-    bqm.offset += offset
+        model.add_quadratic(var_i, var_j, value)
+    model.offset += offset
 
 
 def _check_finite(
@@ -117,7 +185,10 @@ class BQMCompiler:
             raise CompilationError("BQMCompiler requires a hard_penalty; got None")
         bounds = variable_bounds(problem)
         forms, encodings = encode_integer_variables(problem)
-        bqm = dimod.BinaryQuadraticModel(vartype="BINARY")
+        # The biases accumulate in Python and dimod builds the model once at
+        # the end (batch 4); the registration order below is the model's
+        # variable order.
+        model = _BiasAccumulator()
         internal_variables: set[str] = set()
         for variable in problem.variables:
             # A binary variable is registered under its own name (the 3a
@@ -125,20 +196,21 @@ class BQMCompiler:
             # variable contributes its encoding bits in ``k`` order instead.
             encoding = encodings.get(variable.name)
             if encoding is None:
-                bqm.add_variable(variable.name)
+                model.add_variable(variable.name)
                 continue
             for bit in encoding.bits:
-                bqm.add_variable(bit)
+                model.add_variable(bit)
             internal_variables.update(encoding.bits)
 
-        self._compile_objective(bqm, problem.objective, forms)
+        self._compile_objective(model, problem.objective, forms)
 
         constraint_trace = [
             self._compile_constraint(
-                bqm, constraint, hard_penalty, internal_variables, bounds, forms
+                model, constraint, hard_penalty, internal_variables, bounds, forms
             )
             for constraint in problem.constraints
         ]
+        bqm = model.to_bqm()
         # 2026-09-09 review (F-07): the penalty arithmetic is plain float
         # multiplication, which overflows to ``inf`` silently; a model with
         # a non-finite bias must never reach a backend.
@@ -210,18 +282,24 @@ class BQMCompiler:
 
     def _compile_objective(
         self,
-        bqm: dimod.BinaryQuadraticModel,
+        model: _BiasAccumulator,
         objective: Objective,
         forms: Mapping[str, AffineForm],
     ) -> None:
-        # Shared with the CQM compiler (3a §14). ``update`` adds the other
-        # model's biases into the pre-registered variables exactly like the
-        # former inline ``add_*`` loop did, so the output is unchanged.
-        bqm.update(build_objective_bqm(objective, forms))
+        # Shared with the CQM compiler (3a §14). The objective model's biases
+        # are added into the pre-registered variables exactly like ``update``
+        # did (``0.0 + bias`` per linear entry, one entry per pair, the
+        # offset added once), so the output is unchanged.
+        objective_bqm = build_objective_bqm(objective, forms)
+        for variable, bias in objective_bqm.linear.items():
+            model.add_linear(variable, float(bias))
+        for u, v, bias in objective_bqm.iter_quadratic():
+            model.add_quadratic(u, v, float(bias))
+        model.offset += float(objective_bqm.offset)
 
     def _compile_constraint(
         self,
-        bqm: dimod.BinaryQuadraticModel,
+        model: _BiasAccumulator,
         constraint: Constraint,
         hard_penalty: float,
         internal_variables: set[str],
@@ -250,7 +328,7 @@ class BQMCompiler:
         if constraint.operator == "==":
             coefficients = nonzero_coefficients(constraint.terms)
             bit_coefficients, shift = substitute_linear(coefficients, forms)
-            _add_squared_penalty(bqm, bit_coefficients, shift - constraint.rhs, lam)
+            _add_squared_penalty(model, bit_coefficients, shift - constraint.rhs, lam)
         else:
             # ``encode_slack`` sizes the slack from the variables' bounds via
             # the same ``analyze_inequality`` the estimates use, so the
@@ -261,12 +339,12 @@ class BQMCompiler:
             if not redundant:
                 generated_variables = list(encoding.slack_coefficients)
                 for name in generated_variables:
-                    bqm.add_variable(name)
+                    model.add_variable(name)
                 internal_variables.update(generated_variables)
                 coefficients, shift = substitute_linear(encoding.coefficients, forms)
                 for name, value in encoding.slack_coefficients.items():
                     coefficients[name] = coefficients.get(name, 0.0) + float(value)
-                _add_squared_penalty(bqm, coefficients, encoding.constant + shift, lam)
+                _add_squared_penalty(model, coefficients, encoding.constant + shift, lam)
 
         return ConstraintTrace(
             constraint_id=constraint.id,

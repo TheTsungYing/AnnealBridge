@@ -394,7 +394,12 @@ def analyze_inequality(
     )
 
 
-def count_slack_bits(constraint: Constraint, bounds: Bounds | None = None) -> int:
+def count_slack_bits(
+    constraint: Constraint,
+    bounds: Bounds | None = None,
+    *,
+    analysis: InequalityAnalysis | None = None,
+) -> int:
     """Number of slack variables compilation will generate for ``constraint``.
 
     Equality constraints and redundant inequalities need none. A trivially
@@ -410,10 +415,16 @@ def count_slack_bits(constraint: Constraint, bounds: Bounds | None = None) -> in
     validator: :func:`analyze_inequality` already reports ``slack_range = 0``
     for a negative raw range that the §23.1 tolerance accepts (review F-04),
     so such a constraint counts zero bits rather than raising.
+
+    ``analysis`` is the caller's already-computed
+    ``analyze_inequality(constraint, bounds)``; when passed it must be the
+    analysis of *this* constraint under *these* bounds (avoids analysing the
+    same inequality twice, 2026-09-11 batch 4 performance fix).
     """
     if constraint.operator not in ("<=", ">="):
         return 0
-    analysis = analyze_inequality(constraint, bounds)
+    if analysis is None:
+        analysis = analyze_inequality(constraint, bounds)
     if analysis.redundant:
         return 0
     slack_range = analysis.slack_range
@@ -428,7 +439,12 @@ def count_slack_bits(constraint: Constraint, bounds: Bounds | None = None) -> in
     return len(compute_slack_coefficients(slack_range))
 
 
-def constraint_bit_count(constraint: Constraint, bounds: Bounds | None = None) -> int:
+def constraint_bit_count(
+    constraint: Constraint,
+    bounds: Bounds | None = None,
+    *,
+    analysis: InequalityAnalysis | None = None,
+) -> int:
     """Number of compiled bits one constraint's penalty couples together.
 
     Every distinct variable the constraint mentions contributes its encoding
@@ -436,10 +452,14 @@ def constraint_bit_count(constraint: Constraint, bounds: Bounds | None = None) -
     integer one) plus the slack bits the constraint generates. On the BQM
     path a squared penalty forms a clique over exactly these bits, which is
     what the density warning and :func:`estimate_encoded_interactions` need.
+
+    ``analysis`` is forwarded to :func:`count_slack_bits`: the caller's
+    already-computed ``analyze_inequality(constraint, bounds)`` for *this*
+    constraint under *these* bounds (2026-09-11 batch 4 performance fix).
     """
     names = {term.variable for term in constraint.terms}
     business_bits = sum(integer_encoding_bits(*_bounds_of(bounds, name)) for name in names)
-    return business_bits + count_slack_bits(constraint, bounds)
+    return business_bits + count_slack_bits(constraint, bounds, analysis=analysis)
 
 
 def estimate_compiled_variables(problem: OptimizationProblem) -> int:
@@ -456,9 +476,13 @@ def estimate_compiled_variables(problem: OptimizationProblem) -> int:
         integer_encoding_bits(*bounds[name])
         for name in {variable.name for variable in problem.variables}
     )
-    slack_bits = sum(
-        count_slack_bits(constraint, bounds) for constraint in problem.constraints
-    )
+    slack_bits = 0
+    for constraint in problem.constraints:
+        if constraint.operator in ("<=", ">="):
+            analysis = analyze_inequality(constraint, bounds)
+            slack_bits += count_slack_bits(constraint, bounds, analysis=analysis)
+        else:
+            slack_bits += count_slack_bits(constraint, bounds)
     return declared + slack_bits
 
 
@@ -531,10 +555,11 @@ def estimate_encoded_interactions(problem: OptimizationProblem) -> int:
         else:
             total += bits_1 * bits_2
     for constraint in problem.constraints:
-        if constraint.operator in ("<=", ">=") and analyze_inequality(
-            constraint, bounds
-        ).redundant:
-            continue
-        clique = constraint_bit_count(constraint, bounds)
+        analysis: InequalityAnalysis | None = None
+        if constraint.operator in ("<=", ">="):
+            analysis = analyze_inequality(constraint, bounds)
+            if analysis.redundant:
+                continue
+        clique = constraint_bit_count(constraint, bounds, analysis=analysis)
         total += clique * (clique - 1) // 2
     return total

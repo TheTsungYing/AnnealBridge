@@ -796,3 +796,166 @@ class TestSlackRangeIsExactWithinTheLimit:
         ]
 
         assert len(at_the_limit) == 2
+
+
+# --------------------------------------------------------------------------
+# 2026-09-11 batch 4: one ``analyze_inequality`` per inequality
+# --------------------------------------------------------------------------
+
+
+def reuse_problem() -> OptimizationProblem:
+    """Every shape the reuse path has to handle, in one problem.
+
+    ``x`` is 3 encoding bits, ``y`` is 2, ``b`` is 1; the constraints cover a
+    non-redundant ``<=``, a redundant ``<=``, a ``>=``, a *soft* ``<=`` over
+    integer variables and an equality (which needs no analysis at all).
+    """
+    return OptimizationProblem(
+        version="1.1",
+        name="reuse",
+        variables=[
+            Variable(name="x", type="integer", lower_bound=0, upper_bound=7),
+            Variable(name="y", type="integer", lower_bound=0, upper_bound=3),
+            Variable(name="b"),
+        ],
+        objective=Objective(
+            direction="minimize",
+            linear_terms=[LinearTerm(variable="x", coefficient=1)],
+            quadratic_terms=[QuadraticTerm(variable1="x", variable2="y", coefficient=1.0)],
+        ),
+        constraints=[
+            # Non-redundant ``<=``: lhs range [0, 10], slack range 5 -> 3 bits.
+            Constraint(
+                id="tight",
+                type="hard",
+                terms=[
+                    LinearTerm(variable="x", coefficient=1),
+                    LinearTerm(variable="y", coefficient=1),
+                ],
+                operator="<=",
+                rhs=5,
+            ),
+            # Redundant: rhs is above the lhs maximum, so no slack at all.
+            Constraint(
+                id="loose",
+                type="hard",
+                terms=[LinearTerm(variable="x", coefficient=1)],
+                operator="<=",
+                rhs=100,
+            ),
+            Constraint(
+                id="atleast",
+                type="hard",
+                terms=[
+                    LinearTerm(variable="x", coefficient=1),
+                    LinearTerm(variable="b", coefficient=1),
+                ],
+                operator=">=",
+                rhs=2,
+            ),
+            Constraint(
+                id="softcap",
+                type="soft",
+                weight=2.0,
+                terms=[
+                    LinearTerm(variable="x", coefficient=1),
+                    LinearTerm(variable="y", coefficient=2),
+                ],
+                operator="<=",
+                rhs=4,
+            ),
+            Constraint(
+                id="eq",
+                type="hard",
+                terms=[
+                    LinearTerm(variable="b", coefficient=1),
+                    LinearTerm(variable="x", coefficient=1),
+                ],
+                operator="==",
+                rhs=2,
+            ),
+        ],
+    )
+
+
+REUSE_INEQUALITIES = 4
+
+
+def counted_analyze(monkeypatch) -> list[int]:
+    """Count ``estimates.analyze_inequality`` calls without changing results."""
+    real = estimates.analyze_inequality
+    calls: list[int] = []
+
+    def wrapper(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(estimates, "analyze_inequality", wrapper)
+    return calls
+
+
+class TestAnalysisReuse:
+    """Passing a precomputed analysis never changes a number (batch 4).
+
+    ``count_slack_bits`` / ``constraint_bit_count`` accept the caller's
+    ``analyze_inequality(constraint, bounds)`` so the estimates and the
+    validator analyse each inequality once instead of twice. The values are
+    the hand-computed ones from before the change.
+    """
+
+    def test_passing_the_analysis_matches_recomputing_it(self):
+        problem = reuse_problem()
+        bounds = variable_bounds(problem)
+
+        for constraint in problem.constraints:
+            if constraint.operator == "==":
+                continue
+            analysis = analyze_inequality(constraint, bounds)
+            assert count_slack_bits(
+                constraint, bounds, analysis=analysis
+            ) == count_slack_bits(constraint, bounds)
+            assert constraint_bit_count(
+                constraint, bounds, analysis=analysis
+            ) == constraint_bit_count(constraint, bounds)
+
+    def test_equality_needs_no_analysis(self):
+        problem = reuse_problem()
+        bounds = variable_bounds(problem)
+        equality = problem.constraints[-1]
+
+        assert equality.operator == "=="
+        assert count_slack_bits(equality, bounds, analysis=None) == 0
+        assert count_slack_bits(equality, bounds) == 0
+        assert constraint_bit_count(equality, bounds, analysis=None) == 4
+        assert constraint_bit_count(equality, bounds) == 4
+
+    def test_per_constraint_counts_are_the_hand_computed_ones(self):
+        problem = reuse_problem()
+        bounds = variable_bounds(problem)
+        slack = [count_slack_bits(c, bounds) for c in problem.constraints]
+        clique = [constraint_bit_count(c, bounds) for c in problem.constraints]
+
+        assert slack == [3, 0, 3, 3, 0]
+        assert clique == [8, 3, 7, 8, 4]
+
+    def test_estimate_compiled_variables_analyses_each_inequality_once(
+        self, monkeypatch
+    ):
+        problem = reuse_problem()
+        calls = counted_analyze(monkeypatch)
+
+        # 3 + 2 + 1 encoding bits, then 3 + 0 + 3 + 3 + 0 slack bits.
+        assert estimate_compiled_variables(problem) == 15
+        assert len(calls) == REUSE_INEQUALITIES
+
+    def test_estimate_encoded_interactions_analyses_each_inequality_once(
+        self, monkeypatch
+    ):
+        problem = reuse_problem()
+        calls = counted_analyze(monkeypatch)
+
+        # 3 * 2 for x*y, then cliques over 8, 7, 8 and 4 bits (``loose`` is
+        # redundant): 6 + 28 + 21 + 28 + 6. Before the fix this analysed the
+        # three non-redundant inequalities a second time (7 calls).
+        assert estimate_encoded_interactions(problem) == 89
+        assert len(calls) == REUSE_INEQUALITIES

@@ -473,7 +473,7 @@ def _warn_inequalities(
                 )
             )
             continue
-        slack_bits = count_slack_bits(constraint, bounds)
+        slack_bits = count_slack_bits(constraint, bounds, analysis=analysis)
         if slack_bits > LARGE_SLACK_BITS_THRESHOLD:
             warnings.append(
                 _warning(
