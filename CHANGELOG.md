@@ -53,6 +53,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   three times and asks `min_time_limit` once instead of twice, the
   pre-submission check's value being reused by the solve of the same
   attempt. The submitted `time_limit` is unchanged.
+- Candidate deduplication and ranking (spec §25) do the same work with
+  fewer sorts; `samples`, `energies`, `counts` and the ranked top-k are
+  identical for every input. Integer (CQM and decoded-integer) rows are
+  packed into a few `uint64` words -- one field per column, sized to that
+  column's range -- instead of one sort key per column, so a 200-variable
+  result sorts on a handful of keys rather than 201 (10.8 → 3 ms on 2000
+  rows, 54 → 18 ms on 10000). Ranking builds the assignment tie-break key
+  and runs the full sort only on the rows that can still place in the
+  top-k (found with a partition on ranking score, then objective value,
+  keeping every row tied at the k-th place), instead of on every feasible
+  candidate. Assignments that fit one packed word -- up to 64 binary
+  variables, so every exact-backend enumeration -- deduplicate with a
+  single stable sort on the word plus a vectorised per-group minimum,
+  rather than a two-key sort, and the first-seen order is recovered with
+  a counting pass instead of another sort (a 2^20-row enumeration
+  deduplicates in about 230 ms instead of 490).
 
 ## [0.1.0] - 2026-09-11
 

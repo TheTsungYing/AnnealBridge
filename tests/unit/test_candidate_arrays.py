@@ -9,6 +9,7 @@ reports for the top-k.
 """
 
 import itertools
+import math
 import random
 from collections import Counter
 
@@ -30,7 +31,13 @@ from annealbridge.orchestration import (
     evaluate_objective_batch,
     process_candidates,
 )
-from annealbridge.orchestration.optimizer import _lexsort, _pack_rows, _row_keys, _words
+from annealbridge.orchestration.optimizer import (
+    _lexsort,
+    _pack_integer_rows,
+    _pack_rows,
+    _row_keys,
+    _words,
+)
 from annealbridge.solvers import RawSolverResult
 from annealbridge.validation import tolerance, validate_batch, validate_solution
 
@@ -183,6 +190,64 @@ def all_assignments(n_variables: int) -> np.ndarray:
     return np.array(
         list(itertools.product((0, 1), repeat=n_variables)), dtype=np.int8
     ).reshape(-1, n_variables)
+
+
+def column_range(column: int) -> tuple[int, int]:
+    """An inclusive value range that differs per column and dips negative.
+
+    Used by the wide integer fixtures: giving every column its own width
+    means a key path that assumed one common range -- or that packed the
+    columns with a single shared offset -- would misorder the rows.
+    """
+    return -(column % 7), (column % 13) + 1
+
+
+def distinct_binary_rows(
+    rng: np.random.Generator, count: int, n_variables: int
+) -> np.ndarray:
+    """``count`` pairwise-distinct 0/1 ``int8`` rows.
+
+    Falls back to the full enumeration when there are not that many
+    assignments (``n_variables`` = 1 asks for far more rows than exist).
+    """
+    if n_variables < 20 and count >= (1 << n_variables):
+        return all_assignments(n_variables)
+    collected = np.empty((0, n_variables), dtype=np.int8)
+    while collected.shape[0] < count:
+        draw = rng.integers(0, 2, size=(count * 2, n_variables), dtype=np.int8)
+        collected = np.unique(np.vstack([collected, draw]), axis=0)
+    rng.shuffle(collected, axis=0)  # np.unique sorts; do not feed sorted rows
+    return np.ascontiguousarray(collected[:count])
+
+
+def distinct_integer_rows(
+    rng: np.random.Generator, count: int, n_variables: int
+) -> np.ndarray:
+    """``count`` pairwise-distinct ``int64`` rows, one range per column."""
+    collected = np.empty((0, n_variables), dtype=np.int64)
+    while collected.shape[0] < count:
+        draw = np.empty((count * 2, n_variables), dtype=np.int64)
+        for column in range(n_variables):
+            low, high = column_range(column)
+            draw[:, column] = rng.integers(low, high + 1, size=draw.shape[0])
+        collected = np.unique(np.vstack([collected, draw]), axis=0)
+    rng.shuffle(collected, axis=0)
+    return np.ascontiguousarray(collected[:count])
+
+
+# Row counts for the "at scale" deduplication comparisons below. The oracle
+# walks every raw row in Python, so these are the largest sizes that still
+# keep the whole module in the low seconds.
+_LARGE_BINARY_ROWS = 8_000
+_LARGE_INTEGER_ROWS = 3_000
+_LARGE_INTEGER_VARIABLES = 50
+
+
+def shuffled_names(rng: np.random.Generator, prefix: str, count: int) -> list[str]:
+    """``count`` variable names whose alphabetical order is not the column
+    order, so anything keyed by name order cannot coincide with the layout.
+    """
+    return [f"{prefix}{index:03d}" for index in rng.permutation(count).tolist()]
 
 
 # Magnitudes on both sides of the hybrid tolerance's crossover (1e4): at
@@ -496,6 +561,44 @@ class TestDeduplicationMatchesReference:
         assert candidates.counts.tolist() == [2, 1, 1, 2, 1]
         assert candidates.counts.tolist() == reference_counts(raw, set())
 
+    @pytest.mark.parametrize("n_variables", [1, 20, 64, 65])
+    @pytest.mark.parametrize("seed", range(5))
+    def test_large_binary_matrices_match_the_row_by_row_reference(
+        self, n_variables, seed
+    ):
+        # The cases above are tens of rows; a grouped array path only shows
+        # its seams at scale, and around the 64-bit word boundary (1 word,
+        # 2 words) with a few thousand duplicates per assignment.
+        rng = np.random.default_rng(7_000 + 100 * n_variables + seed)
+        rows = _LARGE_BINARY_ROWS
+        distinct = distinct_binary_rows(rng, max(1, rows // 5), n_variables)
+        matrix = np.ascontiguousarray(
+            distinct[rng.integers(0, distinct.shape[0], size=rows)]
+        )
+        # -0.0 and 0.0 on purpose: they compare equal, so the minimum-energy
+        # pick has to fall back to "earliest read wins" for them.
+        energy_pool = np.array([-1.0, -0.0, 0.0, 1.0, 2.0])
+        energies = energy_pool[rng.integers(0, len(energy_pool), size=rows)]
+        variables = shuffled_names(rng, "b", n_variables)
+        raw = RawSolverResult(
+            variables=variables, samples=matrix, energies=energies, backend="exact"
+        )
+
+        expected = reference_deduplicate(raw, set())
+        candidates = deduplicate_samples(raw, set())
+
+        assert candidates.samples.dtype == np.int8
+        assert candidates.as_pairs() == expected
+        assert candidates.counts.tolist() == reference_counts(raw, set())
+        assert int(candidates.counts.sum()) == raw.num_samples
+        assert len(candidates) < rows  # duplicates really were collapsed
+        # ``as_pairs()`` compares energies as floats, where -0.0 == 0.0, so
+        # the signed zero has to be checked separately: picking the wrong
+        # read of a tie would otherwise pass unnoticed.
+        assert [math.copysign(1.0, energy) for _, energy in candidates.as_pairs()] == [
+            math.copysign(1.0, energy) for _, energy in expected
+        ]
+
 
 class TestPackRows:
     def test_word_order_matches_tuple_order(self):
@@ -535,7 +638,7 @@ class TestRowKeys:
             assert np.array_equal(key, word)
 
     @pytest.mark.parametrize("dtype", [np.int8, np.int64])
-    def test_non_binary_values_get_one_int64_key_per_column(self, dtype):
+    def test_non_binary_values_take_the_integer_packing_path(self, dtype):
         rng = random.Random(29)
         columns = 5
         rows = 40
@@ -550,8 +653,11 @@ class TestRowKeys:
             matrix[2] = 300
 
         keys = _row_keys(matrix)
-        assert len(keys) == columns
-        assert all(key.dtype == np.int64 for key in keys)
+        packed = _words(_pack_integer_rows(matrix))
+        # Five narrow columns share one word: fewer keys than columns.
+        assert len(keys) == len(packed) == 1
+        assert all(key.dtype == np.uint64 for key in keys)
+        assert all(np.array_equal(key, word) for key, word in zip(keys, packed))
 
         got = _lexsort(keys)
         expected = sorted(range(rows), key=lambda r: tuple(matrix[r].tolist()))
@@ -561,6 +667,58 @@ class TestRowKeys:
 
     def test_empty_matrix_is_accepted(self):
         keys = _row_keys(np.zeros((0, 5), dtype=np.int8))
+        assert all(len(key) == 0 for key in keys)
+
+    @pytest.mark.parametrize("columns", [1, 5, 40, 200])
+    def test_integer_columns_of_mixed_width_order_like_tuples(self, columns):
+        # Every column carries its own (partly negative) range and one of
+        # them is constant, so the keys cannot be built from a single shared
+        # range, and a constant column must not shift the ordering either.
+        rng = np.random.default_rng(17 + columns)
+        rows = 300
+        matrix = np.empty((rows, columns), dtype=np.int64)
+        for column in range(columns):
+            low, high = column_range(column)
+            matrix[:, column] = rng.integers(low, high + 1, size=rows)
+        if columns >= 2:
+            matrix[:, columns // 2] = -3
+
+        got = _lexsort(_row_keys(matrix))
+        expected = sorted(range(rows), key=lambda r: tuple(matrix[r].tolist()))
+
+        # Equal rows may come back in either order from either sort, so the
+        # comparison is on the row tuples, not on the row indices.
+        assert [tuple(matrix[r].tolist()) for r in got] == [
+            tuple(matrix[r].tolist()) for r in expected
+        ]
+
+    def test_integer_extreme_values_order_like_tuples(self):
+        # The int64 saturation points together with 0 and -1: a key path
+        # that offset or shifted the values would wrap around here and stop
+        # ordering the rows the way tuple comparison does.
+        rng = np.random.default_rng(23)
+        rows = 50
+        columns = 4
+        matrix = rng.integers(-2, 3, size=(rows, columns)).astype(np.int64)
+        extremes = np.array(
+            [np.iinfo(np.int64).min, np.iinfo(np.int64).max, 0, -1], dtype=np.int64
+        )
+        matrix[:, 1] = extremes[rng.integers(0, len(extremes), size=rows)]
+        # Make sure each extreme really occurs whatever the draw did.
+        matrix[:4, 1] = extremes
+
+        got = _lexsort(_row_keys(matrix))
+        expected = sorted(range(rows), key=lambda r: tuple(matrix[r].tolist()))
+
+        assert set(matrix[:, 1].tolist()) == set(extremes.tolist())
+        assert [tuple(matrix[r].tolist()) for r in got] == [
+            tuple(matrix[r].tolist()) for r in expected
+        ]
+
+    def test_integer_matrix_with_no_rows_is_accepted(self):
+        # Same as the int8 case above, on the integer path: no rows must not
+        # trip the min/max scan or the key construction.
+        keys = _row_keys(np.zeros((0, 5), dtype=np.int64))
         assert all(len(key) == 0 for key in keys)
 
 
@@ -1294,6 +1452,35 @@ class TestIntegerRowsMatchReference:
         assert candidates.as_pairs() == reference_deduplicate(raw, set())
         assert candidates.counts.tolist() == reference_counts(raw, set())
         assert int(candidates.counts.sum()) == rows
+
+    @pytest.mark.parametrize("seed", range(6))
+    def test_large_integer_matrices_match_the_row_by_row_reference(self, seed):
+        # 50 columns of genuinely different widths, thousands of rows and
+        # only four distinct energies: every assignment repeats several
+        # times and nearly every repeat is an energy tie.
+        rng = np.random.default_rng(9_000 + seed)
+        n_variables = _LARGE_INTEGER_VARIABLES
+        rows = _LARGE_INTEGER_ROWS
+        distinct = distinct_integer_rows(rng, rows // 4, n_variables)
+        matrix = np.ascontiguousarray(
+            distinct[rng.integers(0, distinct.shape[0], size=rows)]
+        )
+        energy_pool = np.array([-2.0, -1.0, 0.0, 1.0])
+        energies = energy_pool[rng.integers(0, len(energy_pool), size=rows)]
+        variables = shuffled_names(rng, "iv", n_variables)
+        raw = RawSolverResult(
+            variables=variables, samples=matrix, energies=energies, backend="cqm"
+        )
+
+        assert raw.samples.dtype == np.int64
+        expected = reference_deduplicate(raw, set())
+        candidates = deduplicate_samples(raw, set())
+
+        assert candidates.samples.dtype == np.int64
+        assert candidates.as_pairs() == expected
+        assert candidates.counts.tolist() == reference_counts(raw, set())
+        assert int(candidates.counts.sum()) == raw.num_samples
+        assert len(candidates) < rows
 
 
 class TestIntegerProcessCandidatesMatchesRowByRow:
