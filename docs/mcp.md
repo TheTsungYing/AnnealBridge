@@ -20,9 +20,20 @@ The MCP server lives behind an extra:
 pip install "annealbridge[mcp]"
 ```
 
-That adds the `mcp>=2,<3` dependency and installs the `annealbridge-mcp`
-entry point. The core install (and the `annealbridge` CLI) does not depend on
-`mcp` at all.
+That adds the `mcp>=2,<3` dependency. The core install (and the
+`annealbridge` CLI) does not depend on `mcp` at all.
+
+The `annealbridge-mcp` command itself is installed either way, extra or not.
+Without the extra it does not start: it prints one line on stderr,
+
+```console
+$ annealbridge-mcp
+Error: the MCP server needs the optional "mcp" dependency; install it with: pip install "annealbridge[mcp]"
+```
+
+and ends with exit code `2`, leaving stdout empty — a missing extra is
+reported, never a `ModuleNotFoundError` traceback. Install the extra and the
+same command works.
 
 Run it with no arguments for stdio, the default transport:
 
@@ -34,7 +45,8 @@ Configuration comes from the `ANNEALBRIDGE_*` environment
 ([Configuration](configuration.md)). The settings are read and validated
 before the transport starts: an invalid value is reported on stderr and ends
 the process with exit code `2` rather than a traceback, so a misconfigured
-server fails at launch instead of on the first tool call. Logs go to stderr at
+server fails at launch instead of on the first tool call. A missing `[mcp]`
+extra ends the same way, with the same exit code. Logs go to stderr at
 `INFO` level, which keeps stdout clean for the stdio protocol.
 
 ## Tools

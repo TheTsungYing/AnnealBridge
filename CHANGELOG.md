@@ -28,9 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SettingsError` (exit code 2) instead of an empty host silently binding
   every interface or an out-of-range port raising at socket bind. The
   `annealbridge-mcp --host` / `--port` overrides obey the same rule.
+- Removed the `Typing :: Typed` trove classifier. The wheel ships no
+  `py.typed` and the project runs no type checker yet, so the classifier
+  promised more than the package delivers; it will return together with
+  `py.typed` once a type check is part of CI.
 
 ### Fixed
 
+- `annealbridge-mcp` on a core-only install (no `[mcp]` extra) now prints a
+  one-line install hint on stderr and exits with code 2 instead of crashing
+  with `ModuleNotFoundError: No module named 'mcp'`; the console script now
+  enters through `annealbridge.interfaces.mcp_entrypoint`, which imports
+  nothing from `mcp` at module level.
+  `python -m annealbridge.interfaces.mcp.server` is unchanged.
 - CQM compilation now refuses a model whose objective or native constraint
   carries a non-finite bias (a soft weight × coefficient product that
   overflowed) with `COMPILATION_FAILED`, matching the BQM path; no backend

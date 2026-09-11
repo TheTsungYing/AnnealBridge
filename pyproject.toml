@@ -37,7 +37,6 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Software Development :: Libraries :: Python Modules",
-    "Typing :: Typed",
 ]
 dependencies = [
     "pydantic>=2.0",
@@ -66,7 +65,7 @@ Changelog = "https://github.com/OWNER/AnnealBridge/blob/main/CHANGELOG.md"
 
 [project.scripts]
 annealbridge = "annealbridge.interfaces.cli.main:main"
-annealbridge-mcp = "annealbridge.interfaces.mcp.server:main"
+annealbridge-mcp = "annealbridge.interfaces.mcp_entrypoint:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

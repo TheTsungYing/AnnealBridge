@@ -178,6 +178,13 @@ def main() -> None:
     tools module; this function only parses arguments and runs the transport.
     Invalid ``ANNEALBRIDGE_*`` settings are reported on stderr and end the
     process with exit code 2 instead of a traceback.
+
+    The ``annealbridge-mcp`` console script does not point here directly: it
+    enters through ``annealbridge.interfaces.mcp_entrypoint``, which imports
+    this module lazily so a core-only install (no ``[mcp]`` extra) reports the
+    missing dependency instead of raising ``ModuleNotFoundError``. Running
+    ``python -m annealbridge.interfaces.mcp.server`` still reaches this
+    function unchanged.
     """
     try:
         settings = load_settings()

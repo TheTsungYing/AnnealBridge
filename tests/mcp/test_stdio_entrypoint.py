@@ -1,14 +1,19 @@
 """The ``annealbridge-mcp`` stdio entry point, driven as a real subprocess.
 
-This is the only test allowed to spawn a subprocess (spec §26). It launches
-the server via ``python -m annealbridge.interfaces.mcp.server`` — equivalent
-to the ``annealbridge-mcp`` console script but immune to PATH differences on
-Windows and in CI — and asserts the four tools are served over stdio.
+This is the only test allowed to spawn a subprocess (spec §26). It covers both
+ways the server is started: ``python -m annealbridge.interfaces.mcp.server``,
+and the ``annealbridge-mcp`` console script the installed distribution
+generates. The latter is the regression test for the 2026-09-11 install
+verification gaps 3 and 4 — the script now enters through
+``annealbridge.interfaces.mcp_entrypoint``, and nothing else may notice.
+Both must serve the same four tools over stdio.
 """
 
 import os
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from mcp import Client, StdioServerParameters
@@ -28,6 +33,25 @@ async def test_stdio_entrypoint_serves_the_four_tools():
         command=sys.executable,
         args=["-m", "annealbridge.interfaces.mcp.server"],
     )
+    async with Client(params) as client:
+        tools = (await client.list_tools()).tools
+
+    assert sorted(tool.name for tool in tools) == EXPECTED_TOOLS
+
+
+async def test_console_script_serves_the_four_tools():
+    """2026-09-11 install verification (gaps 3 and 4): the generated
+    ``annealbridge-mcp`` script — not ``python -m`` — must start the real
+    server through the entry-point shim and serve the same four tools."""
+    script = shutil.which("annealbridge-mcp", path=str(Path(sys.executable).parent))
+    if script is None:
+        pytest.fail(
+            "the annealbridge-mcp console script is missing next to "
+            f"{sys.executable}; reinstall the project with "
+            'pip install -e ".[all,dev]"'
+        )
+
+    params = StdioServerParameters(command=script, args=[])
     async with Client(params) as client:
         tools = (await client.list_tools()).tools
 

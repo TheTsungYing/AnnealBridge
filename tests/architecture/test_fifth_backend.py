@@ -397,6 +397,12 @@ class TestEveryCredentialBearingBackendDeclaresOnConstruction:
         self, backend_class, env_vars, monkeypatch
     ):
         monkeypatch.setattr(metadata_module, "_DECLARATIONS", {})
+        # The secret sources are process-wide too: with dwave-cloud-client
+        # installed, the ``ocean_config`` source an earlier constructor
+        # registered reads Ocean's merged config — where the env token wins —
+        # and would mask FAKE_KEY on its own. Isolate them the same way, so
+        # what follows can only come from this constructor.
+        monkeypatch.setattr(metadata_module, "_SECRET_SOURCES", {})
         for env_var in env_vars:
             monkeypatch.setenv(env_var, FAKE_KEY)
         # FAKE_KEY matches no vendor value pattern, so only the declared env
