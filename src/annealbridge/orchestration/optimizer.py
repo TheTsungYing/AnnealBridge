@@ -10,6 +10,7 @@ never on the concrete compiled model type (spec §17).
 import logging
 import math
 import threading
+import time
 import traceback
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
@@ -61,8 +62,17 @@ from annealbridge.validation import (
     validate_solution,
 )
 from annealbridge.validation.estimates import estimate_model_variables
+from annealbridge.version import package_version
 
 logger = logging.getLogger(__name__)
+
+
+def _elapsed_ms(started: float) -> float:
+    """Milliseconds of wall clock since ``started`` (a ``perf_counter`` value).
+
+    Rounded to the microsecond: finer digits are clock noise, not information.
+    """
+    return round((time.perf_counter() - started) * 1000.0, 3)
 
 
 def evaluate_objective(objective: Objective, sample: dict[str, int]) -> float:
@@ -497,6 +507,7 @@ class OptimizationService:
         ``validate`` must still see them. Only ``invalid_problem`` carries
         none: warnings are produced for an error-free problem only.
         """
+        started = time.perf_counter()
         validation, _, _ = self._validate_against_backend(problem)
         if validation.errors:
             logger.info(
@@ -504,13 +515,18 @@ class OptimizationService:
                 problem.name,
                 len(validation.errors),
             )
-            return self._failure("invalid_problem", None, None, validation.errors)
-
-        result = self._dispatch(problem)
-        if not validation.warnings:
-            return result
+            result = self._failure("invalid_problem", None, None, validation.errors)
+        else:
+            result = self._dispatch(problem)
+        # Every path is stamped the same way: the service's own wall clock
+        # (independent of the vendor-reported ``metadata.timing_us``) and
+        # the package version that produced the result.
         return result.model_copy(
-            update={"warnings": [*validation.warnings, *result.warnings]}
+            update={
+                "warnings": [*validation.warnings, *result.warnings],
+                "elapsed_ms": _elapsed_ms(started),
+                "annealbridge_version": package_version(),
+            }
         )
 
     def _dispatch(self, problem: OptimizationProblem) -> SolveResult:
@@ -833,7 +849,9 @@ class OptimizationService:
                         penalty,
                         metadata=raw.metadata if raw is not None else None,
                     )
+                compile_started = time.perf_counter()
                 compiled = self._compile(compiler, problem, penalty)
+                compile_ms = _elapsed_ms(compile_started)
                 # §14 step 9 on the compiled model (slack included): the
                 # final guarantee behind the estimate above. Never clamp,
                 # never fall back.
@@ -863,7 +881,9 @@ class OptimizationService:
                         [time_limit_error],
                         attempts=attempts,
                     )
+                solve_started = time.perf_counter()
                 raw = backend.solve(compiled, problem.solver)
+                solve_ms = _elapsed_ms(solve_started)
                 # 3a §22: the service, not the backend, knows the model
                 # type; never create metadata a local backend did not.
                 if raw.metadata is not None:
@@ -873,10 +893,12 @@ class OptimizationService:
                 # 3b §16 step 12a: the compiler strips internal columns and
                 # decodes integer variables; the candidate pipeline only
                 # ever sees business variables in problem order.
+                validate_started = time.perf_counter()
                 decoded = compiler.decode(compiled, raw)
                 solutions, unique_samples, feasible_samples = process_candidates(
                     problem, decoded, frozenset(), problem.solver.top_k
                 )
+                validate_ms = _elapsed_ms(validate_started)
                 attempts.append(
                     SolveAttempt(
                         attempt=attempt,
@@ -884,6 +906,11 @@ class OptimizationService:
                         samples_received=raw.num_samples,
                         unique_samples=unique_samples,
                         feasible_samples=feasible_samples,
+                        compiled_variables=compiled.num_variables,
+                        compiled_interactions=compiled.num_interactions,
+                        compile_ms=compile_ms,
+                        solve_ms=solve_ms,
+                        validate_ms=validate_ms,
                     )
                 )
                 logger.info(
@@ -908,6 +935,12 @@ class OptimizationService:
                         objective_direction=direction,
                         solutions=solutions,
                         attempts=attempts,
+                        # Mirrors ``infeasibility_proven``: an exhaustive
+                        # backend that returned samples enumerated every
+                        # assignment, every business assignment was
+                        # re-validated and ranked, so rank 1 is the global
+                        # optimum of the ranking score.
+                        optimality_proven=backend.is_exhaustive and raw.num_samples > 0,
                         metadata=raw.metadata,
                     )
                 if attempt < max_attempts and penalty is not None:

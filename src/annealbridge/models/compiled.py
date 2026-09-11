@@ -61,6 +61,9 @@ class CompiledProblem(BaseModel):
     hard_penalty: float | None
     objective_scale: float
     num_variables: int
+    # Quadratic terms in the compiled model: the BQM's interactions, or on
+    # the CQM path the objective's plus every constraint's.
+    num_interactions: int = 0
     # 3b spec §12: filled by the BQM compiler for integer variables (one
     # entry per variable, keyed by its name); empty on the CQM path and for
     # binary-only problems.

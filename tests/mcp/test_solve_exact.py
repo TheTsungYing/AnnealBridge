@@ -6,6 +6,8 @@ hands back structured content (a dict, not a JSON string) and that slack
 variables stay inside the compiler.
 """
 
+from importlib.metadata import version
+
 import pytest
 from mcp import Client
 
@@ -32,6 +34,13 @@ async def test_solve_knapsack_on_exact_backend(load_example):
     assert isinstance(content, dict)
 
     assert content["status"] == "success"
+    assert content["optimality_proven"] is True
+    assert content["annealbridge_version"] == version("annealbridge")
+    assert content["elapsed_ms"] >= 0
+    attempt = content["attempts"][0]
+    assert attempt["compiled_variables"] == 8  # 4 items + 4 slack bits
+    assert attempt["compiled_interactions"] > 0
+    assert all(attempt[key] >= 0 for key in ("compile_ms", "solve_ms", "validate_ms"))
 
     best = content["solutions"][0]
     assert best["objective_value"] == pytest.approx(KNAPSACK_OPTIMUM_VALUE)

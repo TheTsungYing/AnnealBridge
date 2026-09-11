@@ -11,8 +11,6 @@ import argparse
 import json
 import logging
 import sys
-from importlib.metadata import PackageNotFoundError, version
-
 from mcp.server import MCPServer
 
 from annealbridge.config import (
@@ -27,6 +25,7 @@ from annealbridge.interfaces.composition import (  # noqa: F401  (re-exports)
     build_state,
     build_state_from_policy,
 )
+from annealbridge.version import package_version
 
 # The smallest complete problem, shown to the host at initialize so an agent
 # learns the document shape before its first call instead of from its first
@@ -110,10 +109,7 @@ A minimal complete problem (maximize value under a weight limit):
 
 def _package_version() -> str:
     """The installed distribution's version, or ``"unknown"`` outside one."""
-    try:
-        return version("annealbridge")
-    except PackageNotFoundError:
-        return "unknown"
+    return package_version()
 
 
 mcp = MCPServer(

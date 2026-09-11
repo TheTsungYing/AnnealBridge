@@ -135,6 +135,8 @@ class TestEqualityConstraints:
         assert trace.compiler == "BQMCompiler"
         assert compiled.internal_variables == set()
         assert compiled.num_variables == 3
+        # x1 + x2 == 1 squared couples the pair once.
+        assert compiled.num_interactions == compiled.model.num_interactions == 1
 
 
 class TestInequalityConstraints:

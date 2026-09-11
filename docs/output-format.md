@@ -35,10 +35,13 @@ The outcome of `solve_optimization` / `annealbridge solve`.
 | `solutions` | array of [Solution](#solution) | Ranked feasible solutions, best first, at most `solver.top_k`. Empty unless `status` is `success`. |
 | `attempts` | array of [SolveAttempt](#solveattempt) | One entry per compile/solve/validate attempt, in order. |
 | `infeasibility_proven` | boolean | `true` only when an exhaustive backend actually enumerated every assignment and found none feasible. Defaults to `false`. |
+| `optimality_proven` | boolean | `true` only on `success` when an exhaustive backend enumerated every assignment: rank 1 is then the global optimum of `ranking_score`, not merely the best candidate seen. Always `false` on a heuristic or remote backend. |
 | `errors` | array of [SolveError](#solveerror) | Structured failures. Empty on success. |
 | `warnings` | array of [SolveError](#solveerror) | Non-blocking advice, same structure as an error: the warnings `validate` gives for this backend, then any raised during the run. Present whatever the `status`, except `invalid_problem`. |
 | `metadata` | [SolverExecutionMetadata](#solverexecutionmetadata) \| null | Sanitized execution facts. `null` when the backend reported none — the local backends do not. |
 | `message` | string \| null | Human-readable summary, mainly used to explain an `infeasible` result. |
+| `elapsed_ms` | number \| null | Wall-clock milliseconds measured by the service from entering `solve` to returning, problem validation and any wait for a concurrency slot included. Present whatever the `status`. Unrelated to `metadata.timing_us`, which is what a vendor reports about its own side. |
+| `annealbridge_version` | string \| null | The installed package version that produced the result (`"unknown"` outside an installed distribution). |
 
 ### SolveStatus
 
@@ -81,9 +84,20 @@ returned samples can set — is a proof. On a heuristic or remote backend an
 | `samples_received` | integer | Rows the backend returned. |
 | `unique_samples` | integer | Distinct assignments among them, after decoding. |
 | `feasible_samples` | integer | How many satisfied every hard constraint under re-validation. |
+| `compiled_variables` | integer \| null | The compiled model's actual variable count (business variables plus slack and integer-encoding bits), as opposed to the estimate `validate` reports. |
+| `compiled_interactions` | integer \| null | The compiled model's quadratic terms: the BQM's interactions, or on the CQM path the objective's plus every constraint's. |
+| `compile_ms` | number \| null | Wall-clock milliseconds the compile stage took. |
+| `solve_ms` | number \| null | Wall-clock milliseconds the backend call took, network round-trips included on a remote backend. |
+| `validate_ms` | number \| null | Wall-clock milliseconds for decoding, deduplication, re-validation and ranking of the returned samples. |
 
 An attempt is recorded even when it produced nothing feasible, so the retry
 ladder is visible: attempt 2 carries double attempt 1's penalty.
+
+The three `*_ms` timings are the service's own clock around each stage and
+are measured for every backend, local ones included. They vary from run to
+run and are the only fields of a result that do; `elapsed_ms` on the result
+covers all attempts plus validation and bookkeeping, so it is never smaller
+than their sum.
 
 ### ConstraintEvaluation
 
@@ -227,14 +241,22 @@ Ranks 3–5 are elided below; they continue the same pattern down to
       "penalty": 62.0,
       "samples_received": 256,
       "unique_samples": 16,
-      "feasible_samples": 10
+      "feasible_samples": 10,
+      "compiled_variables": 8,
+      "compiled_interactions": 28,
+      "compile_ms": 1.2,
+      "solve_ms": 3.4,
+      "validate_ms": 0.8
     }
   ],
   "infeasibility_proven": false,
+  "optimality_proven": true,
   "errors": [],
   "warnings": [],
   "metadata": null,
-  "message": null
+  "message": null,
+  "elapsed_ms": 6.1,
+  "annealbridge_version": "0.1.0"
 }
 ```
 
@@ -244,7 +266,10 @@ slack columns, 16 distinct business assignments remained, 10 of which satisfy
 the capacity constraint. `energy` is `-17.0` because the compiled model
 minimizes the negated objective — `objective_value` is the `17` the caller
 asked about, recomputed from the original JSON. `metadata` is `null` because a
-local backend reports no execution facts.
+local backend reports no execution facts. `optimality_proven` is `true` because
+`exact` enumerated every assignment, so the rank-1 objective of 17 is the
+best any feasible assignment can reach. The `*_ms` values are illustrative:
+they are wall-clock measurements and differ on every run.
 
 ## ProblemValidationResult
 

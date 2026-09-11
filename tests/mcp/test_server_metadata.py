@@ -75,5 +75,8 @@ def test_package_version_falls_back_outside_a_distribution(monkeypatch):
     def missing(_name: str) -> str:
         raise PackageNotFoundError("annealbridge")
 
-    monkeypatch.setattr(server, "version", missing)
+    from annealbridge import version as version_module
+
+    monkeypatch.setattr(version_module, "version", missing)
+    assert version_module.package_version() == "unknown"
     assert server._package_version() == "unknown"

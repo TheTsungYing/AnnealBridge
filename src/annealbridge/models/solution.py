@@ -52,6 +52,16 @@ class SolveAttempt(BaseModel):
     samples_received: int
     unique_samples: int
     feasible_samples: int
+    # Actual size of the compiled model this attempt ran (not the
+    # pre-compile estimate ``validate`` reports).
+    compiled_variables: int | None = None
+    compiled_interactions: int | None = None
+    # Wall-clock milliseconds measured by the service around each stage:
+    # compile, the backend call, and decode + dedup + validate + rank.
+    # Independent of the vendor-reported ``metadata.timing_us``.
+    compile_ms: float | None = None
+    solve_ms: float | None = None
+    validate_ms: float | None = None
 
 
 class SolveError(BaseModel):
@@ -93,7 +103,15 @@ class SolveResult(BaseModel):
     solutions: list[Solution]
     attempts: list[SolveAttempt]
     infeasibility_proven: bool = False
+    # True only when an exhaustive backend enumerated every assignment, so
+    # rank 1 is the global optimum of the ranking score, not merely the
+    # best candidate seen.
+    optimality_proven: bool = False
     errors: list[SolveError] = []
     warnings: list[SolveError] = []
     metadata: SolverExecutionMetadata | None = None
     message: str | None = None
+    # Wall-clock milliseconds from entering ``solve`` to returning, problem
+    # validation and any wait for a concurrency slot included.
+    elapsed_ms: float | None = None
+    annealbridge_version: str | None = None

@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `SolveResult` now reports the service's own wall clock: `elapsed_ms` on
+  the result (whatever the status) and `compile_ms` / `solve_ms` /
+  `validate_ms` on every recorded attempt, for local and remote backends
+  alike. These are independent of the vendor-reported `metadata.timing_us`
+  and are the only result fields that vary between runs.
+- `SolveResult.optimality_proven`: `true` only when an exhaustive backend
+  enumerated every assignment, so rank 1 is the global optimum of the
+  ranking score. The mirror of `infeasibility_proven`.
+- `SolveAttempt.compiled_variables` and `compiled_interactions`: the actual
+  size of the model each attempt ran (`CompiledProblem.num_interactions` is
+  new too), as opposed to the estimate `validate` reports.
+- `SolveResult.annealbridge_version`: the package version that produced the
+  result, read through the new `annealbridge.version.package_version()`
+  that the MCP server now shares.
+- `annealbridge solve` prints `Elapsed:` in the header and `Optimality
+  proven:` after a successful solve.
 - The `simulated_annealing` backend samples its reads in shards of 25, up to
   `ANNEALBRIDGE_SA_WORKERS` of them concurrently (new setting; unset detects
   the CPUs available to the process). The shard layout and shard seeds depend

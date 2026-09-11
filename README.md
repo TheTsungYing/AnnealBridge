@@ -68,7 +68,8 @@ CQM, and the Fujitsu Digital Annealer for remote execution.
 - **Structured failures, never exceptions.** Every outcome is a `SolveResult`
   with a `status`; every failure carries stable error codes from one catalog,
   each with a `recommended_action`. (`infeasible` is an answer, not a failure:
-  it carries `infeasibility_proven` and a message instead of an error code.)
+  it carries `infeasibility_proven` and a message instead of an error code;
+  a `success` on an exhaustive backend carries `optimality_proven`.)
 - **No silent decisions.** An unavailable backend is reported, never swapped
   for a local one. An over-limit parameter is rejected, never clamped. A field
   the schema does not declare is rejected, never ignored. A solve result

@@ -122,6 +122,8 @@ class TestVariables:
         assert all(cqm.vartype(name) is dimod.BINARY for name in cqm.variables)
         assert compiled.model_type == "cqm"
         assert compiled.num_variables == len(problem.variables) == 3
+        # Linear objective and linear constraints: nothing quadratic.
+        assert compiled.num_interactions == 0
         assert compiled.internal_variables == set()
         assert compiled.hard_penalty is None
 

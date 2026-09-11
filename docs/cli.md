@@ -47,6 +47,7 @@ Problem:   knapsack
 Backend:   exact
 Status:    success
 Attempts:  1
+Elapsed:   6.1 ms
 
 Best solution (rank 1)
   objective (maximize):  17
@@ -58,7 +59,11 @@ Best solution (rank 1)
 
 Hard constraints: 1 / 1 satisfied
 Soft constraints: 0 violations
+Optimality proven: yes
 ```
+
+`Elapsed` is the service's own wall clock for the whole call and varies from
+run to run; `Optimality proven` is `yes` only on an exhaustive backend.
 
 A `version: "1.1"` problem with bounded integer variables reads the same way;
 integers come back as plain `int` values inside their declared bounds:
@@ -69,6 +74,7 @@ Problem:   integer_knapsack
 Backend:   exact
 Status:    success
 Attempts:  1
+Elapsed:   9.7 ms
 
 Best solution (rank 1)
   objective (maximize):  34

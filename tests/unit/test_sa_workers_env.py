@@ -62,4 +62,15 @@ def test_worker_count_changes_nothing_but_speed(clean_env):
     parallel = build_state().service.solve(seeded_knapsack(200))
 
     assert serial.status == "success"
-    assert serial.model_dump() == parallel.model_dump()
+    # The service's own wall clock is the one thing allowed to differ.
+    clock = {
+        "elapsed_ms": True,
+        "attempts": {"__all__": {"compile_ms", "solve_ms", "validate_ms"}},
+    }
+    assert serial.model_dump(exclude=clock) == parallel.model_dump(exclude=clock)
+    for result in (serial, parallel):
+        assert result.elapsed_ms >= 0
+        for attempt in result.attempts:
+            assert attempt.compile_ms >= 0
+            assert attempt.solve_ms >= 0
+            assert attempt.validate_ms >= 0

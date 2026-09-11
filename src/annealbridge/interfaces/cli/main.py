@@ -124,6 +124,8 @@ def _render_human(problem: OptimizationProblem, result: SolveResult) -> str:
         f"Status:    {result.status}",
         f"Attempts:  {len(result.attempts)}",
     ]
+    if result.elapsed_ms is not None:
+        lines.append(f"Elapsed:   {_format_number(round(result.elapsed_ms, 1))} ms")
 
     if result.status == "success":
         best = result.solutions[0]
@@ -146,6 +148,9 @@ def _render_human(problem: OptimizationProblem, result: SolveResult) -> str:
         lines.append("")
         lines.append(f"Hard constraints: {hard_satisfied} / {len(hard)} satisfied")
         lines.append(f"Soft constraints: {soft_violated} violations")
+        lines.append(
+            f"Optimality proven: {'yes' if result.optimality_proven else 'no'}"
+        )
 
     elif result.status in ("invalid_problem", "resource_limit_exceeded"):
         title = (

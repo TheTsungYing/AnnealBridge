@@ -62,7 +62,8 @@ Leap hybrid CQM 與 Fujitsu Digital Annealer。
 - **結構化的失敗，不丟例外。** 每個結果都是 `SolveResult`，帶有 `status`；
   每個失敗都帶同一份目錄裡的穩定錯誤碼，以及每個錯誤對應的
   `recommended_action`。（`infeasible` 是答案而不是失敗：它帶的是
-  `infeasibility_proven` 與一段說明，而不是錯誤碼。）
+  `infeasibility_proven` 與一段說明，而不是錯誤碼；窮舉 backend 的
+  `success` 則帶 `optimality_proven`。）
 - **不做沉默的決定。** backend 不可用就如實回報，絕不偷偷換成本地的。參數
   超過上限就直接拒絕，絕不自動夾到範圍內。schema 沒宣告的欄位一律拒絕，
   絕不無聲丟棄。solve 的結果帶有與 `validate` 相同的 warning，所以被忽略的

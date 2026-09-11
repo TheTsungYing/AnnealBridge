@@ -193,6 +193,8 @@ class CQMCompiler:
             # dimod 0.12.22: ``ConstrainedQuadraticModel.num_variables`` is a
             # method, not a property.
             num_variables=cqm.num_variables(),
+            num_interactions=cqm.objective.num_interactions
+            + sum(view.lhs.num_interactions for view in cqm.constraints.values()),
         )
         logger.info(
             "Compiled problem %s as CQM: %d variables (%d internal), "

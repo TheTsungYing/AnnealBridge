@@ -152,6 +152,7 @@ class BQMCompiler:
             hard_penalty=hard_penalty,
             objective_scale=compute_objective_scale(problem.objective, bounds),
             num_variables=bqm.num_variables,
+            num_interactions=bqm.num_interactions,
             integer_encodings=encodings,
         )
         logger.info(
