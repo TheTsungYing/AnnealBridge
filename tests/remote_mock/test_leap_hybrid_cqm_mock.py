@@ -817,6 +817,37 @@ def result_variables(fake: FakeCQMSampler) -> list[str]:
     return [str(variable) for variable in fake.sample_cqm_model.variables]
 
 
+class TestOneAttemptAsksTheSamplerOnce:
+    """One service attempt: two ``LazySampler.get()`` (the pre-submission
+    check and the solve, each a credential fingerprint), one sampler built,
+    one ``min_time_limit`` — the check's value is reused by the solve — and
+    one submission. Pinned so the counts cannot creep back up."""
+
+    def test_success_path_counts(self, monkeypatch):
+        make_remote_available(monkeypatch, cqm_module)
+        fake = FakeCQMSampler(assignments=[BEST])
+        factory = CountingFactory(fake)
+        backend = LeapHybridCQMBackend(sampler_factory=factory)
+        gets: list[int] = []
+        original_get = backend._sampler.get
+        monkeypatch.setattr(
+            backend._sampler, "get", lambda: (gets.append(1), original_get())[1]
+        )
+        service = OptimizationService(
+            registry=SolverRegistry({BACKEND: backend}),
+            policy=ExecutionPolicy(allow_remote=True),
+        )
+
+        result = service.solve(make_cqm_problem())
+
+        assert result.status == "success"
+        assert len(gets) == 2
+        assert factory.calls == 1
+        assert fake.min_time_limit_calls == 1
+        assert fake.sample_calls == 1
+        assert fake.sample_kwargs == {"time_limit": FAKE_MIN_TIME_LIMIT}
+
+
 class TestTimeLimitPolicy:
     """§17.2 / §26.5: the time limit is forwarded as resolved, floored at the
     sampler minimum, and refused — never clamped — above policy."""

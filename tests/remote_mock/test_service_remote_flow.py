@@ -770,6 +770,56 @@ class TestSamplerReuse:
         assert fake.sample_calls == 2
         assert factory.calls == 1
 
+    def test_hybrid_attempt_fetches_twice_and_asks_the_minimum_once(self, monkeypatch):
+        """One attempt: two ``LazySampler.get()`` (the pre-submission check
+        and the solve), one sampler built, one ``min_time_limit`` — the
+        check's value is reused by the solve — and one submission."""
+        make_remote_available(monkeypatch, leap_module)
+        fake = FakeLeapHybridSampler(assignments=BEST)
+        factory = CountingFactory(fake)
+        backend = LeapHybridBQMBackend(sampler_factory=factory)
+        gets: list[int] = []
+        original_get = backend._sampler.get
+        monkeypatch.setattr(
+            backend._sampler, "get", lambda: (gets.append(1), original_get())[1]
+        )
+        service = make_service(backend, "leap_hybrid_bqm", allow_remote=True)
+
+        result = service.solve(make_problem(backend="leap_hybrid_bqm"))
+
+        assert result.status == "success"
+        assert len(gets) == 2
+        assert factory.calls == 1
+        assert fake.min_time_limit_calls == 1
+        assert fake.sample_calls == 1
+
+    def test_hybrid_retries_ask_the_minimum_once_per_attempt(self, monkeypatch):
+        """Every retry recompiles, so each attempt asks for its own model's
+        minimum exactly once, on one sampler, with two fetches per attempt."""
+        make_remote_available(monkeypatch, leap_module)
+        fake = FakeLeapHybridSampler(assignments=[{"a": 0, "b": 0}])
+        factory = CountingFactory(fake)
+        backend = LeapHybridBQMBackend(sampler_factory=factory)
+        gets: list[int] = []
+        original_get = backend._sampler.get
+        monkeypatch.setattr(
+            backend._sampler, "get", lambda: (gets.append(1), original_get())[1]
+        )
+        service = make_service(
+            backend, "leap_hybrid_bqm", allow_remote=True, allow_remote_retries=True
+        )
+
+        result = service.solve(
+            make_zero_infeasible_problem(backend="leap_hybrid_bqm", max_retries=2)
+        )
+
+        assert result.status == "infeasible"
+        assert len(result.attempts) == 3
+        assert fake.sample_calls == 3
+        assert fake.min_time_limit_calls == 3
+        assert len(gets) == 6
+        assert factory.calls == 1
+
     def test_failed_construction_is_not_cached(self, monkeypatch):
         make_remote_available(monkeypatch, qpu_module)
         fake = FakeQPUSampler(assignments=BEST)

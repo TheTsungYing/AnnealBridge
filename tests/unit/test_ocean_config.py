@@ -263,7 +263,10 @@ class TestConfigSecretCache:
         """Empty cache, empty redaction tables, one registered source.
 
         ``_CONFIG_SECRET_CACHE`` is process-level, so it is swapped for a
-        fresh dict (and restored) exactly like the declaration tables.
+        fresh dict (and restored) exactly like the declaration tables; so
+        is ``_CONFIG_RESOLUTION_CACHE``, which shares that key shape, so
+        that the two caches miss and hit together and the ``load_config``
+        counts below mean what they say.
         The Ocean config env vars — the two selectors and the API token —
         are cleared so a developer machine that sets them cannot change a
         cache key mid-test. With ``_DECLARATIONS`` empty, nothing masks the
@@ -274,6 +277,7 @@ class TestConfigSecretCache:
         monkeypatch.delenv("DWAVE_PROFILE", raising=False)
         monkeypatch.delenv(TOKEN_ENV, raising=False)
         monkeypatch.setattr(ocean_module, "_CONFIG_SECRET_CACHE", {})
+        monkeypatch.setattr(ocean_module, "_CONFIG_RESOLUTION_CACHE", {})
         monkeypatch.setattr(metadata_module, "_DECLARATIONS", {})
         monkeypatch.setattr(metadata_module, "_SECRET_SOURCES", {})
         ocean_module.register_ocean_config_token()
@@ -470,3 +474,280 @@ class TestConfigSecretCache:
         assert redact("x " + self.TOKEN_A) == "x ***"
         assert len(ocean_module._CONFIG_SECRET_CACHE) == 1
         assert len(calls) == 3
+
+
+class TestResolveOceanConfigCache:
+    """The Ocean config *parse* is memoised on the same credential fingerprint.
+
+    ``build_capabilities()`` asks all six backends for ``is_available()``,
+    and the three D-Wave ones each reach ``_resolve_ocean_config()``, so one
+    capabilities query used to parse the INI three times. The resolution is
+    now cached in a single slot keyed by ``(DWAVE_API_TOKEN,
+    _config_fingerprint())`` — the very key ``_ocean_config_secrets()``
+    already used — so identical inputs parse once while *any* change to the
+    env token, a selector env var or a config file's path / mtime / size
+    recomputes on the next call. Without a fingerprint (no
+    ``get_configfile_paths``) every call parses live, as before.
+
+    Each test drives invalidation through the fingerprint — env vars or file
+    mtime — never by emptying the cache by hand, so what is pinned is the
+    key, not the bookkeeping.
+
+    All tokens here are synthetic test values, never real credentials.
+    """
+
+    TOKEN_A = "s3cr3t-resolved-token-alpha"
+    TOKEN_B = "s3cr3t-resolved-token-bravo-and-longer"
+    ENV_TOKEN = "s3cr3t-resolved-env-token-echo"
+    ENV_TOKEN_ROTATED = "s3cr3t-resolved-env-token-foxtrot"
+
+    @pytest.fixture(autouse=True)
+    def _isolated_caches(self, monkeypatch):
+        """Empty both fingerprint caches and clear the Ocean config env vars.
+
+        The root ``conftest`` already swaps ``_CONFIG_RESOLUTION_CACHE`` per
+        test; doing it here too keeps this class readable on its own, and
+        ``_CONFIG_SECRET_CACHE`` is swapped alongside it because both hold
+        the same key and the redaction path would otherwise hide a parse.
+        The two selector env vars are cleared so a developer machine that
+        sets them cannot move a cache key mid-test.
+        """
+        monkeypatch.delenv("DWAVE_CONFIG_FILE", raising=False)
+        monkeypatch.delenv("DWAVE_PROFILE", raising=False)
+        monkeypatch.delenv(TOKEN_ENV, raising=False)
+        monkeypatch.setattr(ocean_module, "_CONFIG_SECRET_CACHE", {})
+        monkeypatch.setattr(ocean_module, "_CONFIG_RESOLUTION_CACHE", {})
+
+    @staticmethod
+    def _counting_load_config(calls: list[int], token: str):
+        """A counting ``load_config()`` that merges the env var as Ocean does."""
+
+        def load_config():
+            calls.append(1)
+            env_token = os.environ.get(TOKEN_ENV)
+            return {"token": env_token or token}
+
+        return load_config
+
+    def test_an_unchanged_config_is_parsed_once(self, monkeypatch) -> None:
+        calls: list[int] = []
+        _install_fake_ocean_config(
+            monkeypatch,
+            self._counting_load_config(calls, self.TOKEN_A),
+            get_configfile_paths=lambda: [],
+        )
+
+        results = [_resolve_ocean_config() for _ in range(5)]
+
+        assert results == [("ok", self.TOKEN_A)] * 5
+        assert len(calls) == 1
+
+    def test_an_edited_config_file_is_reflected_immediately(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        path = tmp_path / "dwave.conf"
+        path.write_text(f"[defaults]\ntoken = {self.TOKEN_A}\n")
+        calls: list[int] = []
+
+        def load_config():
+            calls.append(1)
+            parser = configparser.ConfigParser()
+            parser.read(path)
+            return {"token": parser["defaults"]["token"]}
+
+        _install_fake_ocean_config(
+            monkeypatch, load_config, get_configfile_paths=lambda: [str(path)]
+        )
+
+        assert _resolve_ocean_config() == ("ok", self.TOKEN_A)
+        assert len(calls) == 1
+
+        # Different length (so size changes) *and* a later mtime: either one
+        # alone moves the fingerprint, both together make the test
+        # independent of the filesystem's timestamp resolution.
+        path.write_text(f"[defaults]\ntoken = {self.TOKEN_B}\n")
+        later = path.stat().st_mtime_ns + 1_000_000_000
+        os.utime(path, ns=(later, later))
+
+        assert _resolve_ocean_config() == ("ok", self.TOKEN_B)
+        assert len(calls) == 2
+
+    def test_setting_the_env_token_is_reflected_immediately(
+        self, monkeypatch
+    ) -> None:
+        calls: list[int] = []
+        _install_fake_ocean_config(
+            monkeypatch,
+            self._counting_load_config(calls, self.TOKEN_A),
+            get_configfile_paths=lambda: [],
+        )
+
+        assert _resolve_ocean_config() == ("ok", self.TOKEN_A)
+
+        monkeypatch.setenv(TOKEN_ENV, self.ENV_TOKEN)
+
+        assert _resolve_ocean_config() == ("ok", self.ENV_TOKEN)
+        assert len(calls) == 2
+
+    def test_removing_the_env_token_uncovers_the_config_file_token(
+        self, monkeypatch
+    ) -> None:
+        """2026-09-11 review F-02, restated for the resolution cache.
+
+        Ocean's merge means that with the env var set the resolved token is
+        the env one; unsetting it edits no file, so the fingerprint alone
+        would not move and the stale resolution would keep reporting a token
+        that is gone.
+        """
+        calls: list[int] = []
+        _install_fake_ocean_config(
+            monkeypatch,
+            self._counting_load_config(calls, self.TOKEN_B),
+            get_configfile_paths=lambda: [],
+        )
+        monkeypatch.setenv(TOKEN_ENV, self.ENV_TOKEN)
+
+        assert _resolve_ocean_config() == ("ok", self.ENV_TOKEN)
+        assert len(calls) == 1
+
+        monkeypatch.delenv(TOKEN_ENV)
+
+        assert _resolve_ocean_config() == ("ok", self.TOKEN_B)
+        assert len(calls) == 2
+
+    def test_rotating_the_env_token_is_reflected_immediately(
+        self, monkeypatch
+    ) -> None:
+        calls: list[int] = []
+        _install_fake_ocean_config(
+            monkeypatch,
+            self._counting_load_config(calls, self.TOKEN_A),
+            get_configfile_paths=lambda: [],
+        )
+        monkeypatch.setenv(TOKEN_ENV, self.ENV_TOKEN)
+
+        assert _resolve_ocean_config() == ("ok", self.ENV_TOKEN)
+        assert len(calls) == 1
+
+        monkeypatch.setenv(TOKEN_ENV, self.ENV_TOKEN_ROTATED)
+
+        assert _resolve_ocean_config() == ("ok", self.ENV_TOKEN_ROTATED)
+        assert len(calls) == 2
+
+    def test_an_unchanged_env_token_still_hits_the_cache(self, monkeypatch) -> None:
+        """Adding the env token to the key must not defeat the cache."""
+        calls: list[int] = []
+        _install_fake_ocean_config(
+            monkeypatch,
+            self._counting_load_config(calls, self.TOKEN_A),
+            get_configfile_paths=lambda: [],
+        )
+        monkeypatch.setenv(TOKEN_ENV, self.ENV_TOKEN)
+
+        for _ in range(5):
+            assert _resolve_ocean_config() == ("ok", self.ENV_TOKEN)
+
+        assert len(calls) == 1
+
+    def test_switching_profile_invalidates_the_cache(self, monkeypatch) -> None:
+        calls: list[int] = []
+        _install_fake_ocean_config(
+            monkeypatch,
+            self._counting_load_config(calls, self.TOKEN_A),
+            get_configfile_paths=lambda: [],
+        )
+
+        assert _resolve_ocean_config() == ("ok", self.TOKEN_A)
+        assert len(calls) == 1
+
+        monkeypatch.setenv("DWAVE_PROFILE", "other")
+
+        assert _resolve_ocean_config() == ("ok", self.TOKEN_A)
+        assert len(calls) == 2
+
+    def test_nothing_is_cached_without_a_fingerprint(self, monkeypatch) -> None:
+        """No ``get_configfile_paths`` → no fingerprint → the old live parse."""
+        calls: list[int] = []
+        _install_fake_ocean_config(
+            monkeypatch, self._counting_load_config(calls, self.TOKEN_A)
+        )
+
+        for _ in range(3):
+            assert _resolve_ocean_config() == ("ok", self.TOKEN_A)
+
+        assert len(calls) == 3
+        assert ocean_module._CONFIG_RESOLUTION_CACHE == {}
+
+    def test_the_cache_stays_a_single_slot(self, monkeypatch) -> None:
+        """Env tokens come and go; the cache never grows past one entry."""
+        calls: list[int] = []
+        _install_fake_ocean_config(
+            monkeypatch,
+            self._counting_load_config(calls, self.TOKEN_A),
+            get_configfile_paths=lambda: [],
+        )
+
+        for token in (self.ENV_TOKEN, self.ENV_TOKEN_ROTATED):
+            monkeypatch.setenv(TOKEN_ENV, token)
+            assert _resolve_ocean_config() == ("ok", token)
+            assert len(ocean_module._CONFIG_RESOLUTION_CACHE) == 1
+
+        monkeypatch.delenv(TOKEN_ENV)
+
+        assert _resolve_ocean_config() == ("ok", self.TOKEN_A)
+        assert len(ocean_module._CONFIG_RESOLUTION_CACHE) == 1
+        assert len(calls) == 3
+
+    def test_a_config_that_breaks_becomes_invalid_immediately(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """End to end through the public status helper."""
+        path = tmp_path / "dwave.conf"
+        path.write_text(f"[defaults]\ntoken = {self.TOKEN_A}\n")
+
+        def load_config():
+            parser = configparser.ConfigParser()
+            # Raises MissingSectionHeaderError once the file is corrupt,
+            # which is exactly what Ocean's own loader does.
+            parser.read_string(path.read_text())
+            return {"token": parser["defaults"]["token"]}
+
+        _install_fake_ocean_config(
+            monkeypatch, load_config, get_configfile_paths=lambda: [str(path)]
+        )
+
+        assert ocean_config_status() == "ok"
+
+        path.write_text("this is not an ini file at all\n")
+        later = path.stat().st_mtime_ns + 1_000_000_000
+        os.utime(path, ns=(later, later))
+
+        assert ocean_config_status() == "invalid"
+
+    def test_one_capabilities_query_parses_the_config_once(self, monkeypatch) -> None:
+        """The reason the cache exists: three D-Wave backends, one parse."""
+        from annealbridge.interfaces.capabilities import build_capabilities
+        from annealbridge.orchestration import ExecutionPolicy
+        from annealbridge.solvers.registry import SolverRegistry
+
+        calls: list[int] = []
+        _install_fake_ocean_config(
+            monkeypatch,
+            self._counting_load_config(calls, self.TOKEN_A),
+            get_configfile_paths=lambda: [],
+        )
+        monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: True)
+
+        view = build_capabilities(SolverRegistry.default(), ExecutionPolicy())
+
+        assert len(calls) == 1
+        dwave_backends = {
+            backend.name: backend.available
+            for backend in view.backends
+            if backend.name in {"dwave_qpu", "leap_hybrid_bqm", "leap_hybrid_cqm"}
+        }
+        assert dwave_backends == {
+            "dwave_qpu": True,
+            "leap_hybrid_bqm": True,
+            "leap_hybrid_cqm": True,
+        }

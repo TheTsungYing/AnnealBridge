@@ -7,6 +7,7 @@ backend-level tests in ``tests/remote_mock`` still exercise each backend
 through the shared code. Nothing here imports ``dwave.system``.
 """
 
+import gc
 import logging
 import threading
 import time
@@ -18,9 +19,11 @@ import annealbridge.solvers.ocean as ocean_module
 from annealbridge.solvers.ocean import (
     HYBRID_SAMPLE_EXCEPTION_CODES,
     SAMPLER_INIT_EXCEPTION_CODES,
+    HybridTimeLimitMemo,
     LazySampler,
     call_ocean,
     create_sampler,
+    resolve_hybrid_sampler,
     resolve_hybrid_time_limit,
 )
 
@@ -154,6 +157,148 @@ class TestCreateSampler:
 
         assert info.value.code == "DWAVE_CONFIG_INVALID"
         assert str(info.value).startswith("D-Wave QPU sampler could not be created")
+
+
+class Model:
+    """A weakly referenceable stand-in for a compiled model (``object()`` is not)."""
+
+
+class TestResolveHybridSampler:
+    """The pair form: the same rule as ``resolve_hybrid_time_limit`` plus the sampler."""
+
+    @pytest.mark.parametrize("user_value,expected", [(None, 5.0), (10, 10.0), (3, 5.0)])
+    def test_returns_the_holder_sampler_and_the_same_limit(self, user_value, expected):
+        sampler = FakeSampler(minimum=5.0)
+        holder = holder_of(sampler)
+
+        got_sampler, limit = resolve_hybrid_sampler(
+            holder, MODEL, user_value, label="Leap hybrid"
+        )
+
+        assert got_sampler is sampler
+        assert limit == expected
+        assert limit == resolve_hybrid_time_limit(holder, MODEL, user_value, label="x")
+
+    def test_without_a_memo_every_call_asks_the_sampler(self):
+        sampler = FakeSampler(minimum=5.0)
+        holder = holder_of(sampler)
+
+        resolve_hybrid_sampler(holder, MODEL, None, label="Leap hybrid")
+        resolve_hybrid_sampler(holder, MODEL, None, label="Leap hybrid")
+
+        assert sampler.seen_models == [MODEL, MODEL]
+
+    def test_construction_failure_is_classified_like_the_limit_form(self):
+        def factory():
+            raise ValueError("bad region")
+
+        with pytest.raises(SolverExecutionError) as info:
+            resolve_hybrid_sampler(LazySampler(factory, factory), MODEL, None, label="L")
+
+        assert info.value.code == "DWAVE_CONFIG_INVALID"
+
+
+class TestHybridTimeLimitMemo:
+    """One attempt asks ``min_time_limit`` once; anything else is a miss.
+
+    The memo is keyed by the identity of the sampler *and* the model, both
+    held weakly: the service's pre-submission check and the solve of the
+    same attempt share one model object and one sampler, while a rebuilt
+    sampler, a recompiled model or a collected one must recompute. The
+    value is never changed by a hit.
+    """
+
+    def test_the_same_sampler_and_model_ask_once(self):
+        sampler = FakeSampler(minimum=5.0)
+        holder = holder_of(sampler)
+        model = Model()
+        memo = HybridTimeLimitMemo()
+
+        first = resolve_hybrid_sampler(holder, model, 2.0, label="L", memo=memo)
+        second = resolve_hybrid_sampler(holder, model, 2.0, label="L", memo=memo)
+        third = resolve_hybrid_time_limit(holder, model, 9.0, label="L", memo=memo)
+
+        assert sampler.seen_models == [model]
+        assert first == (sampler, 5.0)
+        assert second == (sampler, 5.0)
+        # The user's value still floors on top of the memoised minimum.
+        assert third == 9.0
+
+    def test_another_model_is_a_miss(self):
+        sampler = FakeSampler(minimum=5.0)
+        holder = holder_of(sampler)
+        memo = HybridTimeLimitMemo()
+        first, second = Model(), Model()
+
+        resolve_hybrid_sampler(holder, first, None, label="L", memo=memo)
+        resolve_hybrid_sampler(holder, second, None, label="L", memo=memo)
+        resolve_hybrid_sampler(holder, first, None, label="L", memo=memo)
+
+        # Single slot: going back to the first model recomputes too.
+        assert sampler.seen_models == [first, second, first]
+
+    def test_a_rebuilt_sampler_is_a_miss(self):
+        samplers = [FakeSampler(minimum=5.0), FakeSampler(minimum=7.0)]
+        holder = LazySampler(lambda: samplers.pop(0), lambda: None)
+        model = Model()
+        memo = HybridTimeLimitMemo()
+
+        _, before = resolve_hybrid_sampler(holder, model, None, label="L", memo=memo)
+        holder.invalidate()
+        rebuilt, after = resolve_hybrid_sampler(holder, model, None, label="L", memo=memo)
+
+        assert before == 5.0
+        assert after == 7.0
+        assert rebuilt.seen_models == [model]
+
+    def test_a_collected_model_is_a_miss(self):
+        sampler = FakeSampler(minimum=5.0)
+        holder = holder_of(sampler)
+        memo = HybridTimeLimitMemo()
+
+        model = Model()
+        resolve_hybrid_sampler(holder, model, None, label="L", memo=memo)
+        del model
+        gc.collect()
+        replacement = Model()
+        resolve_hybrid_sampler(holder, replacement, None, label="L", memo=memo)
+
+        assert len(sampler.seen_models) == 2
+        assert sampler.seen_models[-1] is replacement
+
+    def test_a_model_that_cannot_be_weakly_referenced_is_not_memoised(self):
+        sampler = FakeSampler(minimum=5.0)
+        holder = holder_of(sampler)
+        memo = HybridTimeLimitMemo()
+
+        resolve_hybrid_sampler(holder, MODEL, None, label="L", memo=memo)
+        resolve_hybrid_sampler(holder, MODEL, None, label="L", memo=memo)
+
+        assert sampler.seen_models == [MODEL, MODEL]
+        assert memo.lookup(sampler, MODEL) is None
+
+    def test_a_failed_min_time_limit_stores_nothing(self):
+        class Sampler:
+            def __init__(self):
+                self.calls = 0
+
+            def min_time_limit(self, model):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RequestTimeout("slow")
+                return 4.0
+
+        sampler = Sampler()
+        holder = holder_of(sampler)
+        model = Model()
+        memo = HybridTimeLimitMemo()
+
+        with pytest.raises(SolverExecutionError):
+            resolve_hybrid_sampler(holder, model, None, label="L", memo=memo)
+        _, limit = resolve_hybrid_sampler(holder, model, None, label="L", memo=memo)
+
+        assert limit == 4.0
+        assert sampler.calls == 2
 
 
 class TestLazySamplerCache:

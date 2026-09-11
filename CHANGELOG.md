@@ -35,6 +35,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fujitsu DA result decoding drops an unreachable branch and gains tests for
   malformed vendor responses.
 
+### Performance
+
+- Five hot paths do less repeated work; every output — biases, violations,
+  `satisfied` flags, ranking, metadata — is bit-for-bit what it was. The BQM
+  compiler's non-finite-bias check reads dimod's numpy vectors instead of
+  iterating every bias in Python (about 20 ms → 0.04 ms on a model with
+  eighteen thousand interactions, paid again on every retry); the batch
+  validator computes each constraint residual once instead of twice; the
+  INFO trace line derives the penalty scale from the hard penalty already
+  computed instead of walking the problem a second time; the Ocean config
+  parse behind `is_available()` is memoised on the same credential
+  fingerprint the redaction cache uses (env token plus every config file's
+  path, mtime and size — any change still shows on the next call), so one
+  capabilities query parses the INI once rather than once per D-Wave
+  backend; and a Leap hybrid attempt fetches its sampler twice instead of
+  three times and asks `min_time_limit` once instead of twice, the
+  pre-submission check's value being reused by the solve of the same
+  attempt. The submitted `time_limit` is unchanged.
+
 ## [0.1.0] - 2026-09-11
 
 First public release.

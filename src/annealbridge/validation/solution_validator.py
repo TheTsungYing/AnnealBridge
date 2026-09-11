@@ -197,15 +197,20 @@ def validate_batch(
         rhs = constraint.rhs
         tol = tolerance_array(actual, rhs)
 
+        # The very expressions of the scalar kernel above: same operands in
+        # the same order, so the results are bit-for-bit identical. The batch
+        # version only computes each intermediate once and reuses it.
         if constraint.operator == "==":
-            satisfied = np.abs(actual - rhs) <= tol
             violation = np.abs(actual - rhs)
+            satisfied = violation <= tol
         elif constraint.operator == "<=":
+            residual = actual - rhs
             satisfied = actual <= rhs + tol
-            violation = np.maximum(0.0, actual - rhs)
+            violation = np.maximum(0.0, residual)
         else:
+            residual = rhs - actual
             satisfied = actual >= rhs - tol
-            violation = np.maximum(0.0, rhs - actual)
+            violation = np.maximum(0.0, residual)
 
         if constraint.type == "hard":
             feasible &= satisfied

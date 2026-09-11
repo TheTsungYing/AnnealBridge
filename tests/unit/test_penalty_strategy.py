@@ -28,7 +28,9 @@ from annealbridge.penalty import (
     compute_objective_scale,
     compute_penalty_scale,
 )
+from annealbridge.solvers import SolverRegistry
 from annealbridge.validation.estimates import compute_soft_energy_bound
+from tests.fakes.local_cqm_backend import FAKE_LOCAL_CQM_NAME, FakeLocalCQMBackend
 
 
 def make_problem(
@@ -325,6 +327,11 @@ class TestServiceDoesNotComputeScalesForDisabledLogging:
     line is thrown away. The call must sit behind ``isEnabledFor(INFO)``.
     The guarded logger is ``annealbridge.orchestration.optimizer``, so the
     ``annealbridge`` level decides.
+
+    On the hard-penalty path the penalty scale has already been walked once
+    inside ``initial_penalty``, so the trace derives it from the penalty and
+    the service never calls ``penalty_scale`` itself; only the CQM
+    (native-constraint) path, which computes no penalty, calls it once.
     """
 
     @staticmethod
@@ -337,6 +344,31 @@ class TestServiceDoesNotComputeScalesForDisabledLogging:
         assert result.status == "success"
         return spy, result
 
+    @staticmethod
+    def solve_knapsack_on_cqm(load_example) -> tuple[SpyStrategy, object]:
+        """The same problem routed to the test-only local CQM backend.
+
+        ``supported_model_types=["cqm"]`` is what makes the service pick
+        ``CQMCompiler``, whose ``uses_hard_penalty`` is False; the backend
+        name is not in ``SolverPreferences.backend``'s Literal, so it is set
+        with ``model_construct`` (as ``test_service_cqm_flow.py`` does).
+        """
+        spy = SpyStrategy()
+        problem = OptimizationProblem.model_validate(load_example("knapsack.json"))
+        problem = problem.model_copy(
+            update={"solver": SolverPreferences.model_construct(backend=FAKE_LOCAL_CQM_NAME)}
+        )
+        defaults = SolverRegistry.default()
+        backends = {name: defaults.get(name) for name in defaults.names()}
+        backends[FAKE_LOCAL_CQM_NAME] = FakeLocalCQMBackend()
+        service = OptimizationService(
+            registry=SolverRegistry(backends), penalty_strategy=spy
+        )
+        result = service.solve(problem)
+        assert result.status == "success"
+        assert result.backend == FAKE_LOCAL_CQM_NAME
+        return spy, result
+
     def test_nothing_is_computed_when_info_is_off(self, caplog, load_example):
         caplog.set_level(logging.WARNING, logger="annealbridge")
 
@@ -345,10 +377,24 @@ class TestServiceDoesNotComputeScalesForDisabledLogging:
         assert spy.objective_scale_calls == 0
         assert spy.penalty_scale_calls == 0
 
-    def test_each_scale_is_computed_once_when_info_is_on(self, caplog, load_example):
+    def test_hard_penalty_path_derives_the_penalty_scale_when_info_is_on(
+        self, caplog, load_example
+    ):
+        """``knapsack.json`` on ``exact`` is the BQM hard-penalty path."""
         caplog.set_level(logging.INFO, logger="annealbridge")
 
         spy, _ = self.solve_knapsack(load_example)
+
+        assert spy.objective_scale_calls == 1
+        assert spy.penalty_scale_calls == 0
+
+    def test_native_constraint_path_computes_the_penalty_scale_when_info_is_on(
+        self, caplog, load_example
+    ):
+        """The CQM path has no penalty to derive the scale from."""
+        caplog.set_level(logging.INFO, logger="annealbridge")
+
+        spy, _ = self.solve_knapsack_on_cqm(load_example)
 
         assert spy.objective_scale_calls == 1
         assert spy.penalty_scale_calls == 1

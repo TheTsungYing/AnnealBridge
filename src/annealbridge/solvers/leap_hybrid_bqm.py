@@ -24,12 +24,12 @@ from annealbridge.solvers.metadata import (
 from annealbridge.solvers.ocean import (
     OCEAN_CREDENTIALS,
     HYBRID_SAMPLE_EXCEPTION_CODES,
+    HybridTimeLimitMemo,
     LazySampler,
     call_ocean,
-    create_sampler,
     dwave_availability,
     register_ocean_config_token,
-    resolve_hybrid_time_limit,
+    resolve_hybrid_sampler,
     resolved,
 )
 
@@ -86,6 +86,9 @@ class LeapHybridBQMBackend(BackendAliases):
 
     def __init__(self, sampler_factory: Callable[[], Any] | None = None) -> None:
         self._sampler = LazySampler(sampler_factory, _default_sampler_factory)
+        # The ``min_time_limit`` of the service's pre-submission check is
+        # reused by the solve of the same attempt (see HybridTimeLimitMemo).
+        self._time_limit_memo = HybridTimeLimitMemo()
         register_ocean_config_token()
         # Review F-03: declared here, not only by ``SolverRegistry``, so a
         # directly constructed backend redacts its token too. Idempotent; the
@@ -100,6 +103,25 @@ class LeapHybridBQMBackend(BackendAliases):
         """Installability and credentials, via the shared check. No network I/O."""
         return dwave_availability()
 
+    def _resolve(
+        self,
+        compiled_problem: CompiledProblem,
+        preferences: SolverPreferences,
+    ) -> tuple[Any, float]:
+        """The sampler and the effective ``time_limit``, by the shared hybrid rule."""
+        user_time_limit = (
+            preferences.leap_hybrid_bqm.time_limit_seconds
+            if preferences.leap_hybrid_bqm is not None
+            else None
+        )
+        return resolve_hybrid_sampler(
+            self._sampler,
+            compiled_problem.model,
+            user_time_limit,
+            label="Leap hybrid",
+            memo=self._time_limit_memo,
+        )
+
     def resolve_time_limit(
         self,
         compiled_problem: CompiledProblem,
@@ -107,21 +129,15 @@ class LeapHybridBQMBackend(BackendAliases):
     ) -> float:
         """Effective ``time_limit`` (seconds) a solve would submit (spec §16).
 
-        The shared hybrid rule (:func:`resolve_hybrid_time_limit`): the
+        The shared hybrid rule (:func:`resolve_hybrid_sampler`): the
         user's value if given, floored at the sampler's
         ``min_time_limit(bqm)``; the sampler minimum alone when the user
         gave none. Nothing is submitted. The service compares this value
-        with policy before :meth:`solve` runs; :meth:`solve` calls this
-        same method so both see the same number.
+        with policy before :meth:`solve` runs; :meth:`solve` resolves
+        through the same rule, so both see the same number — and, within
+        one attempt, the same sampler and the same memoised minimum.
         """
-        user_time_limit = (
-            preferences.leap_hybrid_bqm.time_limit_seconds
-            if preferences.leap_hybrid_bqm is not None
-            else None
-        )
-        return resolve_hybrid_time_limit(
-            self._sampler, compiled_problem.model, user_time_limit, label="Leap hybrid"
-        )
+        return self._resolve(compiled_problem, preferences)[1]
 
     def solve(
         self,
@@ -135,8 +151,7 @@ class LeapHybridBQMBackend(BackendAliases):
         The policy ceiling is enforced by the service layer, not here.
         """
         bqm = compiled_problem.model
-        effective_time_limit = self.resolve_time_limit(compiled_problem, preferences)
-        sampler = create_sampler(self._sampler, "Leap hybrid")
+        sampler, effective_time_limit = self._resolve(compiled_problem, preferences)
         sampleset = call_ocean(
             "Leap hybrid solve failed",
             HYBRID_SAMPLE_EXCEPTION_CODES,

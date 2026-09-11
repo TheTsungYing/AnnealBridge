@@ -902,14 +902,26 @@ class OptimizationService:
             )
             # Both scales walk the whole problem, so they are only computed
             # when the line will actually be emitted (2026-09-09 review F-26).
+            # On the hard-penalty path ``initial_penalty`` already walked it
+            # once for the penalty scale, so the scale is recovered from the
+            # penalty instead of walking the problem a second time; only the
+            # native-constraint path, which computed no penalty, computes it.
             if logger.isEnabledFor(logging.INFO):
+                multiplier = problem.solver.penalty_multiplier
+                if penalty is not None and multiplier > 0:
+                    penalty_scale = penalty / multiplier
+                    scale_source = "derived: hard_penalty / penalty_multiplier"
+                else:
+                    penalty_scale = self._penalty_strategy.penalty_scale(problem)
+                    scale_source = "computed"
                 logger.info(
                     "Problem %s: model_type=%s, objective_scale=%s, "
-                    "penalty_scale=%s, initial hard_penalty=%s",
+                    "penalty_scale=%s (%s), initial hard_penalty=%s",
                     problem.name,
                     compiler.model_type,
                     self._penalty_strategy.objective_scale(problem),
-                    self._penalty_strategy.penalty_scale(problem),
+                    penalty_scale,
+                    scale_source,
                     penalty,
                 )
 

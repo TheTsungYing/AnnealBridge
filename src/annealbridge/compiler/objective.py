@@ -13,6 +13,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any, Protocol
 
 import dimod
+import numpy as np
 
 from annealbridge.compiler.integer_encoding import (
     AffineForm,
@@ -23,6 +24,7 @@ from annealbridge.models import Objective, Variable
 
 __all__ = [
     "add_model_variable",
+    "bqm_has_finite_biases",
     "build_objective_bqm",
     "build_objective_qm",
     "has_finite_biases",
@@ -54,9 +56,13 @@ def has_finite_biases(model: QuadraticBiases) -> bool:
     The compilers' one overflow test (2026-09-09 review F-07, 2026-09-11 review F06): the
     penalty, weight and coefficient arithmetic is plain float
     multiplication, which reaches ``inf`` silently, and no backend may ever
-    be handed a model with a non-finite bias. Shared so the BQM path (the
-    whole model) and the CQM path (the objective plus every constraint lhs)
-    cannot drift apart; each compiler words its own
+    be handed a model with a non-finite bias. The two paths run the same
+    predicate through different implementations: the BQM path (the whole
+    model) uses :func:`bqm_has_finite_biases`, which reads dimod's numpy
+    vectors, while the CQM path (the objective plus every constraint lhs
+    view, none of which has ``to_numpy_vectors``) uses this function;
+    ``tests/unit/test_finite_biases.py`` pins the two to the same answer for
+    the same BQM so they cannot drift apart. Each compiler words its own
     :class:`~annealbridge.exceptions.NonFiniteModelError`, because only it
     knows which arithmetic could have overflowed.
     """
@@ -64,6 +70,27 @@ def has_finite_biases(model: QuadraticBiases) -> bool:
         math.isfinite(model.offset)
         and all(math.isfinite(bias) for bias in model.linear.values())
         and all(math.isfinite(bias) for bias in model.quadratic.values())
+    )
+
+
+def bqm_has_finite_biases(bqm: dimod.BinaryQuadraticModel) -> bool:
+    """Whether ``bqm``'s offset and every linear/quadratic bias is finite.
+
+    Exactly the predicate of :func:`has_finite_biases` — the offset is
+    finite, every linear bias is finite and every quadratic bias is finite —
+    but evaluated over dimod's numpy vectors instead of a Python loop. Only
+    ``BinaryQuadraticModel`` exposes ``to_numpy_vectors`` in dimod 0.12,
+    which is why the CQM path keeps the generic version. The Python
+    iteration costs about 20 ms on a model with ten thousand-odd
+    interactions — three to four tenths of a BQM compile, paid again on
+    every retry — against about 0.04 ms vectorised. ``sort_labels=False``
+    because only the values are read, never their order.
+    """
+    vectors = bqm.to_numpy_vectors(sort_labels=False)
+    return bool(
+        np.isfinite(vectors.offset)
+        and np.isfinite(vectors.linear_biases).all()
+        and np.isfinite(vectors.quadratic.biases).all()
     )
 
 

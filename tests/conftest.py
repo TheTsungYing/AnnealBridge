@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import annealbridge.solvers.ocean as ocean_module
 from annealbridge.solvers import SolverRegistry
 
 # The repository's ``examples/`` directory, shared by every test that loads a
@@ -70,3 +71,19 @@ def _clear_credential_env(monkeypatch):
     """
     for name in _CREDENTIAL_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_ocean_config_cache(monkeypatch):
+    """Give every test an empty ``_CONFIG_RESOLUTION_CACHE``.
+
+    ``_resolve_ocean_config()`` memoises its parse in a single module-level
+    slot keyed by ``(DWAVE_API_TOKEN, _config_fingerprint())``. On a machine
+    whose ``.venv`` has dwave-cloud-client installed but no Ocean config
+    file, that fingerprint is ``((None, None), ())`` — exactly the key a
+    test produces when it fakes ``get_configfile_paths`` to return an empty
+    list. A resolution cached by one test would then be served to the next
+    one under a different fake ``load_config``. Swapping the dict (restored
+    by monkeypatch) starts every test from an empty cache instead.
+    """
+    monkeypatch.setattr(ocean_module, "_CONFIG_RESOLUTION_CACHE", {})

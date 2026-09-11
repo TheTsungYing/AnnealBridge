@@ -14,7 +14,7 @@ from annealbridge.compiler.integer_encoding import (
     expand_square,
     substitute_linear,
 )
-from annealbridge.compiler.objective import build_objective_bqm, has_finite_biases
+from annealbridge.compiler.objective import bqm_has_finite_biases, build_objective_bqm
 from annealbridge.compiler.slack import encode_slack, nonzero_coefficients
 from annealbridge.exceptions import CompilationError, NonFiniteModelError
 from annealbridge.models import (
@@ -66,11 +66,12 @@ def _check_finite(
 ) -> None:
     """Raise :class:`NonFiniteModelError` if any bias of ``bqm`` is not finite.
 
-    The test itself is :func:`has_finite_biases`, shared with the CQM path
+    The test itself is :func:`bqm_has_finite_biases`, the vectorised form of
+    the very predicate the CQM path runs as :func:`has_finite_biases`
     (review F-06); the wording stays here because the hard penalty is this
     path's own.
     """
-    if not has_finite_biases(bqm):
+    if not bqm_has_finite_biases(bqm):
         raise NonFiniteModelError(
             f"Compiled model of problem {problem.name} has a non-finite bias "
             f"at hard_penalty={hard_penalty!r}: the penalty or coefficient "

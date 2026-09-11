@@ -12,19 +12,25 @@ shared redaction mask D-Wave material. They live here once instead of once
 per backend — and only here: since review F-10 the shared solver layer
 (``solvers.metadata``) knows no vendor at all.
 
-Two things are cached here, both keyed by a *fingerprint of the credential
-sources* (2026-09-09 review F-19 / F-21): the env token value plus the
-path, mtime and size of every Ocean config file. The config-file secrets
-handed to the redaction are re-read only when that fingerprint changes
-(``redact()`` runs on every log line, so re-parsing the config each time
-was needless I/O), and a :class:`LazySampler` rebuilds its sampler when
-the fingerprint changes, so a rotated credential is picked up without a
-process restart. ``is_available()`` is *not* cached: it re-reads the
-environment on every call, as its docstring promises.
+Three things are cached here, all keyed by the same *fingerprint of the
+credential sources* (2026-09-09 review F-19 / F-21): the env token value
+plus the path, mtime and size of every Ocean config file. The config-file
+secrets handed to the redaction are re-read only when that fingerprint
+changes (``redact()`` runs on every log line, so re-parsing the config
+each time was needless I/O); the resolved Ocean configuration itself is
+memoised against the same key (:func:`_resolve_ocean_config`), so the
+three D-Wave backends answering one capabilities query parse the INI once
+instead of three times; and a :class:`LazySampler` rebuilds its sampler
+when the fingerprint changes, so a rotated credential is picked up
+without a process restart. The *answer* ``is_available()`` gives is not
+cached: every call re-reads the environment and ``stat``s every config
+file, and only the parse behind an unchanged fingerprint is memoised, so
+any change of credential source shows up on the very next call — as its
+docstring promises.
 
 This module must import cleanly without any D-Wave package installed:
 ``dwave.cloud.config`` is only touched lazily inside
-:func:`_resolve_ocean_config` (the single architecture-boundary exemption),
+:func:`_load_ocean_config` (the single architecture-boundary exemption),
 ``dwave.system`` is only probed with ``importlib.util.find_spec``, and the
 backends lazy-import ``dwave.system`` inside their own default sampler
 factories (spec §4).
@@ -35,6 +41,7 @@ import logging
 import os
 import re
 import threading
+import weakref
 from typing import Any, Callable, Hashable, Literal, TypeVar
 
 from annealbridge.exceptions import SolverExecutionError
@@ -108,6 +115,11 @@ _TOKEN_LINE = re.compile(r"\s*token\s*=\s*(\S+)")
 # recomputes.
 _CONFIG_SECRET_CACHE: dict[tuple, tuple[str, ...]] = {}
 
+# Single-entry cache: {(env token, config fingerprint): resolved config}.
+# Module-level so tests can swap it out; a race between two threads merely
+# recomputes.
+_CONFIG_RESOLUTION_CACHE: dict[tuple, tuple[OceanConfigStatus, str | None]] = {}
+
 
 def _env_token() -> str | None:
     """Return :data:`TOKEN_ENV` from the environment, if set.
@@ -121,23 +133,12 @@ def _env_token() -> str | None:
     return None
 
 
-def _resolve_ocean_config() -> tuple[OceanConfigStatus, str | None]:
-    """Classify the active Ocean config and return its token, if any.
+def _load_ocean_config() -> tuple[OceanConfigStatus, str | None]:
+    """The uncached parse; see :func:`_resolve_ocean_config` for the result.
 
     The single place that touches ``dwave.cloud.config`` (architecture
-    boundary exemption). Returns ``(status, config_token)`` where
-    ``config_token`` is the token from the Ocean config file only — the
-    :data:`TOKEN_ENV` env var is folded into ``status`` (Ocean honours it)
-    but masked separately through the credential declaration.
-
-    - ``"ok"``: a non-empty token resolves (config or env var).
-    - ``"invalid"``: ``dwave.cloud`` is importable but ``load_config()``
-      raises — a config exists but cannot be parsed. The env var does not
-      rescue this case: a broken config file would still break the Ocean
-      runtime, so the operator must fix it.
-    - ``"missing"``: no token resolves anywhere.
-
-    No network I/O; any failure yields no token rather than an exception.
+    boundary exemption). No network I/O; any failure yields no token
+    rather than an exception.
     """
     try:
         from dwave.cloud.config import load_config
@@ -156,6 +157,54 @@ def _resolve_ocean_config() -> tuple[OceanConfigStatus, str | None]:
     if token is not None or _env_token() is not None:
         return "ok", token
     return "missing", None
+
+
+def _resolve_ocean_config() -> tuple[OceanConfigStatus, str | None]:
+    """Classify the active Ocean config and return its token, if any.
+
+    Returns ``(status, config_token)`` where ``config_token`` is the token
+    from the Ocean config file only — the :data:`TOKEN_ENV` env var is
+    folded into ``status`` (Ocean honours it) but masked separately
+    through the credential declaration.
+
+    - ``"ok"``: a non-empty token resolves (config or env var).
+    - ``"invalid"``: ``dwave.cloud`` is importable but ``load_config()``
+      raises — a config exists but cannot be parsed. The env var does not
+      rescue this case: a broken config file would still break the Ocean
+      runtime, so the operator must fix it.
+    - ``"missing"``: no token resolves anywhere.
+
+    The parse behind that answer (:func:`_load_ocean_config`) is memoised
+    in a single slot keyed by the *value* of :data:`TOKEN_ENV` plus
+    :func:`_config_fingerprint` — which covers ``DWAVE_CONFIG_FILE``,
+    ``DWAVE_PROFILE`` and the path, ``mtime_ns`` and size of every Ocean
+    config file that exists. Any change to any of those recomputes.
+    Without a fingerprint (``get_configfile_paths`` unavailable) every
+    call parses live, exactly as it did before the cache existed.
+
+    Every call still re-reads the environment and ``stat``s every config
+    file, so the promise ``dwave_availability()`` / ``is_available()``
+    make — read live, a changed credential reflected on the next call —
+    is unchanged; what is saved is only the repeated INI parse for
+    identical inputs, e.g. the three D-Wave backends that a single
+    capabilities query asks in a row.
+
+    The env token is part of the key for the same reason as in
+    :func:`_ocean_config_secrets` (2026-09-11 review F-02): ``load_config()``
+    merges it over the file's ``token``, and unsetting or rotating an env
+    var touches no file, so the fingerprint alone would not move and a
+    stale resolution would survive.
+    """
+    fingerprint = _config_fingerprint()
+    if fingerprint is None:
+        return _load_ocean_config()
+    key = (_env_token(), fingerprint)
+    cached = _CONFIG_RESOLUTION_CACHE.get(key)
+    if cached is None:
+        cached = _load_ocean_config()
+        _CONFIG_RESOLUTION_CACHE.clear()
+        _CONFIG_RESOLUTION_CACHE[key] = cached
+    return cached
 
 
 def ocean_config_status() -> OceanConfigStatus:
@@ -180,7 +229,7 @@ def _ocean_config_paths() -> list[str] | None:
     """The Ocean config files that exist right now, or None when unknown.
 
     Uses ``dwave.cloud.config.get_configfile_paths`` (lazy import, same
-    boundary exemption as :func:`_resolve_ocean_config`). None means the
+    boundary exemption as :func:`_load_ocean_config`). None means the
     helper is unavailable — dwave-cloud-client not installed, or too old
     to have it — in which case nothing can be fingerprinted or scanned.
     """
@@ -314,7 +363,9 @@ def dwave_availability() -> AvailabilityStatus:
     (spec §10). ``config_invalid`` names the D-Wave-specific catalog code
     so the service can report it without knowing the backend (3a §8.2).
     Evaluated live on every call: credentials can change at any time, so
-    this must never be cached.
+    this answer is never cached. The underlying config parse is memoised
+    on the credential fingerprint, which every call recomputes, so any
+    change still shows up immediately — see :func:`_resolve_ocean_config`.
     """
     if not dwave_system_installed():
         return AvailabilityStatus(category="not_installed", detail=REASON_NOT_INSTALLED)
@@ -543,14 +594,62 @@ def create_sampler(holder: LazySampler, label: str) -> Any:
     )
 
 
-def resolve_hybrid_time_limit(
+class HybridTimeLimitMemo:
+    """The last ``min_time_limit`` a hybrid backend obtained, for reuse within an attempt.
+
+    The service asks a hybrid backend for ``resolve_time_limit()`` before
+    every submission (§14 step 9, the policy check) and ``solve()`` then
+    resolves the very same value again, so that what is submitted is
+    exactly what was checked. Both calls see the same compiled model object
+    and the same sampler, and ``min_time_limit(model)`` is a pure local
+    interpolation over the model's size and the sampler's properties — for
+    a CQM it walks every constraint — so the second computation only
+    repeated the first.
+
+    One slot. The sampler and the model are held by weak reference and
+    matched by identity: a rebuilt sampler (rotated credential, see
+    :class:`LazySampler`) or a freshly compiled model (the next attempt, the
+    next solve) is a miss, and a collected model cannot alias a new one at
+    the same address. The slot is replaced as one tuple, so a concurrent
+    solve on the same backend can only cause a miss, never a wrong hit. A
+    model or sampler that cannot be weakly referenced is simply not
+    memoised. Nothing here changes the value: with or without a hit the
+    submitted ``time_limit`` is the sampler's own minimum for this model,
+    floored under the user's value.
+    """
+
+    __slots__ = ("_entry",)
+
+    def __init__(self) -> None:
+        self._entry: tuple[weakref.ref, weakref.ref, float] | None = None
+
+    def lookup(self, sampler: Any, model: Any) -> float | None:
+        """The memoised minimum for exactly this sampler and model, else None."""
+        entry = self._entry
+        if entry is None:
+            return None
+        sampler_ref, model_ref, value = entry
+        if sampler_ref() is sampler and model_ref() is model:
+            return value
+        return None
+
+    def store(self, sampler: Any, model: Any, value: float) -> None:
+        """Remember ``value`` for this sampler and model, replacing the slot."""
+        try:
+            self._entry = (weakref.ref(sampler), weakref.ref(model), value)
+        except TypeError:
+            self._entry = None
+
+
+def resolve_hybrid_sampler(
     holder: LazySampler,
     model: Any,
     user_time_limit: float | None,
     *,
     label: str,
-) -> float:
-    """Effective ``time_limit`` (seconds) a Leap hybrid solve would submit.
+    memo: HybridTimeLimitMemo | None = None,
+) -> tuple[Any, float]:
+    """The sampler a Leap hybrid solve would use and the ``time_limit`` it would submit.
 
     The one rule of both hybrid backends (Phase 2 §16, 3a §17.2): the
     user's value if given, floored at the sampler's ``min_time_limit(model)``;
@@ -559,14 +658,45 @@ def resolve_hybrid_time_limit(
     properties fetched at construction. Construction failures are
     classified by :func:`create_sampler`, the ``min_time_limit`` call by
     :data:`HYBRID_SAMPLE_EXCEPTION_CODES`; ``label`` prefixes both messages.
+
+    The sampler comes back alongside the limit so a backend's ``solve()``
+    fetches it once — one :meth:`LazySampler.get`, one credential
+    fingerprint — for the limit and the submission together instead of
+    resolving and then fetching again. That ``get()`` is never skipped: it
+    is where a rotated credential is noticed. With a ``memo``, a minimum
+    already obtained for this very sampler and model is reused
+    (:class:`HybridTimeLimitMemo`), which is what makes the service's
+    pre-submission check and the solve of one attempt ask the sampler once.
     """
     sampler = create_sampler(holder, label)
-    min_time_limit = call_ocean(
-        f"{label} minimum time limit could not be determined",
-        HYBRID_SAMPLE_EXCEPTION_CODES,
-        lambda: float(sampler.min_time_limit(model)),
-        holder=holder,
-    )
+    min_time_limit = memo.lookup(sampler, model) if memo is not None else None
+    if min_time_limit is None:
+        min_time_limit = call_ocean(
+            f"{label} minimum time limit could not be determined",
+            HYBRID_SAMPLE_EXCEPTION_CODES,
+            lambda: float(sampler.min_time_limit(model)),
+            holder=holder,
+        )
+        if memo is not None:
+            memo.store(sampler, model, min_time_limit)
     if user_time_limit is None:
-        return min_time_limit
-    return max(float(user_time_limit), min_time_limit)
+        return sampler, min_time_limit
+    return sampler, max(float(user_time_limit), min_time_limit)
+
+
+def resolve_hybrid_time_limit(
+    holder: LazySampler,
+    model: Any,
+    user_time_limit: float | None,
+    *,
+    label: str,
+    memo: HybridTimeLimitMemo | None = None,
+) -> float:
+    """Effective ``time_limit`` (seconds) a Leap hybrid solve would submit.
+
+    :func:`resolve_hybrid_sampler` without the sampler: the same rule, the
+    same errors, the same value.
+    """
+    return resolve_hybrid_sampler(
+        holder, model, user_time_limit, label=label, memo=memo
+    )[1]
