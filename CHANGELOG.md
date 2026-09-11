@@ -14,6 +14,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tool calls the agent makes, what comes back), followed by the command
   line and Python examples; *How it works*, *Features* and the rest moved
   below them. The extra install paths live under *Installation in depth*.
+- Dependency floors now match what the code actually calls:
+  `pydantic-settings>=2.7` (`NoDecode`) and `dwave-system>=1.10`
+  (`LeapHybridCQMSampler`). Older versions installed but failed on import or
+  on the first hybrid CQM solve.
+- The default test suite is strict: `xfail_strict` makes an xfail that starts
+  passing a failure, and `filterwarnings = error` turns every warning into
+  one. CI now runs on pushes to `main` and on pull requests only, cancels a
+  superseded run on the same ref, and caches pip downloads between runs.
+- Documentation corrections: the `mcp dev` command in `docs/mcp.md` now points
+  at `src/annealbridge/interfaces/mcp/__init__.py` (the previous target,
+  `server.py`, loaded a second server instance that exposes no tool); the CLI
+  examples in both READMEs show the `Elapsed` and `Optimality proven` lines;
+  the capabilities docstring, `docs/mcp.md` and `docs/configuration.md` state
+  that `solver.backend` accepts only the six built-in names and that a
+  registry key must equal its `capabilities.name`; the `capabilities` example
+  in `docs/cli.md` notes that it reflects an install without the `dwave`
+  extra; and `docs/configuration.md` records that `ANNEALBRIDGE_SA_WORKERS ×
+  ANNEALBRIDGE_MAX_CONCURRENT_SOLVES` bounds the concurrent sampling threads.
+- Fujitsu DA result decoding drops an unreachable branch and gains tests for
+  malformed vendor responses.
 
 ## [0.1.0] - 2026-09-11
 
@@ -50,7 +70,6 @@ First public release.
 - Architecture tests that enforce the layering (`models ← validation ←
   penalty ← compiler ← solvers ← orchestration ← CLI / MCP`) and prove that a
   new backend plugs into the pipeline without changing it.
-
 - A `Release` workflow (`.github/workflows/release.yml`) publishes the built
   distribution to PyPI through Trusted Publishing when a `vX.Y.Z` tag is
   pushed; it refuses a tag that does not match the `pyproject.toml` version.

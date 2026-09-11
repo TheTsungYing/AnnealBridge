@@ -321,7 +321,7 @@ def _timing_microseconds(timing: Any) -> dict[str, float]:
 
 
 def _decode_solutions(
-    qubo_solution: Any, num_variables: int, job_id: str
+    qubo_solution: dict[str, Any], num_variables: int, job_id: str
 ) -> tuple[np.ndarray, np.ndarray]:
     """``qubo_solution.solutions`` → ``(int8 samples, float64 energies)``.
 
@@ -338,8 +338,6 @@ def _decode_solutions(
             code=REMOTE_ERROR_FALLBACK_CODE,
         )
 
-    if not isinstance(qubo_solution, dict):
-        raise failure("qubo_solution is not an object")
     solutions = qubo_solution.get("solutions")
     if not isinstance(solutions, list):
         raise failure("solutions is missing or not a list")

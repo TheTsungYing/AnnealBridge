@@ -240,7 +240,10 @@ if __name__ == "__main__":
     # Under ``python -m`` this file runs as the ``__main__`` module, which is a
     # *different* module object from ``annealbridge.interfaces.mcp.server`` —
     # with its own ``mcp`` instance that the tools never register on. Delegate
-    # to the canonical module so exactly one server instance exists.
+    # to the canonical module so exactly one server instance exists. Loading
+    # this file *by path* (``mcp dev .../server.py``) creates the same toolless
+    # duplicate and cannot be delegated away, so point the Inspector at the
+    # package's ``__init__.py`` instead.
     from annealbridge.interfaces.mcp.server import main as _canonical_main
 
     _canonical_main()

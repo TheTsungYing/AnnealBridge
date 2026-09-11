@@ -217,6 +217,10 @@ No options. It performs **no network I/O**, so it is safe to run before any
 credential is configured — availability is judged from the installed extras
 and the environment alone.
 
+The listing below is from a core install without the `dwave` extra. With
+dwave-system installed but no credentials configured, the three D-Wave rows
+read `(D-Wave credentials not configured)` instead.
+
 ```console
 $ annealbridge capabilities
 Backend              Available  Enabled  Remote  Limits

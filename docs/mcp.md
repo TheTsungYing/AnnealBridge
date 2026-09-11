@@ -120,8 +120,11 @@ when the problem carries `"version": "1.1"` at its top level.
 
 Each `backends[].name` is the **registry key** — the value to put in
 `solver.backend`, and the one `ANNEALBRIDGE_ENABLED_BACKENDS` is matched
-against. `enabled` already accounts for server policy, so a backend reported
-as not enabled will not become usable by asking for it.
+against. `solver.backend` is a closed schema that accepts only the six
+built-in names, so a backend has to be registered under its own
+`capabilities.name` for a request to be able to name it at all. `enabled`
+already accounts for server policy, so a backend reported as not enabled will
+not become usable by asking for it.
 
 ### `validate_optimization_problem`
 
@@ -285,12 +288,19 @@ annealbridge-mcp --transport streamable-http --host 127.0.0.1 --port 8000
 
 For interactive development, install a toolchain that ships the MCP CLI —
 either the project's `[dev]` extra or `mcp[cli]` — and run the Inspector
-against the server module:
+against the package module:
 
 ```bash
 pip install -e ".[dev]"          # or: pip install "mcp[cli]>=2,<3"
-mcp dev src/annealbridge/interfaces/mcp/server.py
+mcp dev src/annealbridge/interfaces/mcp/__init__.py
 ```
+
+Point it at `__init__.py`, not `server.py`. `mcp dev` loads its target by file
+path, which builds a *second* module object with its own server instance that
+the tools were never registered on — the Inspector would then list no tools
+at all, and a `:mcp` suffix does not change that. The package module imports
+the canonical server and its tools, so loading it by path reaches the one
+instance the four tools live on.
 
 Alternatively, drive the installed entry point directly with the Node-based
 Inspector:

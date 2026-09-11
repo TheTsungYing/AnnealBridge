@@ -23,10 +23,10 @@ class BackendCapability(BaseModel):
 
     ``name`` is the *registry key*: the value to put in ``solver.backend``
     and the one ``enabled_backends`` is matched against (2026-09-09 review
-    F-22). The six built-in backends register under their own
-    ``capabilities.name``, so for them the two coincide; a custom registry
-    may register a backend under another key, and the key is the only
-    name a request can use.
+    F-22). ``solver.backend`` is a closed schema that accepts only the six
+    built-in names, so a registry key must equal the backend's own
+    ``capabilities.name``: a backend registered under any other key has no
+    name a request could ask for.
     """
 
     name: str = Field(

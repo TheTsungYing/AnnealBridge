@@ -27,6 +27,7 @@ keywords = [
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
@@ -40,7 +41,8 @@ classifiers = [
 ]
 dependencies = [
     "pydantic>=2.0",
-    "pydantic-settings>=2",
+    # 2.7 is the first release exposing `NoDecode`, used by config/settings.py.
+    "pydantic-settings>=2.7",
     "dimod>=0.12",
     "numpy>=1.24",
     "dwave-samplers>=1.0",
@@ -49,8 +51,9 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=2,<3"]
-dwave = ["dwave-system"]
-all = ["mcp>=2,<3", "dwave-system"]
+# 1.10 is the first release shipping `LeapHybridCQMSampler`.
+dwave = ["dwave-system>=1.10"]
+all = ["mcp>=2,<3", "dwave-system>=1.10"]
 # "pytest-anyio" does not exist as a real distribution (PyPI only has an empty
 # 0.0.0 placeholder); anyio ships its own pytest plugin, so depend on anyio.
 dev = ["pytest>=8.0", "anyio>=4", "mcp[cli]>=2,<3"]
@@ -78,3 +81,9 @@ addopts = '-m "not remote"'
 markers = [
     "remote: live remote tests (opt-in; consume vendor quota; each needs its vendor credential: DWAVE_API_TOKEN or FUJITSU_DA_API_KEY)",
 ]
+# The default suite tolerates neither skips/xfails nor warning noise: an xfail
+# that starts passing is a failure, and every warning is raised as an error so
+# it is dealt with immediately instead of accumulating. The suite is warning
+# free today, so no ignore entry is needed.
+xfail_strict = true
+filterwarnings = ["error"]

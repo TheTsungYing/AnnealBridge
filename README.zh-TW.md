@@ -90,6 +90,7 @@ Problem:   knapsack
 Backend:   exact
 Status:    success
 Attempts:  1
+Elapsed:   2.7 ms
 
 Best solution (rank 1)
   objective (maximize):  17
@@ -101,7 +102,10 @@ Best solution (rank 1)
 
 Hard constraints: 1 / 1 satisfied
 Soft constraints: 0 violations
+Optimality proven: yes
 ```
+
+`Elapsed` 是服務整次呼叫的壁鐘時間，每次執行都不一樣。
 
 加上 `--json` 可以拿到完整的 `SolveResult`，`--backend simulated_annealing`
 可以覆寫 backend，也可以試試 `validate`、`recommend`、`capabilities` 與

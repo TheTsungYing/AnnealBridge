@@ -7,10 +7,8 @@ match ``test_*.py`` so pytest never collects them as tests.
 
 from tests.fakes.da_transport import (
     FAKE_JOB_ID,
-    FAKE_TIMING,
     FakeDATransport,
     FakeSolution,
-    RecordedRequest,
     bits_solution,
     json_response,
 )
@@ -25,12 +23,10 @@ __all__ = [
     "FAKE_DECLARED_NAME",
     "FAKE_JOB_ID",
     "FAKE_LOCAL_CQM_NAME",
-    "FAKE_TIMING",
     "FakeDATransport",
     "FakeDeclaredBackend",
     "FakeLocalCQMBackend",
     "FakeSolution",
-    "RecordedRequest",
     "all_feasible_sampleset",
     "bits_solution",
     "json_response",

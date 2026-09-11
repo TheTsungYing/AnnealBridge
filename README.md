@@ -99,6 +99,7 @@ Problem:   knapsack
 Backend:   exact
 Status:    success
 Attempts:  1
+Elapsed:   2.7 ms
 
 Best solution (rank 1)
   objective (maximize):  17
@@ -110,7 +111,11 @@ Best solution (rank 1)
 
 Hard constraints: 1 / 1 satisfied
 Soft constraints: 0 violations
+Optimality proven: yes
 ```
+
+`Elapsed` is the service's own wall clock for the whole call and varies from
+run to run.
 
 Add `--json` for the full `SolveResult`, `--backend simulated_annealing` to
 override the backend, or try `validate`, `recommend`, `capabilities` and

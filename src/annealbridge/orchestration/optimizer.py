@@ -116,11 +116,6 @@ def evaluate_objective_batch(
     return value
 
 
-def _assignment_tuple(sample: dict[str, int]) -> tuple[int, ...]:
-    """Deterministic tie-break key: values ordered by variable name."""
-    return tuple(sample[name] for name in sorted(sample))
-
-
 def _pack_rows(matrix: np.ndarray) -> np.ndarray:
     """Pack each 0/1 row of ``matrix`` into big-endian 64-bit words.
 

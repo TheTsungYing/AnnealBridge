@@ -768,6 +768,63 @@ class TestMalformedResponses:
         assert error.code == "REMOTE_SOLVER_ERROR"
         assert "no qubo_solution" in str(error)
 
+    @pytest.mark.parametrize(
+        "qubo_solution",
+        [{}, {"solutions": {}}, {"solutions": "x"}],
+        ids=["missing", "object", "string"],
+    )
+    def test_solutions_not_a_list_is_a_solver_error(self, monkeypatch, qubo_solution):
+        fake = FakeDATransport(
+            result_response=json_response(
+                200, {"status": "Done", "qubo_solution": qubo_solution}
+            )
+        )
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert "solutions is missing or not a list" in str(error)
+
+    def test_solution_row_that_is_not_an_object_is_a_solver_error(self, monkeypatch):
+        fake = FakeDATransport(
+            result_response=json_response(
+                200, {"status": "Done", "qubo_solution": {"solutions": [42]}}
+            )
+        )
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert "solution 0 is not an object" in str(error)
+
+    def test_solution_without_configuration_is_a_solver_error(self, monkeypatch):
+        fake = FakeDATransport(
+            result_response=json_response(
+                200,
+                {"status": "Done", "qubo_solution": {"solutions": [{"energy": 0.0}]}},
+            )
+        )
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert "solution 0 has no configuration object" in str(error)
+
+    @pytest.mark.parametrize(
+        "energy", ["1.5", None, True], ids=["string", "null", "bool"]
+    )
+    def test_non_numeric_energy_is_a_solver_error(self, monkeypatch, energy):
+        compiled = make_compiled()
+        width = len(compiled.model.variables)
+        solution = bits_solution([0] * width, 0.0)
+        solution.energy = energy
+        fake = FakeDATransport(solutions=[solution])
+
+        error = expect_failure(monkeypatch, fake, compiled=compiled)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert "solution 0 has no numeric energy" in str(error)
+
     def test_job_status_error_reports_the_message_and_frees_the_slot(self, monkeypatch):
         fake = FakeDATransport(
             poll_statuses=("Error",), error_message="the number of variables exceeds"
