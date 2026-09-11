@@ -35,6 +35,7 @@ The outcome of `solve_optimization` / `annealbridge solve`.
 | `solutions` | array of [Solution](#solution) | Ranked feasible solutions, best first, at most `solver.top_k`. Empty unless `status` is `success`. |
 | `attempts` | array of [SolveAttempt](#solveattempt) | One entry per compile/solve/validate attempt, in order. |
 | `infeasibility_proven` | boolean | `true` only when an exhaustive backend actually enumerated every assignment and found none feasible. Defaults to `false`. |
+| `infeasibility` | [InfeasibilityDiagnostics](#infeasibilitydiagnostics) \| null | Why the last attempt found nothing feasible. Present only when `status` is `infeasible` **and** that attempt had candidates to diagnose; `null` on every other status, and on an attempt that received no samples at all. |
 | `optimality_proven` | boolean | `true` only on `success` when an exhaustive backend enumerated every assignment: rank 1 is then the global optimum of `ranking_score`, not merely the best candidate seen. Always `false` on a heuristic or remote backend. |
 | `errors` | array of [SolveError](#solveerror) | Structured failures. Empty on success. |
 | `warnings` | array of [SolveError](#solveerror) | Non-blocking advice, same structure as an error: the warnings `validate` gives for this backend, then any raised during the run. Present whatever the `status`, except `invalid_problem`. |
@@ -60,7 +61,9 @@ Exactly one of seven values.
 `infeasible` is not the same as "no solution exists". Only
 `infeasibility_proven: true` — which only an exhaustive backend that actually
 returned samples can set — is a proof. On a heuristic or remote backend an
-`infeasible` result means "not found under this configuration".
+`infeasible` result means "not found under this configuration". Either way,
+[`infeasibility`](#infeasibilitydiagnostics) says which hard constraints stood
+in the way.
 
 ### Solution
 
@@ -75,6 +78,65 @@ returned samples can set — is a proof. On a heuristic or remote backend an
 | `sample_count` | integer | How many rows of this attempt's raw solver output carried this business assignment, before deduplication. Not a confidence measure: on an exhaustive backend every business assignment is enumerated once per combination of the slack and integer-encoding bits, so the count only reflects how many internal variables the compiled model happened to have. |
 | `hard_constraints_satisfied` | boolean | Always `true` for a returned solution — only feasible candidates are ranked. |
 | `constraint_evaluations` | array of [ConstraintEvaluation](#constraintevaluation) | One entry per constraint, hard and soft. |
+
+### InfeasibilityDiagnostics
+
+Present on `result.infeasibility` only when `status` is `infeasible` and the
+**last** attempt actually returned candidates. A backend that returned no
+samples leaves it `null`: there is then nothing to be closest and no
+denominator for a rate.
+
+Everything here is recomputed by the validator from the *original* problem —
+the same arithmetic that judges a ranked solution. The solver's energy and any
+sampler-reported feasibility flag play no part, so the diagnosis cannot
+contradict the `infeasible` verdict itself.
+
+When a solve made several attempts, the diagnosis describes the last one, the
+one that ran at the highest hard penalty. Earlier attempts are still listed in
+`attempts`, but are not diagnosed.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `closest_candidate` | [ClosestCandidate](#closestcandidate) | The candidate that came nearest to feasibility. |
+| `hard_violation_rates` | array of [HardViolationRate](#hardviolationrate) | One entry per **hard** constraint, in the problem's constraint order. Soft constraints never appear: they cannot make a candidate infeasible. |
+
+### ClosestCandidate
+
+The only infeasible assignment a result ever exposes. It is chosen by the
+smallest total hard violation — `Σ violation_amount` over the hard
+constraints, in the constraints' own units — and on a tie by the candidate the
+solver output listed first, so the choice is deterministic for a given raw
+output. It is a diagnostic aid, not a solution: it violates at least one hard
+constraint and must never be presented as an answer.
+
+Because the units of different constraints are simply added, the total ranks
+candidates rather than measuring them: it says which assignment is nearest,
+not by how much in any single constraint's terms. For that, read
+`constraint_evaluations`.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `variables` | object of string → integer | The business variables only, like a [Solution](#solution)'s: slack and integer-encoding bits are stripped and integers are decoded. |
+| `hard_violation_total` | number | `Σ violation_amount` over the hard constraints. Strictly positive — a zero total would be a feasible candidate. A hard constraint that holds within the feasibility tolerance contributes `0`. |
+| `constraint_evaluations` | array of [ConstraintEvaluation](#constraintevaluation) | One entry per constraint, hard **and** soft, exactly as for a ranked solution. This is where the binding requirement shows up: the hard entries with `satisfied: false`. |
+
+### HardViolationRate
+
+How often one hard constraint failed across the last attempt's candidates.
+A rate near `1` marks a constraint almost nothing could satisfy — usually the
+one to relax or re-check first; a rate of `0` means that constraint was never
+the obstacle by itself.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `constraint_id` | string | The `id` from the problem. |
+| `violated_candidates` | integer | How many candidates this constraint rejected, judged with the same feasibility tolerance as everywhere else. |
+| `candidates` | integer | The attempt's deduplicated candidate count — the same value for every entry, and equal to `attempts[-1].unique_samples`. |
+| `violated_fraction` | number | `violated_candidates / candidates`, between `0` and `1`. |
+
+The rates are independent counts, one constraint at a time: a candidate that
+breaks two constraints is counted in both, so they do not sum to 1 and a
+constraint with a rate below 1 does not imply a feasible candidate exists.
 
 ### SolveAttempt
 
@@ -253,6 +315,7 @@ Ranks 3–5 are elided below; they continue the same pattern down to
     }
   ],
   "infeasibility_proven": false,
+  "infeasibility": null,
   "optimality_proven": true,
   "errors": [],
   "warnings": [],

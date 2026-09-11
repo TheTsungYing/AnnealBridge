@@ -251,6 +251,102 @@ async def test_non_finite_penalty_multiplier_never_reaches_the_solver(
     assert "penalty_multiplier" in result.content[0].text
 
 
+# --- infeasibility diagnostics ----------------------------------------------
+#
+# An `infeasible` status is a structured result, not an error, and it now
+# carries the reason: the candidate that came closest to feasibility and how
+# often each hard constraint failed. Both come from re-validating the last
+# attempt's candidates against the original problem, so the agent can say
+# *which* requirement is the binding one without a second round trip.
+
+# Neither constraint is unsatisfiable on its own, so the problem validator
+# passes this; only enumeration can show the pair has no solution.
+JOINTLY_INFEASIBLE_PROBLEM = {
+    "version": "1.0",
+    "name": "jointly-infeasible",
+    "variables": [{"name": "x1"}, {"name": "x2"}, {"name": "x3"}],
+    "objective": {
+        "direction": "maximize",
+        "linear_terms": [
+            {"variable": "x1", "coefficient": 1},
+            {"variable": "x2", "coefficient": 1},
+            {"variable": "x3", "coefficient": 1},
+        ],
+    },
+    "constraints": [
+        {
+            "id": "all_three",
+            "type": "hard",
+            "terms": [
+                {"variable": "x1", "coefficient": 1},
+                {"variable": "x2", "coefficient": 1},
+                {"variable": "x3", "coefficient": 1},
+            ],
+            "operator": ">=",
+            "rhs": 3,
+        },
+        {
+            "id": "budget",
+            "type": "hard",
+            "terms": [
+                {"variable": "x1", "coefficient": 3},
+                {"variable": "x2", "coefficient": 2},
+                {"variable": "x3", "coefficient": 1},
+            ],
+            "operator": "<=",
+            "rhs": 1,
+        },
+    ],
+    "solver": {"backend": "exact"},
+}
+
+
+async def test_infeasible_result_carries_structured_diagnostics():
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "solve_optimization", {"problem": JOINTLY_INFEASIBLE_PROBLEM}
+        )
+        # Infeasible is an answer, not a transport failure.
+        assert result.is_error is False
+        content = result.structured_content
+
+    assert content["status"] == "infeasible"
+    assert content["infeasibility_proven"] is True
+    assert content["solutions"] == []
+
+    diagnostics = content["infeasibility"]
+    closest = diagnostics["closest_candidate"]
+    assert closest["variables"] == {"x1": 0, "x2": 0, "x3": 1}
+    assert closest["hard_violation_total"] == 2.0
+    assert [
+        (e["constraint_id"], e["satisfied"], e["violation_amount"])
+        for e in closest["constraint_evaluations"]
+    ] == [("all_three", False, 2.0), ("budget", True, 0.0)]
+
+    rates = diagnostics["hard_violation_rates"]
+    assert rates
+    assert [
+        (r["constraint_id"], r["violated_candidates"], r["candidates"])
+        for r in rates
+    ] == [("all_three", 7, 8), ("budget", 6, 8)]
+    assert all(
+        rate["candidates"] == content["attempts"][-1]["unique_samples"]
+        for rate in rates
+    )
+
+
+async def test_success_carries_no_diagnostics(load_example):
+    problem = load_example("knapsack.json", backend="exact")
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("solve_optimization", {"problem": problem})
+        assert result.is_error is False
+        content = result.structured_content
+
+    assert content["status"] == "success"
+    assert content["infeasibility"] is None
+
+
 class VendorCrashBackend(FakeDeclaredBackend):
     """A backend whose ``solve()`` raises a bare vendor exception.
 

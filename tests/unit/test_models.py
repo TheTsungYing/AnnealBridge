@@ -311,9 +311,79 @@ class TestDefaults:
             }
         )
         assert result.infeasibility_proven is False
+        assert result.infeasibility is None
         assert result.errors == []
         assert result.warnings == []
         assert result.message is None
+
+    def test_solve_result_round_trips_infeasibility_diagnostics(self):
+        payload = {
+            "status": "infeasible",
+            "backend": "exact",
+            "objective_direction": "maximize",
+            "solutions": [],
+            "attempts": [],
+            "infeasibility_proven": True,
+            "infeasibility": {
+                "closest_candidate": {
+                    "variables": {"x1": 0, "x2": 0, "x3": 1},
+                    "hard_violation_total": 2.0,
+                    "constraint_evaluations": [
+                        {
+                            "constraint_id": "all_three",
+                            "constraint_type": "hard",
+                            "satisfied": False,
+                            "actual_value": 1.0,
+                            "operator": ">=",
+                            "expected_value": 3.0,
+                            "violation_amount": 2.0,
+                            "weighted_penalty": None,
+                        },
+                        {
+                            "constraint_id": "budget",
+                            "constraint_type": "hard",
+                            "satisfied": True,
+                            "actual_value": 1.0,
+                            "operator": "<=",
+                            "expected_value": 1.0,
+                            "violation_amount": 0.0,
+                            "weighted_penalty": None,
+                        },
+                    ],
+                },
+                "hard_violation_rates": [
+                    {
+                        "constraint_id": "all_three",
+                        "violated_candidates": 7,
+                        "candidates": 8,
+                        "violated_fraction": 0.875,
+                    },
+                    {
+                        "constraint_id": "budget",
+                        "violated_candidates": 6,
+                        "candidates": 8,
+                        "violated_fraction": 0.75,
+                    },
+                ],
+            },
+        }
+
+        result = SolveResult.model_validate(payload)
+
+        assert result.infeasibility is not None
+        closest = result.infeasibility.closest_candidate
+        assert closest.variables == {"x1": 0, "x2": 0, "x3": 1}
+        assert closest.hard_violation_total == 2.0
+        assert [e.constraint_id for e in closest.constraint_evaluations] == [
+            "all_three",
+            "budget",
+        ]
+        rates = result.infeasibility.hard_violation_rates
+        assert [r.constraint_id for r in rates] == ["all_three", "budget"]
+        assert [r.violated_fraction for r in rates] == [0.875, 0.75]
+        # The dump is the same payload again, so an MCP round trip is lossless.
+        dumped = result.model_dump(mode="json")
+        assert dumped["infeasibility"] == payload["infeasibility"]
 
 
 class TestRemoteBackendOptions:

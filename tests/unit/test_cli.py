@@ -7,6 +7,9 @@ from typer.testing import CliRunner
 
 from annealbridge.interfaces.cli.main import _render_human, app
 from annealbridge.models import (
+    ClosestCandidate,
+    HardViolationRate,
+    InfeasibilityDiagnostics,
     OptimizationProblem,
     Solution,
     SolveAttempt,
@@ -394,7 +397,7 @@ class TestInvalidSettings:
 class TestRenderInfeasibleAttempts:
     """3a §16.4: an attempt without a hard penalty prints ``penalty=-``."""
 
-    def _render(self, penalty):
+    def _render(self, penalty, infeasibility=None):
         problem = OptimizationProblem.model_validate_json(
             (EXAMPLES_DIR / "knapsack.json").read_text(encoding="utf-8")
         )
@@ -412,9 +415,34 @@ class TestRenderInfeasibleAttempts:
                     feasible_samples=0,
                 )
             ],
+            infeasibility=infeasibility,
             message="No feasible solution found",
         )
         return _render_human(problem, result)
+
+    @staticmethod
+    def _diagnostics() -> InfeasibilityDiagnostics:
+        return InfeasibilityDiagnostics(
+            closest_candidate=ClosestCandidate(
+                variables={"x2": 0, "x1": 0, "x3": 1},  # deliberately unsorted
+                hard_violation_total=2.0,
+                constraint_evaluations=[],
+            ),
+            hard_violation_rates=[
+                HardViolationRate(
+                    constraint_id="all_three",
+                    violated_candidates=7,
+                    candidates=8,
+                    violated_fraction=0.875,
+                ),
+                HardViolationRate(
+                    constraint_id="budget",
+                    violated_candidates=6,
+                    candidates=8,
+                    violated_fraction=0.75,
+                ),
+            ],
+        )
 
     def test_none_penalty_prints_a_dash(self):
         text = self._render(None)
@@ -425,6 +453,31 @@ class TestRenderInfeasibleAttempts:
         text = self._render(62.0)
 
         assert "attempt 1: penalty=62, samples=10, unique=4, feasible=0" in text
+
+    def test_diagnostics_print_the_closest_candidate_and_the_rates(self):
+        text = self._render(None, self._diagnostics())
+        lines = text.splitlines()
+        header = "Closest candidate (hard violation total 2):"
+
+        assert header in lines
+        # Name-sorted, like the success block's variable listing.
+        start = lines.index(header) + 1
+        assert lines[start : start + 3] == ["  x1 = 0", "  x2 = 0", "  x3 = 1"]
+        assert lines[start + 3] == "Hard constraint violation rates:"
+        # 0.875 and 0.75 through _format_number: no trailing ".0" on 75.
+        assert lines[start + 4 : start + 6] == [
+            "  all_three: 7 / 8 (87.5%)",
+            "  budget: 6 / 8 (75%)",
+        ]
+        # Between the proven line and the message, as spec'd.
+        assert lines[lines.index(header) - 1] == "Infeasibility proven: no"
+        assert lines[start + 6] == "No feasible solution found"
+
+    def test_without_diagnostics_nothing_extra_is_printed(self):
+        text = self._render(None)
+
+        assert "Closest candidate" not in text
+        assert "Hard constraint violation rates" not in text
 
 
 class TestRenderHumanErrorsAndWarnings:

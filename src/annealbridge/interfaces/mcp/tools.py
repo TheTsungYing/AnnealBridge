@@ -122,8 +122,11 @@ async def solve_optimization(problem: OptimizationProblem) -> SolveResult:
     Use recommend_backend to compare backends; the choice remains yours.
 
     Returns ranked feasible solutions with per-constraint evaluations, or a
-    structured error with a recommended_action. Whatever the status, the
-    result's warnings are the same advisory warnings
+    structured error with a recommended_action. When the status is infeasible,
+    read infeasibility for the candidate that came closest to feasibility and
+    the share of candidates each hard constraint rejected, so the answer can
+    name the binding requirement instead of only reporting failure. Whatever
+    the status, the result's warnings are the same advisory warnings
     validate_optimization_problem gives for this backend (an ignored seed or
     parameter, a wide integer range, a negligible soft weight, ...) followed
     by any raised during the run; read them before trusting a weaker answer

@@ -180,6 +180,9 @@ Things worth knowing before calling it:
   the server.
 - Every candidate is re-validated against the *original* problem, never judged
   by the solver's energy or by a sampler's own feasibility flag.
+- On an `infeasible` result, read `infeasibility` to learn which candidate came
+  closest to feasibility and how often each hard constraint was violated,
+  instead of reporting only that nothing was found.
 - Whatever the `status`, `warnings` holds the same advisory warnings
   `validate_optimization_problem` gives for that backend (`SEED_IGNORED`,
   `PARAMETER_IGNORED`, `LARGE_INTEGER_RANGE`, `SOFT_WEIGHT_SMALL`, ...),

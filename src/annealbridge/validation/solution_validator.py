@@ -9,8 +9,9 @@ Two entry points share one arithmetic:
 - :func:`validate` evaluates a single sample and builds the full
   ``ValidationResult`` with one ``ConstraintEvaluation`` per constraint.
 - :func:`validate_batch` evaluates a whole matrix of candidates at once and
-  returns only the per-candidate verdicts (``feasible`` and
-  ``soft_violation_score``) as arrays. Every candidate is still re-checked
+  returns only the per-candidate verdicts (``feasible``,
+  ``soft_violation_score`` and ``hard_violation_total``) plus a per-hard-
+  constraint violation tally as arrays. Every candidate is still re-checked
   against the original problem (overview principle 2); only the report
   objects are skipped, because building thousands of Pydantic models per
   solve dominated the run time while the ranking only ever reads the
@@ -138,10 +139,23 @@ def _evaluate(constraint: Constraint, sample: dict[str, int]) -> ConstraintEvalu
 
 @dataclass(frozen=True)
 class BatchValidation:
-    """Per-candidate verdicts of :func:`validate_batch`, aligned by row."""
+    """Per-candidate verdicts of :func:`validate_batch`, aligned by row.
+
+    The hard tallies exist so an attempt that found nothing feasible can
+    still be explained without a second pass over the candidates:
+    ``hard_violation_total`` is Σ ``violation_amount`` over the hard
+    constraints per candidate (zero for a satisfied constraint, exactly as
+    :func:`validate` reports it), and ``hard_violated_counts[i]`` is how
+    many candidates violated ``hard_constraint_ids[i]``. A per-candidate,
+    per-constraint matrix is deliberately not kept: on an exhaustive
+    backend it would cost candidates × hard constraints in memory.
+    """
 
     feasible: np.ndarray  # bool, shape (candidates,)
     soft_violation_score: np.ndarray  # float64, shape (candidates,)
+    hard_violation_total: np.ndarray  # float64, shape (candidates,)
+    hard_constraint_ids: list[str]  # hard constraints, in problem order
+    hard_violated_counts: np.ndarray  # int64, shape (len(hard_constraint_ids),)
 
 
 def validate_batch(
@@ -169,6 +183,9 @@ def validate_batch(
     count = samples.shape[0]
     feasible = np.ones(count, dtype=bool)
     soft_violation_score = np.zeros(count, dtype=np.float64)
+    hard_violation_total = np.zeros(count, dtype=np.float64)
+    hard_constraint_ids: list[str] = []
+    hard_violated_counts: list[int] = []
 
     for constraint in problem.constraints:
         actual = np.zeros(count, dtype=np.float64)
@@ -192,6 +209,12 @@ def validate_batch(
 
         if constraint.type == "hard":
             feasible &= satisfied
+            # The scalar kernel's ``0.0 if satisfied else violation``: the
+            # tolerance decides, so a within-band residual counts as zero
+            # here too. Accumulated in constraint order like the soft score.
+            hard_violation_total += np.where(satisfied, 0.0, violation)
+            hard_constraint_ids.append(constraint.id)
+            hard_violated_counts.append(int(np.count_nonzero(~satisfied)))
         else:
             # Exact residual, no tolerance band (review F-05) — the same
             # value, in the same association and the same constraint order,
@@ -201,4 +224,10 @@ def validate_batch(
                 constraint.weight * violation_amount * violation_amount
             )
 
-    return BatchValidation(feasible=feasible, soft_violation_score=soft_violation_score)
+    return BatchValidation(
+        feasible=feasible,
+        soft_violation_score=soft_violation_score,
+        hard_violation_total=hard_violation_total,
+        hard_constraint_ids=hard_constraint_ids,
+        hard_violated_counts=np.asarray(hard_violated_counts, dtype=np.int64),
+    )

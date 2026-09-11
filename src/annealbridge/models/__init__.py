@@ -30,7 +30,10 @@ from annealbridge.models.problem import (
     SolverPreferences,
 )
 from annealbridge.models.solution import (
+    ClosestCandidate,
     ConstraintEvaluation,
+    HardViolationRate,
+    InfeasibilityDiagnostics,
     ProblemError,
     Solution,
     SolveAttempt,
@@ -45,7 +48,10 @@ __all__ = [
     "catalog_error",
     "AvailabilityCategory",
     "AvailabilityStatus",
+    "ClosestCandidate",
     "CompiledProblem",
+    "HardViolationRate",
+    "InfeasibilityDiagnostics",
     "Constraint",
     "ConstraintEvaluation",
     "ConstraintTrace",

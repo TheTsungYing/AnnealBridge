@@ -173,6 +173,22 @@ def _render_human(problem: OptimizationProblem, result: SolveResult) -> str:
             )
         proven = "yes" if result.infeasibility_proven else "no"
         lines.append(f"Infeasibility proven: {proven}")
+        if result.infeasibility is not None:
+            closest = result.infeasibility.closest_candidate
+            lines.append(
+                "Closest candidate (hard violation total "
+                f"{_format_number(closest.hard_violation_total)}):"
+            )
+            # Name-sorted, like the success block's variable listing.
+            for name in sorted(closest.variables):
+                lines.append(f"  {name} = {closest.variables[name]}")
+            lines.append("Hard constraint violation rates:")
+            for rate in result.infeasibility.hard_violation_rates:
+                lines.append(
+                    f"  {rate.constraint_id}: "
+                    f"{rate.violated_candidates} / {rate.candidates} "
+                    f"({_format_number(rate.violated_fraction * 100)}%)"
+                )
         if result.message:
             lines.append(result.message)
 

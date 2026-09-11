@@ -25,6 +25,7 @@ from annealbridge.models import (
 )
 from annealbridge.orchestration import (
     deduplicate_samples,
+    diagnose_infeasibility,
     evaluate_objective,
     evaluate_objective_batch,
     process_candidates,
@@ -81,6 +82,35 @@ def reference_tally(
 def reference_counts(raw: RawSolverResult, internal_variables: set[str]) -> list[int]:
     """The tally above, in first-seen order."""
     return list(reference_tally(raw, internal_variables).values())
+
+
+def hard_ids(problem: OptimizationProblem) -> list[str]:
+    """The hard constraint ids in the problem's own order."""
+    return [c.id for c in problem.constraints if c.type == "hard"]
+
+
+def reference_hard_total(validation) -> float:
+    """Σ ``violation_amount`` over the hard constraints, in problem order.
+
+    The oracle for ``BatchValidation.hard_violation_total`` and for
+    ``ClosestCandidate.hard_violation_total``: the same values the full
+    validator reports, accumulated in the same order, so a difference in
+    association would show up as a last-bit mismatch.
+    """
+    total = 0.0
+    for evaluation in validation.evaluations:
+        if evaluation.constraint_type == "hard":
+            total += evaluation.violation_amount
+    return total
+
+
+def reference_hard_violations(validation) -> list[bool]:
+    """Per hard constraint, whether this candidate violated it."""
+    return [
+        not evaluation.satisfied
+        for evaluation in validation.evaluations
+        if evaluation.constraint_type == "hard"
+    ]
 
 
 def random_problem(rng: random.Random, n_variables: int) -> OptimizationProblem:
@@ -554,6 +584,14 @@ class TestBatchValidationConsistency:
 
         assert batch.feasible.dtype == bool
         assert batch.soft_violation_score.dtype == np.float64
+        # The hard tallies feed the infeasibility diagnosis, so they must be
+        # the validator's own numbers too, not merely close ones.
+        assert batch.hard_constraint_ids == hard_ids(problem)
+        assert batch.hard_violation_total.dtype == np.float64
+        assert batch.hard_violated_counts.dtype == np.int64
+        assert batch.hard_violated_counts.shape == (len(hard_ids(problem)),)
+        violated_counts = [0] * len(batch.hard_constraint_ids)
+
         for row in range(samples.shape[0]):
             sample = dict(zip(variables, samples[row].tolist()))
             full = validate_solution(problem, sample)
@@ -562,6 +600,13 @@ class TestBatchValidationConsistency:
             # the batch numbers and reported from the full ones.
             assert float(batch.soft_violation_score[row]) == full.soft_violation_score
             assert float(objective[row]) == evaluate_objective(problem.objective, sample)
+            assert float(batch.hard_violation_total[row]) == reference_hard_total(
+                full
+            ), (seed, sample)
+            for position, violated in enumerate(reference_hard_violations(full)):
+                violated_counts[position] += int(violated)
+
+        assert batch.hard_violated_counts.tolist() == violated_counts
 
     def test_epsilon_boundary_is_shared(self):
         # 0.1 + 0.2 != 0.3 in binary; both paths must accept it as "==" 0.3
@@ -629,6 +674,12 @@ class TestBatchValidationConsistency:
             problem = band_problem(rng, variables, constraints)
 
             batch = validate_batch(problem, variables, samples)
+            assert batch.hard_constraint_ids == hard_ids(problem)
+            assert batch.hard_violation_total.dtype == np.float64
+            assert batch.hard_violated_counts.dtype == np.int64
+            assert batch.hard_violated_counts.shape == (len(hard_ids(problem)),)
+            violated_counts = [0] * len(batch.hard_constraint_ids)
+
             for row in range(samples.shape[0]):
                 sample = dict(zip(variables, samples[row].tolist()))
                 full = validate_solution(problem, sample)
@@ -641,11 +692,21 @@ class TestBatchValidationConsistency:
                 assert float(batch.soft_violation_score[row]) == (
                     full.soft_violation_score
                 ), (problem_index, sample)
+                # Same for the hard total the diagnosis reports: the
+                # tolerance decides, so a within-band residual is a zero on
+                # both paths.
+                assert float(batch.hard_violation_total[row]) == (
+                    reference_hard_total(full)
+                ), (problem_index, sample)
+                for position, violated in enumerate(reference_hard_violations(full)):
+                    violated_counts[position] += int(violated)
                 seen_feasible = seen_feasible or full.feasible
                 seen_infeasible = seen_infeasible or not full.feasible
                 seen_soft_violation = (
                     seen_soft_violation or full.soft_violation_score > 0.0
                 )
+
+            assert batch.hard_violated_counts.tolist() == violated_counts
 
         # A single soft constraint of weight 1: the batch score is then the
         # squared violation amount itself, so violation_amount is pinned to
@@ -794,6 +855,247 @@ class TestProcessCandidatesMatchesRowByRow:
             assert len(solution.constraint_evaluations) == len(problem.constraints)
             # Every assignment was enumerated exactly once, no internals.
             assert solution.sample_count == 1
+
+
+# --------------------------------------------------------------------------
+# infeasibility diagnostics
+# --------------------------------------------------------------------------
+
+
+def mutually_exclusive_hard_constraints(names: list[str]) -> list[Constraint]:
+    """Two hard constraints no assignment can satisfy together.
+
+    ``Σ v >= 1`` and ``Σ v <= 0``: the all-zero assignment misses the first
+    by exactly 1 and every single-one assignment misses the second by
+    exactly 1, so the smallest total is reached by more than one candidate
+    and the first-seen tie-break is what the choice actually turns on.
+    """
+    terms = [LinearTerm(variable=name, coefficient=1.0) for name in names]
+    return [
+        Constraint(id="at_least_one", type="hard", terms=terms, operator=">=", rhs=1),
+        Constraint(id="none_at_all", type="hard", terms=terms, operator="<=", rhs=0),
+    ]
+
+
+class TestInfeasibilityDiagnostics:
+    """``process_candidates`` explains an attempt where nothing was feasible:
+    the closest candidate and each hard constraint's violation rate, both
+    recomputed by the validator from the original problem."""
+
+    @staticmethod
+    def reference(problem: OptimizationProblem, raw: RawSolverResult, internal: set):
+        """Row-by-row oracle over the deduplicated candidates.
+
+        ``reference_deduplicate`` keeps first-seen order, and ``min``
+        returns the first minimal element, so this reproduces the
+        "smallest total, earliest on a tie" rule independently of
+        ``np.argmin``.
+        """
+        deduped = reference_deduplicate(raw, internal)
+        totals = []
+        counts = [0] * len(hard_ids(problem))
+        for sample, _energy in deduped:
+            validation = validate_solution(problem, sample)
+            totals.append(reference_hard_total(validation))
+            for position, violated in enumerate(reference_hard_violations(validation)):
+                counts[position] += int(violated)
+        best = min(range(len(totals)), key=lambda index: totals[index])
+        return deduped, totals, counts, best
+
+    def assert_matches_reference(self, problem, raw, internal, processed):
+        deduped, totals, counts, best = self.reference(problem, raw, internal)
+        diagnostics = processed.infeasibility
+        assert diagnostics is not None
+        assert processed.solutions == []
+        assert processed.unique_samples == len(deduped)
+        assert processed.feasible_samples == 0
+
+        expected_sample = deduped[best][0]
+        closest = diagnostics.closest_candidate
+        assert closest.variables == expected_sample
+        # Exact equality: the reported total is the validator's own sum.
+        assert closest.hard_violation_total == totals[best]
+        assert closest.hard_violation_total == min(totals)
+        assert closest.constraint_evaluations == (
+            validate_solution(problem, expected_sample).evaluations
+        )
+
+        rates = diagnostics.hard_violation_rates
+        assert [rate.constraint_id for rate in rates] == hard_ids(problem)
+        assert [rate.violated_candidates for rate in rates] == counts
+        for rate in rates:
+            assert rate.candidates == len(deduped)
+            assert rate.violated_fraction == rate.violated_candidates / len(deduped)
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_closest_candidate_and_rates_match_the_row_by_row_oracle(self, seed):
+        rng = random.Random(7000 + seed)
+        n_variables = rng.randint(1, 5)
+        problem = random_problem(rng, n_variables)
+        names = [variable.name for variable in problem.variables]
+        # The random problem's own constraints stay: they contribute to the
+        # totals, so the oracle is not comparing against a single term.
+        problem = problem.model_copy(
+            update={
+                "constraints": [
+                    *problem.constraints,
+                    *mutually_exclusive_hard_constraints(names),
+                ]
+            }
+        )
+        internal = {f"__slack_{i}" for i in range(rng.randint(0, 2))}
+        variables = names + sorted(internal)
+        rng.shuffle(variables)
+        rows = rng.randint(1, 40)
+        samples = [{name: rng.randint(0, 1) for name in variables} for _ in range(rows)]
+        energies = [rng.choice([-2.0, -1.0, 0.0, 0.5]) for _ in range(rows)]
+        raw = RawSolverResult.from_dicts(samples, energies, "exact")
+
+        processed = process_candidates(problem, raw, internal, top_k=5)
+
+        self.assert_matches_reference(problem, raw, internal, processed)
+
+    def test_ties_are_broken_by_first_seen_order(self):
+        # Both rows miss by exactly 1 (all-zero violates at_least_one,
+        # a single one violates none_at_all), so only the order of the raw
+        # output can decide which is reported.
+        names = ["a", "b"]
+        problem = OptimizationProblem(
+            name="tie",
+            variables=[Variable(name=name) for name in names],
+            objective=Objective(
+                direction="minimize",
+                linear_terms=[LinearTerm(variable="a", coefficient=1.0)],
+            ),
+            constraints=mutually_exclusive_hard_constraints(names),
+        )
+        rows = [{"a": 1, "b": 0}, {"a": 0, "b": 0}]
+        energies = [0.0, -5.0]  # the later row is the *better* energy
+
+        forward = process_candidates(
+            problem, RawSolverResult.from_dicts(rows, energies, "exact"), set(), top_k=5
+        )
+        reverse = process_candidates(
+            problem,
+            RawSolverResult.from_dicts(rows[::-1], energies[::-1], "exact"),
+            set(),
+            top_k=5,
+        )
+
+        # Energy plays no part: the first row read wins each way round.
+        assert forward.infeasibility.closest_candidate.variables == {"a": 1, "b": 0}
+        assert reverse.infeasibility.closest_candidate.variables == {"a": 0, "b": 0}
+        for processed in (forward, reverse):
+            diagnostics = processed.infeasibility
+            assert diagnostics.closest_candidate.hard_violation_total == 1.0
+            assert [
+                (rate.constraint_id, rate.violated_candidates, rate.candidates)
+                for rate in diagnostics.hard_violation_rates
+            ] == [("at_least_one", 1, 2), ("none_at_all", 1, 2)]
+
+    def test_diagnose_infeasibility_agrees_with_process_candidates(self):
+        names = ["a", "b", "c"]
+        problem = OptimizationProblem(
+            name="direct",
+            variables=[Variable(name=name) for name in names],
+            objective=Objective(
+                direction="minimize",
+                linear_terms=[LinearTerm(variable="a", coefficient=1.0)],
+            ),
+            constraints=mutually_exclusive_hard_constraints(names),
+        )
+        raw = RawSolverResult(
+            variables=names,
+            samples=all_assignments(3),
+            energies=np.zeros(8),
+            backend="exact",
+        )
+
+        candidates = deduplicate_samples(raw, set())
+        verdict = validate_batch(problem, candidates.variables, candidates.samples)
+        direct = diagnose_infeasibility(problem, candidates, verdict)
+        processed = process_candidates(problem, raw, set(), top_k=5)
+
+        assert processed.infeasibility == direct
+        # 8 assignments: only the all-zero one satisfies none_at_all, and
+        # only the seven others satisfy at_least_one.
+        assert [
+            (rate.violated_candidates, rate.candidates)
+            for rate in direct.hard_violation_rates
+        ] == [(1, 8), (7, 8)]
+        self.assert_matches_reference(problem, raw, set(), processed)
+
+    def test_a_feasible_candidate_leaves_no_diagnosis(self):
+        # Only the second constraint of the exclusive pair, so the all-zero
+        # assignment is feasible and 15 of 16 candidates are not.
+        names = ["a", "b", "c", "d"]
+        problem = OptimizationProblem(
+            name="one reachable hard constraint",
+            variables=[Variable(name=name) for name in names],
+            objective=Objective(
+                direction="minimize",
+                linear_terms=[LinearTerm(variable="a", coefficient=1.0)],
+            ),
+            constraints=mutually_exclusive_hard_constraints(names)[1:],
+        )
+        raw = RawSolverResult(
+            variables=names,
+            samples=all_assignments(4),
+            energies=np.zeros(16),
+            backend="exact",
+        )
+        processed = process_candidates(problem, raw, set(), top_k=3)
+
+        assert processed.feasible_samples == 1
+        # A single feasible candidate is enough: the diagnosis is for an
+        # attempt that found none at all.
+        assert processed.infeasibility is None
+
+    def test_empty_raw_output_has_nothing_to_diagnose(self):
+        problem = random_problem(random.Random(13), 3)
+        raw = RawSolverResult(
+            variables=[v.name for v in problem.variables],
+            samples=[],
+            energies=[],
+            backend="exact",
+        )
+        processed = process_candidates(problem, raw, set(), top_k=3)
+
+        assert processed.solutions == []
+        assert processed.unique_samples == 0
+        assert processed.feasible_samples == 0
+        # Zero candidates is not a diagnosis: there is nothing to be closest.
+        assert processed.infeasibility is None
+
+    def test_problem_without_hard_constraints_has_empty_tallies(self):
+        problem = OptimizationProblem(
+            name="soft only",
+            variables=[Variable(name="a"), Variable(name="b")],
+            objective=Objective(
+                direction="minimize",
+                linear_terms=[LinearTerm(variable="a", coefficient=1.0)],
+            ),
+            constraints=[
+                Constraint(
+                    id="prefer_a",
+                    type="soft",
+                    terms=[LinearTerm(variable="a", coefficient=1.0)],
+                    operator="<=",
+                    rhs=0,
+                    weight=1.0,
+                )
+            ],
+        )
+        samples = all_assignments(2)
+        batch = validate_batch(problem, ["a", "b"], samples)
+
+        assert batch.hard_constraint_ids == []
+        assert batch.hard_violated_counts.shape == (0,)
+        assert batch.hard_violated_counts.dtype == np.int64
+        assert batch.hard_violation_total.tolist() == [0.0] * 4
+        # Without a hard constraint every candidate is feasible, so the
+        # diagnosis never runs.
+        assert batch.feasible.all()
 
 
 # --------------------------------------------------------------------------

@@ -333,6 +333,9 @@ class TestNoHardPenaltyPath:
         assert solution.variables == {"x1": 1, "x2": 0}
         assert solution.objective_value == 3.0
         assert solution.hard_constraints_satisfied is True
+        # A success carries no infeasibility diagnosis, even though the
+        # attempt ran the same validation pass.
+        assert result.infeasibility is None
         # make_problem asks for retries, which the CQM path cannot honour;
         # solve reports the validator's PARAMETER_IGNORED for it, and nothing
         # else (no REMOTE_RETRIES_DISABLED: nothing was cut).
@@ -393,6 +396,13 @@ class TestNoHardPenaltyPath:
         assert result.status == "infeasible"
         assert len(result.attempts) == 3
         assert all(a.penalty is not None for a in result.attempts)
+        # The diagnosis describes the *last* attempt, the one that ran at
+        # the highest penalty: its candidate count is the rates' denominator.
+        assert result.infeasibility is not None
+        rates = result.infeasibility.hard_violation_rates
+        assert [rate.constraint_id for rate in rates] == ["capacity"]
+        assert rates[0].candidates == result.attempts[-1].unique_samples
+        assert result.infeasibility.closest_candidate.variables == {"x1": 1, "x2": 1}
 
 
 class TestMetadataModelType:

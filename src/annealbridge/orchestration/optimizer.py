@@ -25,7 +25,10 @@ from annealbridge.exceptions import (
     OptimizerError,
 )
 from annealbridge.models import (
+    ClosestCandidate,
     CompiledProblem,
+    HardViolationRate,
+    InfeasibilityDiagnostics,
     ModelType,
     Objective,
     OptimizationProblem,
@@ -56,6 +59,7 @@ from annealbridge.solvers import (
 )
 from annealbridge.validation import (
     BackendRecommendationResult,
+    BatchValidation,
     ProblemValidationResult,
     validate_batch,
     validate_problem_full,
@@ -273,12 +277,58 @@ class ProcessedCandidates:
 
     ``unique_samples`` and ``feasible_samples`` are the candidate counts the
     attempt reports; both are counted over deduplicated assignments, not
-    over the raw rows.
+    over the raw rows. ``infeasibility`` is set only when there were
+    candidates and none was feasible.
     """
 
     solutions: list[Solution]
     unique_samples: int
     feasible_samples: int
+    infeasibility: InfeasibilityDiagnostics | None = None
+
+
+def diagnose_infeasibility(
+    problem: OptimizationProblem,
+    candidates: CandidateSet,
+    verdict: BatchValidation,
+) -> InfeasibilityDiagnostics:
+    """Explain an attempt whose candidates were all infeasible.
+
+    Picks the candidate with the smallest total hard violation — the first
+    such candidate in first-seen order on a tie, so the choice is
+    deterministic for a given raw output — and re-runs the full validator
+    on it, so the reported evaluations come from the same arithmetic as a
+    ranked solution's. Only the original problem is consulted; the
+    solver's energy plays no part (overview principle 2).
+    """
+    closest = int(np.argmin(verdict.hard_violation_total))
+    sample = candidates.sample_dict(closest)
+    validation = validate_solution(problem, sample)
+    # Same order and association as the batch kernel, so the two agree.
+    hard_total = 0.0
+    for evaluation in validation.evaluations:
+        if evaluation.constraint_type == "hard":
+            hard_total += evaluation.violation_amount
+    total = len(candidates)
+    rates = [
+        HardViolationRate(
+            constraint_id=constraint_id,
+            violated_candidates=violated,
+            candidates=total,
+            violated_fraction=violated / total,
+        )
+        for constraint_id, violated in zip(
+            verdict.hard_constraint_ids, verdict.hard_violated_counts.tolist()
+        )
+    ]
+    return InfeasibilityDiagnostics(
+        closest_candidate=ClosestCandidate(
+            variables=sample,
+            hard_violation_total=hard_total,
+            constraint_evaluations=validation.evaluations,
+        ),
+        hard_violation_rates=rates,
+    )
 
 
 def process_candidates(
@@ -309,7 +359,9 @@ def process_candidates(
     verdict = validate_batch(problem, candidates.variables, candidates.samples)
     feasible = np.flatnonzero(verdict.feasible)
     if len(feasible) == 0:
-        return ProcessedCandidates([], len(candidates), 0)
+        return ProcessedCandidates(
+            [], len(candidates), 0, diagnose_infeasibility(problem, candidates, verdict)
+        )
 
     feasible_samples = candidates.samples[feasible]
     objective_value = evaluate_objective_batch(
@@ -799,6 +851,9 @@ class OptimizationService:
         # Declared outside the try so a failure on a later attempt can still
         # report the last completed attempt's metadata.
         raw: RawSolverResult | None = None
+        # The last attempt's diagnosis; each attempt overwrites it, so an
+        # infeasible result explains the final (highest-penalty) attempt.
+        infeasibility: InfeasibilityDiagnostics | None = None
         # Likewise the current penalty, so the NonFiniteModelError handler
         # can tell the hard-penalty path from a penalty-free one.
         penalty: float | None = None
@@ -928,6 +983,7 @@ class OptimizationService:
                 solutions = processed.solutions
                 unique_samples = processed.unique_samples
                 feasible_samples = processed.feasible_samples
+                infeasibility = processed.infeasibility
                 validate_ms = _elapsed_ms(validate_started)
                 attempts.append(
                     SolveAttempt(
@@ -1034,6 +1090,7 @@ class OptimizationService:
                 solutions=[],
                 attempts=attempts,
                 infeasibility_proven=proven,
+                infeasibility=infeasibility,
                 warnings=warnings,
                 # Timing/usage facts from the last attempt still matter to
                 # the caller (e.g. quota spent on a remote solve).

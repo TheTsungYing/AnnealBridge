@@ -50,6 +50,43 @@ class Solution(BaseModel):
     constraint_evaluations: list[ConstraintEvaluation]
 
 
+class ClosestCandidate(BaseModel):
+    """The deduplicated candidate that came nearest to feasibility.
+
+    The one infeasible assignment a result ever exposes: the candidate
+    with the smallest total hard-constraint violation, re-evaluated by the
+    validator so its evaluations use the original problem's arithmetic.
+    """
+
+    variables: dict[str, int]
+    # Σ violation_amount over the hard constraints, in the constraints'
+    # own units; strictly positive, or the candidate would be feasible.
+    hard_violation_total: float
+    constraint_evaluations: list[ConstraintEvaluation]
+
+
+class HardViolationRate(BaseModel):
+    """How often one hard constraint failed among an attempt's candidates."""
+
+    constraint_id: str
+    violated_candidates: int
+    # Deduplicated candidates of the attempt; the same for every entry.
+    candidates: int
+    violated_fraction: float
+
+
+class InfeasibilityDiagnostics(BaseModel):
+    """Why the last attempt found nothing feasible (hard constraints only).
+
+    Built from the batch re-validation of the last attempt's deduplicated
+    candidates, so it is the validator's view, never the solver's.
+    """
+
+    closest_candidate: ClosestCandidate
+    # One entry per hard constraint, in problem order.
+    hard_violation_rates: list[HardViolationRate]
+
+
 class SolveAttempt(BaseModel):
     """Statistics for one compile/solve/validate attempt."""
 
@@ -110,6 +147,9 @@ class SolveResult(BaseModel):
     solutions: list[Solution]
     attempts: list[SolveAttempt]
     infeasibility_proven: bool = False
+    # Only on ``infeasible``, and only when the last attempt had candidates
+    # to diagnose; None on every other status.
+    infeasibility: InfeasibilityDiagnostics | None = None
     # True only when an exhaustive backend enumerated every assignment, so
     # rank 1 is the global optimum of the ranking score, not merely the
     # best candidate seen.

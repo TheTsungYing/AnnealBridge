@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assignment once per combination of the slack and integer-encoding bits, so
   the count reflects the compiled model's internal variables rather than the
   solution.
+- `SolveResult.infeasibility`: an `infeasible` result now says *why*. It
+  carries the last attempt's `closest_candidate` — the candidate with the
+  smallest total hard violation, ties going to the one seen first, with the
+  validator's full per-constraint evaluations — and one
+  `hard_violation_rates` entry per hard constraint, in problem order, giving
+  how many of that attempt's deduplicated candidates the constraint rejected.
+  Everything is recomputed from the original problem, never from solver
+  energy, and the field stays `null` on every other status and when the
+  attempt returned no samples at all. `annealbridge solve` prints the closest
+  candidate and the rates after `Infeasibility proven:`.
 
 ### Changed
 

@@ -176,6 +176,47 @@ class TestFeasibilityFilterAndTopK:
         assert solutions[0].variables == {"x": 1, "y": 0}
         assert solutions[0].hard_constraints_satisfied is True
 
+    def test_all_infeasible_is_diagnosed(self):
+        # x + y >= 1 and x + y <= 0 cannot both hold. {x:1,y:0} misses the
+        # second by 1 and {x:0,y:0} misses the first by 1, so the smallest
+        # total is a tie and the first candidate read wins it.
+        terms = [
+            LinearTerm(variable="x", coefficient=1),
+            LinearTerm(variable="y", coefficient=1),
+        ]
+        problem = make_problem(
+            constraints=[
+                Constraint(
+                    id="at_least_one", type="hard", terms=terms, operator=">=", rhs=1
+                ),
+                Constraint(
+                    id="none_at_all", type="hard", terms=terms, operator="<=", rhs=0
+                ),
+            ]
+        )
+        result = raw(
+            [{"x": 1, "y": 0}, {"x": 0, "y": 0}, {"x": 1, "y": 1}],
+            [0.0, -9.0, 1.0],
+        )
+        processed = process_candidates(problem, result, set(), top_k=5)
+
+        assert processed.solutions == []
+        assert processed.unique_samples == 3
+        assert processed.feasible_samples == 0
+
+        diagnostics = processed.infeasibility
+        assert diagnostics is not None
+        # First-seen, not lowest energy: {x:0,y:0} is the cheaper row.
+        assert diagnostics.closest_candidate.variables == {"x": 1, "y": 0}
+        assert diagnostics.closest_candidate.hard_violation_total == pytest.approx(1.0)
+        assert [
+            (rate.constraint_id, rate.violated_candidates, rate.candidates)
+            for rate in diagnostics.hard_violation_rates
+        ] == [("at_least_one", 1, 3), ("none_at_all", 2, 3)]
+        assert diagnostics.hard_violation_rates[0].violated_fraction == pytest.approx(
+            1 / 3
+        )
+
     def test_top_k_limits_and_ranks_from_one(self):
         problem = make_problem(coefficients={"x": 1.0, "y": 2.0})
         result = raw(

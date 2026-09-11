@@ -328,6 +328,9 @@ class TestExhaustiveZeroSamples:
         assert "returned no samples" in result.message
         assert len(result.attempts) == 1
         assert result.attempts[0].samples_received == 0
+        # Nothing came back, so there is no candidate to be closest and no
+        # denominator for a violation rate.
+        assert result.infeasibility is None
 
     def test_real_exact_backend_still_proves_infeasibility(self):
         # Neither constraint is trivially infeasible on its own (each has a
@@ -377,6 +380,24 @@ class TestExhaustiveZeroSamples:
         assert result.infeasibility_proven is True
         assert len(result.attempts) == 1
         assert result.attempts[0].samples_received > 0
+
+        # The diagnosis explains the same attempt: all four assignments of
+        # two binaries, each re-validated against the original problem.
+        diagnostics = result.infeasibility
+        assert diagnostics is not None
+        assert [
+            (rate.constraint_id, rate.violated_candidates, rate.candidates)
+            for rate in diagnostics.hard_violation_rates
+        ] == [("at-least-two", 3, 4), ("at-most-one", 1, 4)]
+        assert all(
+            rate.candidates == result.attempts[-1].unique_samples
+            for rate in diagnostics.hard_violation_rates
+        )
+        # Three assignments miss by exactly 1 (x1+x2 in {0,1,2}), so which
+        # one is reported is a first-seen tie-break, not a fact worth
+        # pinning; the distance is.
+        assert diagnostics.closest_candidate.hard_violation_total == 1.0
+        assert len(diagnostics.closest_candidate.constraint_evaluations) == 2
 
 
 # --------------------------------------------------------------------------
