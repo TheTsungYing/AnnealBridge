@@ -24,6 +24,10 @@ All five commands read the `ANNEALBRIDGE_*` environment
 ([Configuration](configuration.md)) except `export-schema`, which needs no
 configuration at all.
 
+The `examples/…` paths in the commands below are files in a repository
+checkout; the installed package does not ship them. Save any problem JSON
+locally and pass its path instead.
+
 ## `solve`
 
 Validate, compile, solve, re-validate and rank a problem.

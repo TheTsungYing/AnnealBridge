@@ -99,8 +99,10 @@ pip install "annealbridge[all] @ git+https://github.com/OWNER/AnnealBridge.git"
 
 ### 命令列
 
+先把[下方的問題 JSON](#問題-json-一覽)存成 `knapsack.json`，然後：
+
 ```bash
-annealbridge solve examples/knapsack.json
+annealbridge solve knapsack.json
 ```
 
 ```text
@@ -133,7 +135,7 @@ import json
 from annealbridge.models import OptimizationProblem
 from annealbridge.orchestration import OptimizationService
 
-with open("examples/knapsack.json", encoding="utf-8") as f:
+with open("knapsack.json", encoding="utf-8") as f:
     problem = OptimizationProblem.model_validate(json.load(f))
 
 result = OptimizationService().solve(problem)
@@ -172,8 +174,9 @@ server 提供四個工具：`get_optimization_capabilities`、
 
 ## 問題 JSON 一覽
 
-一個容量為 10 的 0/1 背包問題，是
-[examples/knapsack.json](examples/knapsack.json) 的精簡版：
+這就是上面快速開始所求解的檔案：一個容量為 10 的 0/1 背包問題，也是
+repository 中 [examples/knapsack.json](examples/knapsack.json) 的精簡版。
+存成 `knapsack.json` 放在任何位置都可以。
 
 ```json
 {
@@ -217,9 +220,10 @@ server 提供四個工具：`get_optimization_capabilities`、
 [docs/problem-format.md](docs/problem-format.md)。`annealbridge
 export-schema` 會印出 JSON Schema，agent 可以拿它來做結構化輸出。
 
-內附範例：[背包問題](examples/knapsack.json)、
+repository 裡有四個可直接執行的範例：[背包問題](examples/knapsack.json)、
 [指派問題](examples/assignment.json)、[TSP](examples/tsp.json) 與
-[整數背包問題](examples/integer_knapsack.json)。
+[整數背包問題](examples/integer_knapsack.json)。安裝後的 wheel 不含這些檔案，
+請從 checkout 或 GitHub 取得。
 
 ## 求解器 backend
 

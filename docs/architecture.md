@@ -236,6 +236,9 @@ with open("examples/knapsack.json", encoding="utf-8") as f:
 result = OptimizationService().solve(problem)
 ```
 
+(`examples/knapsack.json` is a repository checkout path; the installed
+package does not ship it. Any problem JSON saved locally works the same.)
+
 The core depends on pydantic, dimod and dwave-samplers only. It needs no
 `mcp`, no `dwave-system`, no configuration file and no environment variable —
 `OptimizationService()` builds its own default registry, compilers, penalty

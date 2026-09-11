@@ -108,8 +108,11 @@ pip install "annealbridge[all] @ git+https://github.com/OWNER/AnnealBridge.git"
 
 ### Command line
 
+Save [the problem JSON below](#the-problem-json-at-a-glance) as
+`knapsack.json`, then:
+
 ```bash
-annealbridge solve examples/knapsack.json
+annealbridge solve knapsack.json
 ```
 
 ```text
@@ -142,7 +145,7 @@ import json
 from annealbridge.models import OptimizationProblem
 from annealbridge.orchestration import OptimizationService
 
-with open("examples/knapsack.json", encoding="utf-8") as f:
+with open("knapsack.json", encoding="utf-8") as f:
     problem = OptimizationProblem.model_validate(json.load(f))
 
 result = OptimizationService().solve(problem)
@@ -181,8 +184,10 @@ a streamable-http transport is available too. See [docs/mcp.md](docs/mcp.md).
 
 ## The problem JSON at a glance
 
-A 0/1 knapsack with capacity 10, the reduced form of
-[examples/knapsack.json](examples/knapsack.json):
+This is the file the quick start above solves: a 0/1 knapsack with capacity
+10, the reduced form of the repository's
+[examples/knapsack.json](examples/knapsack.json). Save it as `knapsack.json`
+anywhere you like.
 
 ```json
 {
@@ -227,9 +232,11 @@ solver preferences are described in
 [docs/problem-format.md](docs/problem-format.md). `annealbridge export-schema`
 prints the JSON Schema an agent can use for structured output.
 
-Bundled examples: [knapsack](examples/knapsack.json),
+Four ready-to-run examples live in the repository —
+[knapsack](examples/knapsack.json),
 [assignment](examples/assignment.json), [TSP](examples/tsp.json) and
-[integer knapsack](examples/integer_knapsack.json).
+[integer knapsack](examples/integer_knapsack.json). The installed wheel does
+not ship them; take them from a checkout or from GitHub.
 
 ## Solver backends
 

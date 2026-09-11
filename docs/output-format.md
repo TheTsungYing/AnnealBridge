@@ -156,6 +156,9 @@ disagreement between the vendor and the validator.
 annealbridge solve examples/knapsack.json --json
 ```
 
+(`examples/knapsack.json` is a file in a repository checkout — the installed
+package does not ship it. Any problem JSON saved locally works the same.)
+
 Ranks 3–5 are elided below; they continue the same pattern down to
 `objective_value` 13.
 

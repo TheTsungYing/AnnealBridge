@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `py.typed` and the project runs no type checker yet, so the classifier
   promised more than the package delivers; it will return together with
   `py.typed` once a type check is part of CI.
+- Documentation: the README quick start now solves a problem file the reader
+  saves from the page instead of `examples/knapsack.json`, which the wheel
+  does not ship; every `examples/` path in the docs is marked as a repository
+  checkout path (2026-09-11 install verification, gap 2).
 
 ### Fixed
 
