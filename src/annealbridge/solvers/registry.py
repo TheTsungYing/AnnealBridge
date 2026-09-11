@@ -41,13 +41,17 @@ class SolverRegistry:
         return list(self._backends)
 
     @classmethod
-    def default(cls) -> "SolverRegistry":
+    def default(cls, *, sa_workers: int | None = None) -> "SolverRegistry":
         """Build the default registry.
 
         Registration order is fixed (3a §17.7, 3b §20.9): ``exact``,
         ``simulated_annealing``, ``dwave_qpu``, ``leap_hybrid_bqm``,
         ``leap_hybrid_cqm``, ``fujitsu_da``. The capabilities list, the CLI
         table and the routing tie-break all follow it.
+
+        ``sa_workers`` is handed to :class:`SimulatedAnnealingBackend`
+        (``None``: detect the CPUs available to the process). It only
+        changes how fast that backend samples, never what it returns.
 
         Registering the remote backends never imports any D-Wave cloud
         package: each D-Wave backend lazy-imports ``dwave.system`` inside
@@ -56,7 +60,7 @@ class SolverRegistry:
         """
         backends = (
             ExactSolverBackend(),
-            SimulatedAnnealingBackend(),
+            SimulatedAnnealingBackend(workers=sa_workers),
             DWaveQPUBackend(),
             LeapHybridBQMBackend(),
             LeapHybridCQMBackend(),

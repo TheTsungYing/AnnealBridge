@@ -37,9 +37,14 @@ INTEGER_KNAPSACK_OPTIMUM_VALUE = 34.0
 INTEGER_KNAPSACK_OPTIMUM_SELECTION = {"item_a": 0, "item_b": 1, "item_c": 1, "item_d": 3}
 
 # The three paths under test: (backend name, solver overrides).
+# SA takes 500 reads: the landscape has a strong attractor at value 32
+# ({B, C, D×3} minus one D), and at 100 reads roughly half of all seeds
+# settle there instead of the optimum — as ``test_knapsack.py`` notes for
+# the binary knapsack. 500 reads reach 34 for every seed tried but one.
+SA_OVERRIDES = {"seed": 1234, "num_reads": 500}
 PATHS = [
     ("exact", {}),
-    ("simulated_annealing", {"seed": 1234, "num_reads": 100}),
+    ("simulated_annealing", SA_OVERRIDES),
     (FAKE_LOCAL_CQM_NAME, {}),
 ]
 
@@ -148,7 +153,7 @@ class TestIntegerKnapsackExact:
 
 class TestIntegerKnapsackSimulatedAnnealing:
     def test_sa_with_fixed_seed_finds_the_optimum(self, solve_on):
-        result = solve_on("simulated_annealing", seed=1234, num_reads=100)
+        result = solve_on("simulated_annealing", **SA_OVERRIDES)
 
         assert result.status == "success"
         assert result.backend == "simulated_annealing"

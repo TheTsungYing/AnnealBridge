@@ -65,6 +65,18 @@ configured. See [CLI](cli.md#capabilities).
 - Honours `num_reads`, `num_sweeps` and `seed`. A fixed seed gives
   reproducible sampling; the seed is passed to the sampler only and global
   random state is never touched.
+- Reads are sampled in shards of 25, up to `ANNEALBRIDGE_SA_WORKERS` of
+  them concurrently (see [Configuration](configuration.md)). The shard
+  layout and each shard's seed — derived from the request seed through
+  `numpy.random.SeedSequence` — depend on `num_reads` and `seed` alone, so
+  **the result is a function of `(problem, num_reads, num_sweeps, seed)` and
+  is identical for any worker count or machine**; the worker count only
+  changes wall time. Consequences: a request of at most 25 reads is a single
+  sampler call with the seed passed straight through, exactly as before
+  sharding existed; changing `num_reads` changes every read, not just the
+  extra ones; and reproducibility holds for the same `dwave-samplers` and
+  `numpy` versions, whose sampler and seed-derivation algorithms the result
+  depends on.
 - `num_reads` is bounded by `ANNEALBRIDGE_MAX_LOCAL_READS`
   (`LOCAL_READS_LIMIT`) and `num_sweeps` by `ANNEALBRIDGE_MAX_SWEEPS`
   (`SWEEPS_LIMIT`). An over-limit value is rejected, never clamped.

@@ -28,6 +28,7 @@ request, and no setting can be changed by a problem JSON.
 | `ANNEALBRIDGE_MAX_LOCAL_RETRIES` | int ≥ 0 | `10` | Upper bound on `max_retries` for local backends (`RETRY_LIMIT`) |
 | `ANNEALBRIDGE_MAX_REMOTE_RETRIES` | int ≥ 0 | `3` | Upper bound on `max_retries` for remote backends, enforced even when remote retries are enabled (`RETRY_LIMIT`) |
 | `ANNEALBRIDGE_MAX_TOP_K` | int ≥ 1 | `1000` | Upper bound on `top_k` (`TOP_K_LIMIT`) |
+| `ANNEALBRIDGE_SA_WORKERS` | int ≥ 1 | unset (auto-detect) | Threads the `simulated_annealing` backend samples with. Changes wall time only, never a result: the same seed gives the same answer for any value. Unset uses the CPUs available to the process; a container CPU quota is not detected, so set it there |
 | `ANNEALBRIDGE_ENABLED_BACKENDS` | comma-separated names | unset | Registry names allowed to run. Unset or empty means every registered backend |
 | `ANNEALBRIDGE_LIMITS` | JSON object | `{}` | Generic policy limits for backends that declare custom limit keys. Not needed by the built-in backends |
 | `ANNEALBRIDGE_HTTP_HOST` | non-empty str, no whitespace | `127.0.0.1` | Default bind host for the MCP streamable-http transport. An empty or blank value is a configuration error, never a request to bind every interface |
@@ -197,6 +198,10 @@ of the host configuration.
   `ANNEALBRIDGE_MAX_LOCAL_READS`, `ANNEALBRIDGE_MAX_SWEEPS` and
   `ANNEALBRIDGE_MAX_TOP_K` together bound how long one request can hold a
   concurrency slot; `ANNEALBRIDGE_EXACT_MAX_VARIABLES` bounds how much memory
-  an exhaustive solve may ask for.
+  an exhaustive solve may ask for. `ANNEALBRIDGE_SA_WORKERS` is the CPU
+  budget of one local annealing solve: up to
+  `SA_WORKERS × MAX_CONCURRENT_SOLVES` threads can be sampling at once, so on
+  a shared host keep that product near the core count (it only affects
+  speed, never results).
 - **Watch the startup log for the unknown-variable `WARNING`.** It is the only
   signal that a setting you thought you configured is still at its default.

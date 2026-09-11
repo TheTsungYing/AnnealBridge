@@ -89,6 +89,12 @@ class TestDefaultRegistry:
         for name in registry.names():
             assert registry.get(name).name == name
 
+    def test_default_forwards_sa_workers_to_the_annealer(self):
+        registry = SolverRegistry.default(sa_workers=3)
+
+        assert registry.get("simulated_annealing").workers == 3
+        assert SolverRegistry.default().get("simulated_annealing").workers >= 1
+
     def test_default_registry_needs_no_dwave_system(self):
         # 3a §17.7 / §31: the remote backends lazy-import ``dwave.system``
         # inside their sampler factories, so the default registry (and the

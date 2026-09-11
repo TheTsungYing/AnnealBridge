@@ -39,7 +39,10 @@ def build_state_from_policy(
 
 def build_state(settings: ServerSettings | None = None) -> AppState:
     settings = settings if settings is not None else load_settings()
-    return build_state_from_policy(settings.to_policy())
+    # ``sa_workers`` is the one setting that is not policy: it tunes a
+    # backend's speed, so it goes to the registry, not the service.
+    registry = SolverRegistry.default(sa_workers=settings.sa_workers)
+    return build_state_from_policy(settings.to_policy(), registry)
 
 
 def build_service(settings: ServerSettings | None = None) -> OptimizationService:

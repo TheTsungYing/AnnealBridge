@@ -33,6 +33,9 @@ ENV_SUFFIXES = [
     "MAX_LOCAL_RETRIES",
     "MAX_REMOTE_RETRIES",
     "MAX_TOP_K",
+    # The simulated_annealing backend's worker count: a speed knob, not a
+    # policy limit.
+    "SA_WORKERS",
     # 2026-09-09 review (F-18): the enabled-backends gate's env entry.
     "ENABLED_BACKENDS",
     "LIMITS",
@@ -90,6 +93,7 @@ class TestServerSettingsFromEnvironment:
         clean_env.setenv("ANNEALBRIDGE_MAX_LOCAL_RETRIES", "4")
         clean_env.setenv("ANNEALBRIDGE_MAX_REMOTE_RETRIES", "1")
         clean_env.setenv("ANNEALBRIDGE_MAX_TOP_K", "50")
+        clean_env.setenv("ANNEALBRIDGE_SA_WORKERS", "3")
         clean_env.setenv("ANNEALBRIDGE_HTTP_HOST", "0.0.0.0")
         clean_env.setenv("ANNEALBRIDGE_HTTP_PORT", "9000")
 
@@ -107,6 +111,7 @@ class TestServerSettingsFromEnvironment:
         assert settings.max_local_retries == 4
         assert settings.max_remote_retries == 1
         assert settings.max_top_k == 50
+        assert settings.sa_workers == 3
         assert settings.http_host == "0.0.0.0"
         assert settings.http_port == 9000
 
@@ -241,6 +246,19 @@ class TestEnabledBackends:
         assert not hasattr(policy, "http_host")
         assert not hasattr(policy, "http_port")
 
+    def test_sa_workers_defaults_to_auto_and_does_not_leak_into_the_policy(
+        self, clean_env
+    ):
+        # A speed knob for one backend, never a limit the service enforces:
+        # it reaches the registry through the composition root instead.
+        assert ServerSettings().sa_workers is None
+
+        clean_env.setenv("ANNEALBRIDGE_SA_WORKERS", "2")
+        policy = ServerSettings().to_policy()
+
+        assert "sa_workers" not in ExecutionPolicy.model_fields
+        assert not hasattr(policy, "sa_workers")
+
 
 class TestLimitBounds:
     """The env-driven limits carry the same lower bounds as ExecutionPolicy,
@@ -252,6 +270,7 @@ class TestLimitBounds:
         "MAX_QPU_ANNEALING_TIME_US",
         "MAX_REMOTE_TIME_SECONDS",
         "MAX_CONCURRENT_SOLVES",
+        "SA_WORKERS",
     ]
 
     @pytest.mark.parametrize("suffix", LIMIT_SUFFIXES)

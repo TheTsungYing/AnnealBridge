@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The `simulated_annealing` backend samples its reads in shards of 25, up to
+  `ANNEALBRIDGE_SA_WORKERS` of them concurrently (new setting; unset detects
+  the CPUs available to the process). The shard layout and shard seeds depend
+  on `num_reads` and `seed` only, so a result is identical for any worker
+  count or machine — the setting changes wall time, never an answer. Measured
+  on twelve cores: 256 variables × 1000 reads about 4× faster; on one core
+  the per-shard overhead is 4–15 %. No new dependency: the sampler's C++ loop
+  already releases the GIL and keeps its RNG thread-local.
 - CI `package` job builds the sdist and wheel and installs the wheel — core
   and `[mcp]` — into clean virtual environments on Ubuntu and Windows, then
   runs the new `scripts/check_install.py` from outside the checkout through
@@ -17,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Seeded `simulated_annealing` results differ from 0.1.0 when
+  `num_reads > 25`.** Reads beyond one shard are sampled under seeds derived
+  from the request seed (`numpy.random.SeedSequence`), so the sample set for a
+  given seed is a different — equally reproducible — draw than before. A
+  request of at most 25 reads passes the seed straight through and returns
+  exactly what it did. The reproducibility contract is now explicit: the
+  result depends on `(problem, num_reads, num_sweeps, seed)` and on the
+  `dwave-samplers` / `numpy` versions, and on nothing else. A seed outside
+  the sampler's `0 ≤ seed < 2³¹` is a `solver_error` for any `num_reads`, as
+  the single-call path already reported it.
 - Soft constraints are now scored from their **exact** residual: the
   feasibility tolerance that decides `satisfied` no longer zeroes
   `violation_amount` / `weighted_penalty` for a soft constraint, and

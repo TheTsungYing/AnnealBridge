@@ -92,6 +92,11 @@ class ServerSettings(BaseSettings):
     max_local_retries: int = Field(default=10, ge=0)
     max_remote_retries: int = Field(default=3, ge=0)
     max_top_k: int = Field(default=1000, ge=1)
+    # Shards the ``simulated_annealing`` backend samples at once; ``None``
+    # detects the CPUs available to the process. A speed knob handed to the
+    # registry by the composition root, not a policy limit: it never changes
+    # a result, so it is not part of ExecutionPolicy (like ``http_*``).
+    sa_workers: int | None = Field(default=None, ge=1)
     # ``NoDecode``: pydantic-settings would otherwise parse a set as JSON;
     # the operator writes ``exact,simulated_annealing`` instead.
     enabled_backends: Annotated[set[str] | None, NoDecode] = None
