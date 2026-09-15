@@ -28,6 +28,21 @@ The `examples/…` paths in the commands below are files in a repository
 checkout; the installed package does not ship them. Save any problem JSON
 locally and pass its path instead.
 
+## Global options
+
+```bash
+annealbridge --version
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--version` | Print `annealbridge <version>` (the installed package version) and exit `0` |
+| `--help` | Show the command list; after a command, that command's options |
+
+`--version` is answered before any command runs, so it reads no
+`ANNEALBRIDGE_*` setting and works even when one of them holds an invalid
+value.
+
 ## `solve`
 
 Validate, compile, solve, re-validate and rank a problem.
@@ -267,7 +282,7 @@ it can never drift from what the server actually accepts. See
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Success: `solve` returned `status: "success"`, `validate` found the problem valid, `recommend` produced a ranking, or `capabilities` / `export-schema` completed |
+| `0` | Success: `solve` returned `status: "success"`, `validate` found the problem valid, `recommend` produced a ranking, `capabilities` / `export-schema` completed, or `--version` printed the version |
 | `1` | A domain answer that is not success: a non-`success` `SolveResult` (including `infeasible`), or an invalid problem from `validate` / `recommend` |
 | `2` | The command could not run at all |
 

@@ -8,6 +8,7 @@ the reported names can be pinned without any shipped backend.
 
 import pytest
 
+from annealbridge.interfaces.capabilities import build_capabilities
 from annealbridge.models import (
     AvailabilityStatus,
     DWaveQPUOptions,
@@ -19,6 +20,7 @@ from annealbridge.models import (
 from annealbridge.orchestration.limits import (
     AVAILABILITY_MAP,
     gate_errors,
+    policy_gate_errors,
     preference_limit_errors,
     read_preference,
 )
@@ -398,6 +400,143 @@ class TestReportedName:
         assert result is not None
         assert result[1] == "fake_remote"
         assert "'fake_remote'" in result[2][0].message
+
+
+ALIAS_KEY = "alias_key"
+OTHER_KEY = "other_key"
+FAKE_CAPS_NAME = "fake_backend"
+
+# (enabled_backends, whether the set lets ALIAS_KEY through). The registry
+# key and ``capabilities.name`` differ on purpose: a gate that matched the
+# set against the capabilities name would disagree with the listed answer.
+ENABLED_SETS = [
+    pytest.param(None, True, id="all-backends"),
+    pytest.param({ALIAS_KEY}, True, id="set-with-key"),
+    pytest.param({OTHER_KEY}, False, id="set-without-key"),
+]
+POLICY_GATE_CODES = {"BACKEND_DISABLED_BY_POLICY", "REMOTE_DISABLED"}
+UNAVAILABLE = AvailabilityStatus(category="not_installed", detail="fake sdk not installed")
+
+
+class TestCapabilitiesEnabledMatchesPolicyGates:
+    """2026-09-15 consolidation: ``BackendCapability.enabled`` and
+    ``gate_errors`` agree.
+
+    The capabilities view reports ``enabled`` from the same two policy gates
+    (``enabled_backends`` by registry key, then ``allow_remote``) that
+    ``gate_errors`` checks before it ever calls ``is_available()``. Over the
+    whole grid, "the view says enabled" must be exactly "``gate_errors`` did
+    not refuse before availability", whatever the backend's availability.
+    """
+
+    @staticmethod
+    def check(backend, enabled_backends, allow_remote):
+        """Return the view's ``enabled``, the gate result and whether the gate
+        consulted ``is_available()``."""
+        registry = SolverRegistry({ALIAS_KEY: backend})
+        policy = ExecutionPolicy(enabled_backends=enabled_backends, allow_remote=allow_remote)
+
+        (entry,) = build_capabilities(registry, policy).backends
+        assert entry.name == ALIAS_KEY
+
+        calls_before = backend.availability_calls
+        result = gate_errors(ALIAS_KEY, backend, policy)
+        availability_consulted = backend.availability_calls - calls_before
+        assert availability_consulted in (0, 1)
+
+        blocked_before_availability = result is not None and availability_consulted == 0
+        assert entry.enabled is (not blocked_before_availability)
+        if blocked_before_availability:
+            (error,) = result[2]
+            assert error.code in POLICY_GATE_CODES
+        return entry, result, availability_consulted
+
+    @pytest.mark.parametrize("allow_remote", [True, False], ids=["remote-allowed", "remote-refused"])
+    @pytest.mark.parametrize("remote", [True, False], ids=["remote", "local"])
+    @pytest.mark.parametrize(("enabled_backends", "key_listed"), ENABLED_SETS)
+    def test_available_backend(self, enabled_backends, key_listed, remote, allow_remote):
+        backend = SpyBackend(make_capabilities(name=FAKE_CAPS_NAME, remote=remote))
+
+        entry, result, consulted = self.check(backend, enabled_backends, allow_remote)
+
+        assert entry.available is True
+        assert entry.enabled is (key_listed and (not remote or allow_remote))
+        if entry.enabled:
+            assert result is None
+            assert consulted == 1
+
+    @pytest.mark.parametrize("allow_remote", [True, False], ids=["remote-allowed", "remote-refused"])
+    @pytest.mark.parametrize("remote", [True, False], ids=["remote", "local"])
+    @pytest.mark.parametrize(("enabled_backends", "key_listed"), ENABLED_SETS)
+    def test_unavailable_backend(self, enabled_backends, key_listed, remote, allow_remote):
+        backend = SpyBackend(make_capabilities(name=FAKE_CAPS_NAME, remote=remote), UNAVAILABLE)
+        twin = SpyBackend(make_capabilities(name=FAKE_CAPS_NAME, remote=remote))
+
+        entry, result, consulted = self.check(backend, enabled_backends, allow_remote)
+        twin_entry, _twin_result, _ = self.check(twin, enabled_backends, allow_remote)
+
+        # Availability never feeds ``enabled``.
+        assert entry.available is False
+        assert entry.enabled is twin_entry.enabled
+        assert entry.enabled is (key_listed and (not remote or allow_remote))
+        if entry.enabled:
+            # Policy let it through, so the refusal is the availability one.
+            assert result is not None
+            status, name, errors = result
+            assert consulted == 1
+            assert (status, errors[0].code) == AVAILABILITY_MAP["not_installed"]
+            assert name == FAKE_CAPS_NAME
+            assert "fake sdk not installed" in errors[0].message
+
+
+class TestPolicyGateErrors:
+    """2026-09-15 consolidation: ``policy_gate_errors`` is exactly the policy
+    half of ``gate_errors`` — the same refusal, message included, and never a
+    call to ``is_available()``."""
+
+    @pytest.mark.parametrize("availability", [None, UNAVAILABLE], ids=["available", "unavailable"])
+    @pytest.mark.parametrize("allow_remote", [True, False], ids=["remote-allowed", "remote-refused"])
+    @pytest.mark.parametrize("remote", [True, False], ids=["remote", "local"])
+    @pytest.mark.parametrize(("enabled_backends", "key_listed"), ENABLED_SETS)
+    def test_matches_gate_errors_before_availability(
+        self, enabled_backends, key_listed, remote, allow_remote, availability
+    ):
+        capabilities = make_capabilities(name=FAKE_CAPS_NAME, remote=remote)
+        backend = (
+            SpyBackend(capabilities)
+            if availability is None
+            else SpyBackend(capabilities, availability)
+        )
+        policy = ExecutionPolicy(enabled_backends=enabled_backends, allow_remote=allow_remote)
+
+        refused = policy_gate_errors(ALIAS_KEY, capabilities, policy)
+        assert backend.availability_calls == 0
+
+        gate = gate_errors(ALIAS_KEY, backend, policy)
+
+        assert (refused is None) is (key_listed and (not remote or allow_remote))
+        if refused is None:
+            # Policy permits it; only then does gate_errors ask for availability.
+            assert backend.availability_calls == 1
+            if availability is None:
+                assert gate is None
+        else:
+            assert backend.availability_calls == 0
+            assert gate == refused
+
+    def test_reports_the_registry_key_then_the_capabilities_name(self):
+        capabilities = make_capabilities(name=FAKE_CAPS_NAME, remote=True)
+
+        disabled = policy_gate_errors(
+            ALIAS_KEY, capabilities, ExecutionPolicy(enabled_backends={OTHER_KEY})
+        )
+        remote = policy_gate_errors(ALIAS_KEY, capabilities, ExecutionPolicy())
+
+        assert disabled is not None and remote is not None
+        assert disabled[1] == ALIAS_KEY
+        assert [error.code for error in disabled[2]] == ["BACKEND_DISABLED_BY_POLICY"]
+        assert remote[1] == FAKE_CAPS_NAME
+        assert [error.code for error in remote[2]] == ["REMOTE_DISABLED"]
 
 
 class TestAvailabilityCheckFailures:

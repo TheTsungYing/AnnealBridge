@@ -1,5 +1,6 @@
 """Solver backend interface and raw result model (spec §20, Phase 2 §10)."""
 
+import logging
 from collections.abc import Mapping
 from typing import Any, Protocol
 
@@ -13,6 +14,7 @@ from annealbridge.models import (
     SolverExecutionMetadata,
     SolverPreferences,
 )
+from annealbridge.solvers.metadata import redact
 
 # The capability / availability models live in ``models.capabilities``
 # (Phase 3a spec §4) and are re-exported here so existing
@@ -305,6 +307,83 @@ def sampleset_to_arrays(
         samples = samples.reshape(len(record), len(variables))
     energies = np.array(record.energy, dtype=np.float64)
     return variables, samples, energies
+
+
+def result_from_sampleset(
+    sampleset: dimod.SampleSet,
+    *,
+    backend: str,
+    metadata: SolverExecutionMetadata | None,
+    dtype: Any = np.int8,
+) -> RawSolverResult:
+    """Build a :class:`RawSolverResult` from a dimod SampleSet.
+
+    The shared tail of every sampleset-based backend: the arrays come from
+    :func:`sampleset_to_arrays` with the given ``dtype`` (``np.int64`` for
+    CQM backends), so every read is kept in the sampler's order. A backend
+    that must assert sample values does so with
+    :func:`assert_samples_within_bounds` before calling this.
+    """
+    variables, samples, energies = sampleset_to_arrays(sampleset, dtype=dtype)
+    return RawSolverResult(
+        variables=variables,
+        samples=samples,
+        energies=energies,
+        backend=backend,
+        metadata=metadata,
+    )
+
+
+def record_column(sampleset: Any, name: str) -> np.ndarray | None:
+    """The ``sampleset.record`` field ``name``, or None when it is absent.
+
+    A sampleset built without that vector has no such record field at all
+    (attribute access would raise), so presence is checked via
+    ``record.dtype.names``.
+    """
+    record = sampleset.record
+    if name not in (record.dtype.names or ()):
+        return None
+    return record[name]
+
+
+def log_solved(
+    logger: logging.Logger,
+    backend: str,
+    problem_name: str,
+    num_variables: int,
+    num_samples: int,
+    **extra: object,
+) -> None:
+    """Log the INFO line every backend emits after a successful solve.
+
+    ``"Backend <backend> solved problem <name>: <n> variables, <m> samples"``,
+    followed by ``" (key=value, ...)"`` in the order ``extra`` was given
+    when there is any. Values are passed to the logger as lazy ``%s``
+    arguments, never pre-formatted.
+
+    The problem name is the user's own text, so it is passed through
+    :func:`~annealbridge.solvers.metadata.redact` here, for every backend:
+    a log line leaving the solver layer must not carry credential material
+    (spec §19), whatever a request put in ``problem.name``. ``extra``
+    carries only values the backend computed or already converted itself
+    -- never the vendor's raw info -- and a value that needs masking is
+    passed through ``redact`` by the caller first. Nothing is computed
+    when INFO is disabled for ``logger``.
+    """
+    if not logger.isEnabledFor(logging.INFO):
+        return
+    message = "Backend %s solved problem %s: %d variables, %d samples"
+    if extra:
+        message += " (" + ", ".join(f"{key}=%s" for key in extra) + ")"
+    logger.info(
+        message,
+        backend,
+        redact(problem_name),
+        num_variables,
+        num_samples,
+        *extra.values(),
+    )
 
 
 def assert_samples_within_bounds(

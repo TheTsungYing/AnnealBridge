@@ -275,6 +275,7 @@ annealbridge-mcp --transport streamable-http --host 127.0.0.1 --port 8000
 | `--transport` | `stdio` | `stdio` or `streamable-http` |
 | `--host` | `ANNEALBRIDGE_HTTP_HOST`, i.e. `127.0.0.1` | Non-empty, no whitespace. Ignored for stdio |
 | `--port` | `ANNEALBRIDGE_HTTP_PORT`, i.e. `8000` | `1`–`65535` (`0` is refused). Ignored for stdio |
+| `--version` | — | Print `annealbridge <version>` and exit `0` without starting a transport. Read before any setting, so it works even when an `ANNEALBRIDGE_*` value is invalid |
 
 > **Security.** The server has **no authentication or authorization of any
 > kind.** It binds `127.0.0.1` by default, and binding beyond localhost must

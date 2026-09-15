@@ -1,7 +1,9 @@
 """Unit tests for the solver backends (spec §20–§22, §33)."""
 
+import logging
 import os
 
+import dimod
 import pytest
 from dwave.samplers import SimulatedAnnealingSampler
 
@@ -20,8 +22,9 @@ from annealbridge.solvers import (
     SolverCapabilities,
     SolverRegistry,
 )
-from annealbridge.solvers.base import BackendAliases
+from annealbridge.solvers.base import BackendAliases, log_solved, record_column
 from annealbridge.solvers.simulated_annealing import (
+    _SEED_LIMIT,
     READS_PER_SHARD,
     default_workers,
     shard_seeds,
@@ -396,6 +399,70 @@ class TestSimulatedAnnealingSharding:
         with pytest.raises(SolverExecutionError, match="between 0 and"):
             SimulatedAnnealingBackend(workers=2).solve(compiled, preferences)
 
+    @pytest.mark.parametrize("seed", [2**31, -1])
+    def test_out_of_range_seed_fails_the_same_way_on_both_paths(
+        self, compile_knapsack, seed
+    ):
+        # One shard (10 reads) lets the sampler reject the seed; several
+        # shards (60 reads) reject it before deriving shard seeds. The caller
+        # must not be able to tell the paths apart by exception type, cause
+        # type or message frame. The upper bound quoted in between is not
+        # pinned: the vendor's text says "2^32 - 1" although it checks
+        # ``< 2**31``.
+        compiled = compile_knapsack()
+        errors = []
+        for num_reads in (10, 60):
+            preferences = SolverPreferences(num_reads=num_reads, num_sweeps=10, seed=seed)
+            with pytest.raises(SolverExecutionError) as exc_info:
+                SimulatedAnnealingBackend(workers=2).solve(compiled, preferences)
+            errors.append(exc_info.value)
+
+        single_shard, sharded = errors
+        assert type(single_shard) is type(sharded) is SolverExecutionError
+        assert type(single_shard.__cause__) is type(sharded.__cause__) is ValueError
+        for error in errors:
+            message = str(error)
+            assert message.startswith(
+                "Simulated annealing solver failed: "
+                "'seed' should be an integer between 0 and "
+            )
+            assert message.endswith(f"value = {seed}")
+
+    @pytest.mark.parametrize("num_reads", [10, 60])
+    def test_largest_accepted_seed_solves_on_both_paths(self, compile_knapsack, num_reads):
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=num_reads, num_sweeps=10, seed=2**31 - 1)
+
+        result = SimulatedAnnealingBackend(workers=2).solve(compiled, preferences)
+
+        assert result.num_samples == num_reads
+
+    def test_vendor_sampler_accepts_the_largest_seed_the_shard_check_allows(self):
+        """Pin dwave-samplers' own seed rule, which the sharded path copies.
+
+        The single-shard path hands the seed straight to
+        ``SimulatedAnnealingSampler``; the sharded path re-implements the
+        sampler's range check through ``_SEED_LIMIT`` so both paths reject
+        the same seeds. If a dwave-samplers upgrade changes the accepted
+        range, this test (and its rejecting twin) turns red and the copied
+        limit has to be revisited.
+        """
+        bqm = dimod.BinaryQuadraticModel({"a": 1.0}, {}, 0.0, dimod.BINARY)
+
+        sampleset = SimulatedAnnealingSampler().sample(
+            bqm, num_reads=1, num_sweeps=1, seed=_SEED_LIMIT - 1
+        )
+
+        assert len(sampleset) == 1
+
+    @pytest.mark.parametrize("seed", [_SEED_LIMIT, -1], ids=["seed_limit", "negative"])
+    def test_vendor_sampler_rejects_the_seeds_the_shard_check_rejects(self, seed):
+        """The rejecting half of the pinned vendor rule (see the accepting twin)."""
+        bqm = dimod.BinaryQuadraticModel({"a": 1.0}, {}, 0.0, dimod.BINARY)
+
+        with pytest.raises(ValueError):
+            SimulatedAnnealingSampler().sample(bqm, num_reads=1, num_sweeps=1, seed=seed)
+
     def test_failed_shard_fails_the_solve(self, compile_knapsack, monkeypatch):
         compiled = compile_knapsack()
         backend = SimulatedAnnealingBackend(workers=2)
@@ -465,3 +532,87 @@ class TestBackendAliases:
         assert backend.is_exhaustive is False
         with pytest.raises(NotImplementedError, match="resolve_time_limit"):
             backend.resolve_time_limit(None, SolverPreferences())
+
+
+class TestLogSolved:
+    """The shared solved-log line in ``solvers.base``."""
+
+    LOGGER = "annealbridge.solvers.test_log_solved"
+
+    def test_without_extra_there_are_no_parentheses(self, caplog):
+        logger = logging.getLogger(self.LOGGER)
+
+        with caplog.at_level(logging.INFO, logger=self.LOGGER):
+            log_solved(logger, "exact", "demo problem", 3, 8)
+
+        (record,) = caplog.records
+        assert record.levelno == logging.INFO
+        assert record.getMessage() == (
+            "Backend exact solved problem demo problem: 3 variables, 8 samples"
+        )
+
+    def test_extra_is_appended_in_the_given_order(self, caplog):
+        logger = logging.getLogger(self.LOGGER)
+
+        with caplog.at_level(logging.INFO, logger=self.LOGGER):
+            log_solved(logger, "b", "demo", 3, 2, zeta=1, alpha=None, mid=2.5)
+
+        (record,) = caplog.records
+        assert record.getMessage() == (
+            "Backend b solved problem demo: 3 variables, 2 samples "
+            "(zeta=1, alpha=None, mid=2.5)"
+        )
+
+    def test_values_are_lazy_logger_arguments(self, caplog):
+        class Probe:
+            calls = 0
+
+            def __str__(self) -> str:
+                Probe.calls += 1
+                return "probe%"
+
+        logger = logging.getLogger(self.LOGGER)
+        probe = Probe()
+
+        # INFO disabled: nothing may be formatted, so ``__str__`` never runs.
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER):
+            log_solved(logger, "b", "demo", 3, 2, job_id=probe)
+        assert Probe.calls == 0
+        assert caplog.records == []
+
+        with caplog.at_level(logging.INFO, logger=self.LOGGER):
+            log_solved(logger, "b", "demo", 3, 2, job_id=probe)
+
+        (record,) = caplog.records
+        assert record.msg == (
+            "Backend %s solved problem %s: %d variables, %d samples (job_id=%s)"
+        )
+        assert record.args == ("b", "demo", 3, 2, probe)
+        assert record.getMessage().endswith("(job_id=probe%)")
+
+
+class TestRecordColumn:
+    """Optional ``sampleset.record`` fields, looked up through ``dtype.names``."""
+
+    def test_present_field_is_returned(self):
+        sampleset = dimod.SampleSet.from_samples(
+            [{"a": 0}, {"a": 1}],
+            vartype="BINARY",
+            energy=[0.0, 1.0],
+            is_feasible=[True, False],
+        )
+
+        values = record_column(sampleset, "is_feasible")
+
+        assert values is not None
+        assert values.tolist() == [True, False]
+
+    def test_missing_field_is_none(self):
+        sampleset = dimod.SampleSet.from_samples(
+            [{"a": 0}], vartype="BINARY", energy=[0.0]
+        )
+
+        assert record_column(sampleset, "is_feasible") is None
+        # Why presence goes through ``dtype.names``: plain attribute access raises.
+        with pytest.raises(AttributeError):
+            sampleset.record.is_feasible

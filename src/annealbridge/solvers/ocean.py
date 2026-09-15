@@ -45,9 +45,14 @@ import weakref
 from typing import Any, Callable, Hashable, Literal, TypeVar
 
 from annealbridge.exceptions import SolverExecutionError
-from annealbridge.models.capabilities import AvailabilityStatus, CredentialDeclaration
+from annealbridge.models.capabilities import (
+    AvailabilityStatus,
+    CredentialDeclaration,
+    SolverCapabilities,
+)
 from annealbridge.solvers.metadata import (
     classify_exception,
+    declare_credentials,
     guarded_call,
     register_secret_source,
 )
@@ -577,6 +582,35 @@ class LazySampler:
 # Leap hybrid backends resolve their time limit by the same rule; the code
 # lived once per backend and only differed in the message label.
 # ---------------------------------------------------------------------------
+
+
+def ocean_sampler_holder(
+    sampler_factory: Callable[[], Any] | None,
+    default_factory: Callable[[], Any],
+    capabilities: SolverCapabilities,
+) -> LazySampler:
+    """The sampler holder a D-Wave backend creates in ``__init__``, redaction included.
+
+    Every Ocean backend's constructor needs three things, and the two that
+    are not the holder are the ones no test of a working solve would miss
+    if a backend forgot them: the Ocean config-file token joins the shared
+    redaction (:func:`register_ocean_config_token`), and the backend's own
+    credential declaration reaches :func:`declare_credentials` — review
+    F-03: so a backend constructed directly, without ``SolverRegistry``,
+    masks its token too; the registry declares the same thing again under
+    the same name, which is idempotent. Folding both into the call that
+    returns the :class:`LazySampler` means an Ocean backend cannot get its
+    sampler without them.
+
+    ``sampler_factory`` is the backend's test seam and ``default_factory``
+    its lazy-importing production factory (see :class:`LazySampler`). Both
+    registrations happen before the holder exists; neither builds a sampler
+    or does any I/O — the sampler is still built on first
+    :meth:`LazySampler.get`.
+    """
+    register_ocean_config_token()
+    declare_credentials(capabilities.name, capabilities.credentials)
+    return LazySampler(sampler_factory, default_factory)
 
 
 def create_sampler(holder: LazySampler, label: str) -> Any:

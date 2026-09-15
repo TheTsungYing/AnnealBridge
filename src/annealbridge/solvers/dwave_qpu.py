@@ -19,19 +19,17 @@ from annealbridge.solvers.base import (
     ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
-    sampleset_to_arrays,
+    log_solved,
+    record_column,
+    result_from_sampleset,
 )
-from annealbridge.solvers.metadata import (
-    declare_credentials,
-    sanitize_sampleset_info,
-)
+from annealbridge.solvers.metadata import sanitize_sampleset_info
 from annealbridge.solvers.ocean import (
     OCEAN_CREDENTIALS,
-    LazySampler,
     call_ocean,
     create_sampler,
     dwave_availability,
-    register_ocean_config_token,
+    ocean_sampler_holder,
     resolved,
 )
 
@@ -93,15 +91,13 @@ def _average_chain_break_fraction(sampleset: Any) -> float | None:
 
     Samplesets built without that vector have no such record field at all
     (attribute access would raise), so presence is checked via
-    ``record.dtype.names``. Nothing else is guarded (2026-09-09 review
-    F-26): with presence settled, any further exception is a bug of our
-    own, and the service's fallback reports it rather than a silent None.
+    ``record.dtype.names`` (:func:`record_column`). Nothing else is guarded
+    (2026-09-09 review F-26): with presence settled, any further exception
+    is a bug of our own, and the service's fallback reports it rather than
+    a silent None.
     """
-    record = sampleset.record
-    if "chain_break_fraction" not in (record.dtype.names or ()):
-        return None
-    values = record.chain_break_fraction
-    if len(values) == 0:
+    values = record_column(sampleset, "chain_break_fraction")
+    if values is None or len(values) == 0:
         return None
     return float(values.mean())
 
@@ -145,12 +141,12 @@ class DWaveQPUBackend(BackendAliases):
     """
 
     def __init__(self, sampler_factory: Callable[[], Any] | None = None) -> None:
-        self._sampler = LazySampler(sampler_factory, _default_sampler_factory)
-        register_ocean_config_token()
-        # Review F-03: declared here, not only by ``SolverRegistry``, so a
-        # directly constructed backend redacts its token too. Idempotent; the
-        # registry declares the same thing again under the same name.
-        declare_credentials(_CAPABILITIES.name, _CAPABILITIES.credentials)
+        # Review F-03: the holder comes with this backend's credential
+        # declaration and the Ocean config-file token source, so a directly
+        # constructed backend redacts its token too (see ocean_sampler_holder).
+        self._sampler = ocean_sampler_holder(
+            sampler_factory, _default_sampler_factory, _CAPABILITIES
+        )
 
     @property
     def capabilities(self) -> SolverCapabilities:
@@ -200,28 +196,20 @@ class DWaveQPUBackend(BackendAliases):
             holder=self._sampler,
         )
 
-        variables, samples, energies = sampleset_to_arrays(sampleset)
-        metadata = sanitize_sampleset_info(sampleset.info, backend=self.name)
-        metadata.num_reads_requested = preferences.num_reads
-        metadata.average_chain_break_fraction = _average_chain_break_fraction(
-            sampleset
+        metadata = sanitize_sampleset_info(
+            sampleset.info,
+            backend=self.name,
+            num_reads_requested=preferences.num_reads,
+            average_chain_break_fraction=_average_chain_break_fraction(sampleset),
+            embedding_max_chain_length=_embedding_max_chain_length(sampleset.info),
         )
-        metadata.embedding_max_chain_length = _embedding_max_chain_length(
-            sampleset.info
-        )
-        logger.info(
-            "Backend %s solved problem %s: %d variables, %d samples "
-            "(num_reads=%d)",
+        result = result_from_sampleset(sampleset, backend=self.name, metadata=metadata)
+        log_solved(
+            logger,
             self.name,
             compiled_problem.original_problem.name,
             compiled_problem.num_variables,
-            len(samples),
-            preferences.num_reads,
+            len(result.samples),
+            num_reads=preferences.num_reads,
         )
-        return RawSolverResult(
-            variables=variables,
-            samples=samples,
-            energies=energies,
-            backend=self.name,
-            metadata=metadata,
-        )
+        return result

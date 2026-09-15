@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `annealbridge --version` and `annealbridge-mcp --version` print
+  `annealbridge <version>` and exit `0`. Both are answered before any
+  `ANNEALBRIDGE_*` setting is read, so they work while a setting holds an
+  invalid value, and `annealbridge-mcp` logs no unknown-variable warning for
+  them; `annealbridge --help` and `annealbridge-mcp --help` now list
+  `--version` (subcommand help does not). Without the `mcp` extra,
+  `annealbridge-mcp` still reports the missing extra and exits `2`.
+  Documented in the new *Global options* section of `docs/cli.md` and the
+  option table of `docs/mcp.md`.
+
 ### Changed
 
 - Both READMEs now open with *Install* (the `uvx` host entry, `claude mcp
@@ -55,6 +67,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   annotation reflection the validator and the limit checks each carried is
   now one set of primitives in `models/reflection.py`. Every warning code,
   message, path and order is unchanged.
+- The Fujitsu DA backend's INFO line after a solve uses the format every
+  other backend logs: "Backend fujitsu_da solved problem <name>: <n>
+  variables, <m> samples (job_id=…, solve_time_us=…,
+  effective_time_limit_seconds=…)", where it previously said "Backend
+  fujitsu_da finished job <id>: <n> variables, <m> solutions (…)".
+- `docs/backends.md` records the fixed cost of simulated-annealing sharding:
+  every shard re-runs the sampler's default beta-range estimate, which with
+  `ANNEALBRIDGE_SA_WORKERS=1` and 400 reads (16 shards) adds about 9–18 %
+  wall time at the default 1000 sweeps and 52–73 % at 200 sweeps; more
+  workers offset it. It also states that the D-Wave backends declare their
+  credentials through `solvers.ocean.ocean_sampler_holder`.
+- Internal tidy-up of `config/`, `interfaces/` and `orchestration/limits.py`
+  (no behaviour change): `ServerSettings.to_policy()` copies the fields
+  listed in `ExecutionPolicy.model_fields`, with a test pinning the two
+  models' field names, types, defaults and bounds to each other; the
+  `enabled_backends` / `allow_remote` gates are defined once in
+  `policy_gate_errors`, shared by `gate_errors` and the capabilities view's
+  `enabled`; `interfaces.composition.exit_on_settings_error` gives the CLI and
+  the MCP server one settings-error message and exit `2`; and the CLI's
+  `solve`, `validate` and `recommend` share `_run` and `Annotated` option
+  aliases, with help and output unchanged word for word.
+- Internal tidy-up of `solvers/` (no behaviour change): backends share
+  `base.result_from_sampleset`, `base.log_solved` and `base.record_column`;
+  the D-Wave backends obtain their sampler holder from
+  `ocean.ocean_sampler_holder`, which also declares their credentials and the
+  Ocean config-file token source; remote metadata is built by one function,
+  `metadata.remote_metadata`, which still filters timing through the
+  whitelist and which `sanitize_sampleset_info` now uses; and a comment
+  explains why the simulated-annealing seed range copies the
+  `dwave-samplers` rule, with a test pinning that rule and the single- and
+  multi-shard paths to it.
 
 ### Performance
 
@@ -108,6 +151,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation of the same problem about 2.0 ms instead of 3.0), and
   `expand_square` indexes its pair loop instead of slicing a new list per
   variable. Every estimate and warning is unchanged.
+
+### Security
+
+- The vendor job id in the Fujitsu DA backend's two INFO lines (`submitted
+  job` and the solve line) now passes through credential redaction.
+- The problem name (the user-supplied `problem.name`) in the INFO line every
+  backend logs after a successful solve now passes through credential
+  redaction; the exact, simulated-annealing and D-Wave backends previously
+  logged it verbatim.
 
 ## [0.1.0] - 2026-09-11
 

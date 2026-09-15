@@ -35,13 +35,14 @@ from annealbridge.solvers.base import (
     ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
+    log_solved,
 )
 from annealbridge.solvers.metadata import (
     REMOTE_ERROR_FALLBACK_CODE,
     declare_credentials,
     guarded_call,
     redact,
-    sanitize_sampleset_info,
+    remote_metadata,
 )
 
 __all__ = [
@@ -499,29 +500,35 @@ class FujitsuDABackend(BackendAliases):
 
         samples, energies = _decode_solutions(qubo_solution, len(variables), job_id)
         timing_us = _timing_microseconds(qubo_solution.get("timing"))
-        metadata = sanitize_sampleset_info({"timing": timing_us}, backend=self.name)
-        metadata.solver_id = SOLVER_ID
-        metadata.num_reads_requested = (
-            options.num_output_solution or DEFAULT_NUM_OUTPUT_SOLUTION
-        ) * (options.num_group or DEFAULT_NUM_GROUP)
-        metadata.effective_time_limit_seconds = effective_time_limit
-        logger.info(
-            "Backend %s finished job %s: %d variables, %d solutions "
-            "(solve_time_us=%s, effective_time_limit_seconds=%s)",
+        # Already microseconds; remote_metadata still applies the whitelist.
+        metadata = remote_metadata(
             self.name,
-            job_id,
-            len(variables),
-            len(samples),
-            timing_us.get("solve_time"),
-            effective_time_limit,
+            timing_us,
+            solver_id=SOLVER_ID,
+            num_reads_requested=(
+                options.num_output_solution or DEFAULT_NUM_OUTPUT_SOLUTION
+            )
+            * (options.num_group or DEFAULT_NUM_GROUP),
+            effective_time_limit_seconds=effective_time_limit,
         )
-        return RawSolverResult(
+        result = RawSolverResult(
             variables=variables,
             samples=samples,
             energies=energies,
             backend=self.name,
             metadata=metadata,
         )
+        log_solved(
+            logger,
+            self.name,
+            compiled_problem.original_problem.name,
+            len(variables),
+            len(samples),
+            job_id=redact(job_id),
+            solve_time_us=timing_us.get("solve_time"),
+            effective_time_limit_seconds=effective_time_limit,
+        )
+        return result
 
     # -- internals -----------------------------------------------------------
 
@@ -609,7 +616,7 @@ class FujitsuDABackend(BackendAliases):
                 redact(f"{what}: response has no job_id"),
                 code=REMOTE_ERROR_FALLBACK_CODE,
             )
-        logger.info("Backend %s submitted job %s", self.name, job_id)
+        logger.info("Backend %s submitted job %s", self.name, redact(job_id))
         return job_id
 
     def _await_result(

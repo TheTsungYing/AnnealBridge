@@ -28,20 +28,18 @@ from annealbridge.solvers.base import (
     RawSolverResult,
     SolverCapabilities,
     assert_samples_within_bounds,
-    sampleset_to_arrays,
+    log_solved,
+    record_column,
+    result_from_sampleset,
 )
-from annealbridge.solvers.metadata import (
-    declare_credentials,
-    sanitize_sampleset_info,
-)
+from annealbridge.solvers.metadata import sanitize_sampleset_info
 from annealbridge.solvers.ocean import (
     OCEAN_CREDENTIALS,
     HYBRID_SAMPLE_EXCEPTION_CODES,
     HybridTimeLimitMemo,
-    LazySampler,
     call_ocean,
     dwave_availability,
-    register_ocean_config_token,
+    ocean_sampler_holder,
     resolve_hybrid_sampler,
     resolved,
 )
@@ -91,12 +89,12 @@ def _sampler_reported_feasible(sampleset: Any) -> int | None:
     Diagnostic only (§22): never used for filtering or ranking. A
     sampleset built without that vector has no such record field at all
     (attribute access would raise), so presence is checked via
-    ``record.dtype.names``.
+    ``record.dtype.names`` (:func:`record_column`).
     """
-    record = sampleset.record
-    if "is_feasible" not in (record.dtype.names or ()):
+    values = record_column(sampleset, "is_feasible")
+    if values is None:
         return None
-    return int(record.is_feasible.sum())
+    return int(values.sum())
 
 
 class LeapHybridCQMBackend(BackendAliases):
@@ -118,15 +116,15 @@ class LeapHybridCQMBackend(BackendAliases):
     """
 
     def __init__(self, sampler_factory: Callable[[], Any] | None = None) -> None:
-        self._sampler = LazySampler(sampler_factory, _default_sampler_factory)
+        # Review F-03: the holder comes with this backend's credential
+        # declaration and the Ocean config-file token source, so a directly
+        # constructed backend redacts its token too (see ocean_sampler_holder).
+        self._sampler = ocean_sampler_holder(
+            sampler_factory, _default_sampler_factory, _CAPABILITIES
+        )
         # The ``min_time_limit`` of the service's pre-submission check is
         # reused by the solve of the same attempt (see HybridTimeLimitMemo).
         self._time_limit_memo = HybridTimeLimitMemo()
-        register_ocean_config_token()
-        # Review F-03: declared here, not only by ``SolverRegistry``, so a
-        # directly constructed backend redacts its token too. Idempotent; the
-        # registry declares the same thing again under the same name.
-        declare_credentials(_CAPABILITIES.name, _CAPABILITIES.credentials)
 
     @property
     def capabilities(self) -> SolverCapabilities:
@@ -212,24 +210,22 @@ class LeapHybridCQMBackend(BackendAliases):
             for variable in cqm.variables
         }
         assert_samples_within_bounds(sampleset, bounds, code="REMOTE_SOLVER_ERROR")
-        variables, samples, energies = sampleset_to_arrays(sampleset, dtype=np.int64)
-        metadata = sanitize_sampleset_info(sampleset.info, backend=self.name)
-        metadata.effective_time_limit_seconds = effective_time_limit
-        metadata.sampler_reported_feasible = _sampler_reported_feasible(sampleset)
-        logger.info(
-            "Backend %s solved problem %s: %d variables, %d samples "
-            "(effective_time_limit_seconds=%s, sampler_reported_feasible=%s)",
+        metadata = sanitize_sampleset_info(
+            sampleset.info,
+            backend=self.name,
+            effective_time_limit_seconds=effective_time_limit,
+            sampler_reported_feasible=_sampler_reported_feasible(sampleset),
+        )
+        result = result_from_sampleset(
+            sampleset, backend=self.name, metadata=metadata, dtype=np.int64
+        )
+        log_solved(
+            logger,
             self.name,
             compiled_problem.original_problem.name,
             compiled_problem.num_variables,
-            len(samples),
-            effective_time_limit,
-            metadata.sampler_reported_feasible,
+            len(result.samples),
+            effective_time_limit_seconds=effective_time_limit,
+            sampler_reported_feasible=metadata.sampler_reported_feasible,
         )
-        return RawSolverResult(
-            variables=variables,
-            samples=samples,
-            energies=energies,
-            backend=self.name,
-            metadata=metadata,
-        )
+        return result

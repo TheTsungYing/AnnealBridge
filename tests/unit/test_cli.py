@@ -1,6 +1,7 @@
 """CLI tests for the spec §30 commands (capabilities, export-schema, solve errors)."""
 
 import json
+from importlib import metadata
 
 import pytest
 from typer.testing import CliRunner
@@ -392,6 +393,42 @@ class TestInvalidSettings:
         result = runner.invoke(app, ["export-schema"])
 
         assert result.exit_code == 0
+
+
+class TestVersion:
+    """2026-09-15 consolidation: ``annealbridge --version`` prints the
+    installed version and exits 0 before any command body, so no setting is
+    ever read."""
+
+    EXPECTED = f"annealbridge {metadata.version('annealbridge')}\n"
+
+    def test_prints_the_installed_version(self):
+        result = runner.invoke(app, ["--version"])
+
+        assert result.exit_code == 0
+        assert result.output == self.EXPECTED
+
+    def test_works_even_with_invalid_settings(self, monkeypatch):
+        monkeypatch.setenv("ANNEALBRIDGE_MAX_CONCURRENT_SOLVES", "0")
+
+        result = runner.invoke(app, ["--version"])
+
+        assert result.exit_code == 0
+        assert result.output == self.EXPECTED
+
+    def test_top_level_help_lists_it_and_keeps_the_description(self):
+        result = runner.invoke(app, ["--help"])
+
+        assert result.exit_code == 0
+        assert "--version" in result.output
+        assert "Show the version and exit." in result.output
+        assert "Optimization Tool Middleware CLI" in result.output
+
+    def test_no_command_is_still_an_error(self):
+        result = runner.invoke(app, [])
+
+        assert result.exit_code == 2
+        assert "Missing command" in _output(result)
 
 
 class TestRenderInfeasibleAttempts:

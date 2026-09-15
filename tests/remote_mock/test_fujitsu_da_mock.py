@@ -30,6 +30,7 @@ from annealbridge.models import (
     CompiledProblem,
     FujitsuDAOptions,
     OptimizationProblem,
+    SolverExecutionMetadata,
     SolverPreferences,
 )
 from annealbridge.models.error_catalog import RETRYABLE_CODES
@@ -524,6 +525,78 @@ class TestResultConversion:
         assert metadata.effective_time_limit_seconds == 12.0
         assert metadata.backend == "fujitsu_da"
         assert metadata.remote is True
+
+    def test_timing_keeps_only_the_two_da_timing_facts(self, monkeypatch):
+        # The backend reads only ``solve_time`` and ``total_elapsed_time``
+        # from the vendor's ``timing``, so any other key is dropped even when
+        # it parses, and one of the two whose value does not parse is dropped
+        # on its own. The spec §17 whitelist itself is pinned by
+        # tests/unit/test_metadata.py::TestRemoteMetadata.
+        fake = FakeDATransport(
+            solutions=zero_rows(make_compiled()),
+            timing={
+                "solve_time": "5041",
+                "total_elapsed_time": "abc",
+                "cpu_time": "4900",
+                "queue_time": "12",
+            },
+        )
+
+        result, _ = solve(monkeypatch, fake)
+
+        timing_us = result.metadata.timing_us
+        assert timing_us == {"solve_time": 5041000.0}
+        for value in timing_us.values():
+            assert type(value) is float
+
+    @pytest.mark.parametrize(
+        "value",
+        ["", "abc", True, None, {"x": 1}, [1]],
+        ids=["empty_string", "text", "bool", "null", "object", "list"],
+    )
+    @pytest.mark.parametrize("key", ["solve_time", "total_elapsed_time"])
+    def test_unparsable_timing_value_drops_only_that_key(self, monkeypatch, key, value):
+        other = "total_elapsed_time" if key == "solve_time" else "solve_time"
+        fake = FakeDATransport(
+            solutions=zero_rows(make_compiled()),
+            timing={key: value, other: "7"},
+        )
+
+        result, _ = solve(monkeypatch, fake)
+
+        timing_us = result.metadata.timing_us
+        assert key not in timing_us
+        assert timing_us == {other: 7000.0}
+        assert type(timing_us[other]) is float
+
+    def test_vendor_extras_in_the_result_never_reach_metadata(self, monkeypatch):
+        # Metadata is built from named facts only: nothing else in the Done
+        # body — inside ``qubo_solution`` or next to it — may pass through.
+        fake = FakeDATransport(solutions=zero_rows(make_compiled()))
+        payload = fake.done_payload()
+        payload["qubo_solution"].update(
+            {
+                "progress": [{"energy": -1.0, "penalty_energy": 0.0, "time": 1.25}],
+                "result_status": True,
+                "extra_vendor_blob": {"secret_field": "fake-vendor-blob-value"},
+            }
+        )
+        payload["extra_vendor_blob"] = {"secret_field": "fake-vendor-blob-value"}
+        fake.result_response = json_response(200, payload)
+
+        result, _ = solve(monkeypatch, fake)
+
+        metadata = result.metadata
+        dumped = metadata.model_dump_json()
+        for vendor_only in (
+            "progress",
+            "result_status",
+            "extra_vendor_blob",
+            "secret_field",
+            "fake-vendor-blob-value",
+        ):
+            assert vendor_only not in dumped
+        assert set(metadata.model_dump()) == set(SolverExecutionMetadata.model_fields)
 
     def test_missing_timing_block_yields_no_timing(self, monkeypatch):
         fake = FakeDATransport(solutions=zero_rows(make_compiled()), timing=None)

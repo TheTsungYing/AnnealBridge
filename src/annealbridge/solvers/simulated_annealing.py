@@ -20,7 +20,8 @@ from annealbridge.solvers.base import (
     ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
-    sampleset_to_arrays,
+    log_solved,
+    result_from_sampleset,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,13 +31,28 @@ logger = logging.getLogger(__name__)
 # every shard's seed depend on ``num_reads`` and ``seed`` alone, never on
 # the machine, so the merged sample set is the same whatever the worker
 # count. Changing this constant changes every seeded result with more than
-# one shard. 25 measured as the best balance between the per-call Python
-# overhead on one core (+4–15 %) and the parallel speed-up on eight.
+# one shard. 25 is still the measured balance between the extra cost on one
+# core and the parallel speed-up on eight. That extra cost is a fixed cost
+# per sampler call, independent of reads and sweeps: every shard re-runs the
+# sampler's default beta-range estimate (about 15 ms at 300 variables /
+# 13.6k interactions, 110 ms at 800 / 96k). With workers=1 and 400 reads
+# (16 shards) it measured +9–18 % at 1000 sweeps and +52–73 % at 200.
 READS_PER_SHARD = 25
 
-# ``SimulatedAnnealingSampler`` accepts ``0 <= seed < 2**31``. Checked here
-# so a request rejects the same way whether it takes one shard (seed passed
-# through) or several (shard seeds derived from it).
+# ``SimulatedAnnealingSampler`` accepts ``0 <= seed < 2**31``; this copies
+# that rule on purpose. The sharded path derives every shard seed through
+# ``SeedSequence(seed)`` and masks it to 31 bits, so a derived seed is always
+# in range: unchecked, several shards would silently accept a seed that the
+# single-shard path (seed passed straight to the sampler) rejects. Checking
+# it first makes both paths accept the same range and raise the same
+# exception type. The message is ours and states the real bound: the
+# dwave-samplers 1.8.0 message says ``2^32 - 1`` but the check is
+# ``< 2**31``. The seed tests in ``tests/unit/test_solvers.py``
+# (``test_vendor_sampler_accepts_the_largest_seed_the_shard_check_allows``,
+# ``test_vendor_sampler_rejects_the_seeds_the_shard_check_rejects``,
+# ``test_out_of_range_seed_fails_the_same_way_on_both_paths``) pin both the
+# vendor rule and the agreement of the two paths, and turn red if a
+# dwave-samplers upgrade changes the rule.
 _SEED_LIMIT = 2**31
 
 _CAPABILITIES = SolverCapabilities(
@@ -180,24 +196,8 @@ class SimulatedAnnealingBackend(BackendAliases):
                 f"Simulated annealing solver failed: {exc}"
             ) from exc
 
-        variables, samples, energies = sampleset_to_arrays(sampleset)
-        logger.info(
-            "Backend %s solved problem %s: %d variables, %d samples "
-            "(num_reads=%d, num_sweeps=%d, seed=%s, shards=%d, workers=%d)",
-            self.name,
-            compiled_problem.original_problem.name,
-            compiled_problem.num_variables,
-            len(samples),
-            preferences.num_reads,
-            preferences.num_sweeps,
-            preferences.seed,
-            max(1, len(sizes)),
-            min(self._workers, max(1, len(sizes))),
-        )
-        return RawSolverResult(
-            variables=variables,
-            samples=samples,
-            energies=energies,
+        result = result_from_sampleset(
+            sampleset,
             backend=self.name,
             # A local run leaves no vendor facts behind: no solver id, no
             # timing, no quota. Reported are the backend, that it ran here,
@@ -209,6 +209,19 @@ class SimulatedAnnealingBackend(BackendAliases):
                 num_reads_requested=preferences.num_reads,
             ),
         )
+        log_solved(
+            logger,
+            self.name,
+            compiled_problem.original_problem.name,
+            compiled_problem.num_variables,
+            len(result.samples),
+            num_reads=preferences.num_reads,
+            num_sweeps=preferences.num_sweeps,
+            seed=preferences.seed,
+            shards=max(1, len(sizes)),
+            workers=min(self._workers, max(1, len(sizes))),
+        )
+        return result
 
     def _sample(
         self,
@@ -231,8 +244,11 @@ class SimulatedAnnealingBackend(BackendAliases):
         """Sample every shard, ``workers`` at a time, and concatenate in order."""
         seed = preferences.seed
         if seed is not None and not 0 <= seed < _SEED_LIMIT:
-            # The sampler's own rule, applied before derivation so an
-            # out-of-range seed fails the same way for any num_reads.
+            # The sampler's own rule (see ``_SEED_LIMIT``), checked before
+            # derivation: masked shard seeds are always in range, so without
+            # it this path would accept seeds the single-shard path rejects.
+            # Both paths now accept the same range and raise ValueError; only
+            # the message text differs from the vendor's.
             raise ValueError(
                 f"'seed' should be an integer between 0 and {_SEED_LIMIT - 1}: "
                 f"value = {seed}"

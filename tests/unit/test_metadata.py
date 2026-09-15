@@ -26,6 +26,7 @@ from annealbridge.solvers.metadata import (
     guarded_call,
     redact,
     register_secret_source,
+    remote_metadata,
     sanitize_sampleset_info,
 )
 from annealbridge.solvers.ocean import call_ocean
@@ -169,6 +170,107 @@ class TestSanitizeSamplesetInfo:
         info = {"timing": {"solve_time": "5041", "total_elapsed_time": "6123"}}
 
         assert sanitize_sampleset_info(info, backend="fujitsu_da").timing_us == {}
+
+    def test_vendor_side_fields_are_forwarded(self) -> None:
+        info = {"timing": {"qpu_access_time": 7}}
+
+        metadata = sanitize_sampleset_info(
+            info,
+            backend="dwave_qpu",
+            num_reads_requested=100,
+            average_chain_break_fraction=0.25,
+            embedding_max_chain_length=3,
+        )
+
+        assert metadata.timing_us == {"qpu_access_time": 7.0}
+        assert metadata.num_reads_requested == 100
+        assert metadata.average_chain_break_fraction == 0.25
+        assert metadata.embedding_max_chain_length == 3
+        assert metadata.effective_time_limit_seconds is None
+
+    def test_an_unknown_field_is_a_type_error(self) -> None:
+        with pytest.raises(TypeError):
+            sanitize_sampleset_info({}, backend="dwave_qpu", num_reads=100)  # type: ignore[call-arg]
+
+
+class TestRemoteMetadata:
+    """2026-09-15 consolidation: the one builder of remote metadata keeps the
+    whitelist.
+
+    A backend that already converted its vendor's timing (the digital
+    annealer's millisecond strings) calls ``remote_metadata`` directly, so
+    the §17 whitelist must hold here too, not only in
+    ``sanitize_sampleset_info``.
+    """
+
+    def test_keys_outside_the_whitelist_are_dropped(self) -> None:
+        timing = {
+            "total_elapsed_time": 6123500.0,
+            "cpu_time": 4900000.0,
+            "solve_time": 5041000.0,
+            "problem_id": 1.0,
+        }
+
+        metadata = remote_metadata("fujitsu_da", timing)
+
+        assert metadata.timing_us == {
+            "total_elapsed_time": 6123500.0,
+            "solve_time": 5041000.0,
+        }
+        # The caller's key order is kept, not the whitelist's set order.
+        assert list(metadata.timing_us) == ["total_elapsed_time", "solve_time"]
+
+    @pytest.mark.parametrize(
+        "value", ["5041", "", None, True, False, b"\x01", {"x": 1}, [1.0], object()]
+    )
+    def test_values_that_are_not_plain_numbers_are_dropped(self, value) -> None:
+        metadata = remote_metadata(
+            "fujitsu_da", {"solve_time": value, "total_elapsed_time": 12}
+        )
+
+        assert metadata.timing_us == {"total_elapsed_time": 12.0}
+        assert all(type(v) is float for v in metadata.timing_us.values())
+
+    def test_result_is_remote_and_never_aliases_the_input(self) -> None:
+        timing = {"solve_time": 1.0}
+
+        metadata = remote_metadata("fujitsu_da", timing)
+        timing["solve_time"] = 2.0
+        timing["charge_time"] = 3.0
+
+        assert metadata.remote is True
+        assert metadata.backend == "fujitsu_da"
+        assert metadata.timing_us == {"solve_time": 1.0}
+
+    def test_every_vendor_side_field_is_forwarded(self) -> None:
+        metadata = remote_metadata(
+            "some_backend",
+            {},
+            solver_id="vendor/v1",
+            num_reads_requested=5,
+            effective_time_limit_seconds=10.0,
+            average_chain_break_fraction=0.5,
+            embedding_max_chain_length=4,
+            sampler_reported_feasible=2,
+        )
+
+        assert metadata.model_dump() == {
+            "backend": "some_backend",
+            "remote": True,
+            "solver_id": "vendor/v1",
+            "num_reads_requested": 5,
+            "effective_time_limit_seconds": 10.0,
+            "timing_us": {},
+            "average_chain_break_fraction": 0.5,
+            "embedding_max_chain_length": 4,
+            "model_type": None,
+            "sampler_reported_feasible": 2,
+        }
+
+    @pytest.mark.parametrize("keyword", ["remote", "timing", "model_type", "problem_id"])
+    def test_any_other_keyword_is_a_type_error(self, keyword) -> None:
+        with pytest.raises(TypeError):
+            remote_metadata("some_backend", {}, **{keyword: None})
 
 
 class TestRedact:

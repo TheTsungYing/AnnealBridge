@@ -23,6 +23,7 @@ only ``dwave_system_installed`` is patched.
 """
 
 import logging
+import re
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -41,6 +42,8 @@ from annealbridge.solvers import (
     LeapHybridCQMBackend,
     SolverRegistry,
 )
+from annealbridge.solvers.exact import ExactSolverBackend
+import annealbridge.solvers.metadata as metadata_module
 import annealbridge.solvers.ocean as ocean_module
 from tests.fakes import FakeDATransport, bits_solution, json_response
 from tests.remote_mock.conftest import (
@@ -592,3 +595,186 @@ class TestExceptionChainCarriesNoToken:
 
         assert exc_info.value.code == "REMOTE_SOLVER_ERROR"
         self.assert_chain_is_clean(exc_info.value)
+
+
+# ``(backend class, fake sampler class, compile, preferences)`` per D-Wave
+# backend, for building each one by hand.
+_DIRECT_DWAVE: dict[str, tuple[type, type, Callable[[], Any], Callable[[], Any]]] = {
+    "dwave_qpu": (
+        DWaveQPUBackend,
+        FakeQPUSampler,
+        compile_problem,
+        lambda: make_problem().solver,
+    ),
+    "leap_hybrid_bqm": (
+        LeapHybridBQMBackend,
+        FakeLeapHybridSampler,
+        compile_problem,
+        hybrid_preferences,
+    ),
+    "leap_hybrid_cqm": (
+        LeapHybridCQMBackend,
+        FakeCQMSampler,
+        compile_cqm_problem,
+        cqm_preferences,
+    ),
+}
+
+
+class TestDirectlyConstructedDWaveBackendRedacts:
+    """Review F-03 for the D-Wave backends: a hand-built one masks by its own declaration.
+
+    ``TestExceptionChainCarriesNoToken`` also builds the D-Wave backends
+    directly, but two other things could mask the token there:
+    ``tests/conftest.py`` has already built ``SolverRegistry.default()``,
+    which declares every backend, and the ``ocean_config`` secret source
+    reads Ocean's merged configuration, in which the env token wins when
+    dwave-cloud-client is installed. Here both are removed: the declaration
+    table and the secret sources start empty, the Ocean config-file source
+    yields nothing, and the token matches no declared value pattern and
+    carries no ``token=`` prefix. The only thing left that can mask it is the
+    ``DWAVE_API_TOKEN`` declaration made by the backend's own ``__init__``.
+    Mirrors ``TestRedactionWithoutARegistry`` in ``test_fujitsu_da_mock.py``.
+    """
+
+    MESSAGE = f"rejected credential {FAKE_TOKEN} at https://cloud.dwavesys.com"
+
+    @pytest.fixture(autouse=True)
+    def _clean_process(self, monkeypatch):
+        monkeypatch.setattr(metadata_module, "_DECLARATIONS", {})
+        monkeypatch.setattr(metadata_module, "_SECRET_SOURCES", {})
+        # ``register_ocean_config_token`` looks ``_ocean_config_secrets`` up by
+        # module-global name when it runs, so a constructor called after this
+        # registers the empty source instead of the real config-file reader.
+        monkeypatch.setattr(ocean_module, "_ocean_config_secrets", lambda: ())
+        monkeypatch.setattr(ocean_module, "_resolve_ocean_config", lambda: ("ok", None))
+        monkeypatch.setenv(ocean_module.TOKEN_ENV, FAKE_TOKEN)
+
+    def test_the_cleared_process_really_is_the_reproduction(self):
+        # Guard for the test itself: nothing declared, no secret source, and a
+        # token no declared D-Wave pattern (or protocol fallback) can match.
+        for pattern in ocean_module.OCEAN_CREDENTIALS.value_patterns:
+            assert re.search(pattern, FAKE_TOKEN) is None
+        assert metadata_module.credential_env_vars() == []
+        assert metadata_module._SECRET_SOURCES == {}
+        assert metadata_module.redact(self.MESSAGE) == self.MESSAGE
+
+    @pytest.mark.parametrize(
+        "failure", ["sampler_construction", "immediate_sample", "lazy_resolve"]
+    )
+    @pytest.mark.parametrize("kind", sorted(_DIRECT_DWAVE))
+    def test_a_failed_direct_solve_is_masked_everywhere(self, caplog, kind, failure):
+        backend_class, fake_class, compile_model, preferences = _DIRECT_DWAVE[kind]
+        compiled = compile_model()
+        solver_preferences = preferences()
+        fake = fake_class(
+            raise_on_sample=RuntimeError(self.MESSAGE),
+            lazy=failure == "lazy_resolve",
+        )
+        factory_calls: list[int] = []
+
+        def factory():
+            factory_calls.append(1)
+            if failure == "sampler_construction":
+                raise RuntimeError(self.MESSAGE)
+            return fake
+
+        # Built only now, after the isolation: whatever masks below was put in
+        # place by this constructor.
+        backend = backend_class(sampler_factory=factory)
+        for source in metadata_module._SECRET_SOURCES.values():
+            assert source() == ()
+
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(SolverExecutionError) as exc_info:
+                backend.solve(compiled, solver_preferences)
+
+        # The solve really failed at the stage under test.
+        assert len(factory_calls) == 1
+        assert fake.sample_calls == (0 if failure == "sampler_construction" else 1)
+
+        error = exc_info.value
+        message = str(error)
+        assert FAKE_TOKEN not in message
+        assert "***" in message
+        assert FAKE_TOKEN not in "".join(traceback.format_exception(error))
+        for record in caplog.records:
+            assert FAKE_TOKEN not in record.getMessage()
+
+
+# A request may put anything in ``problem.name``, and a DA job id is text the
+# vendor chose. Both reach an INFO line after a *successful* solve.
+_LEAKY_NAME = f"weekly plan {FAKE_TOKEN}"
+_LEAKY_JOB_ID = f"job-{FAKE_TOKEN}"
+
+
+def _named_problem(backend: str):
+    return make_problem(backend=backend).model_copy(update={"name": _LEAKY_NAME})
+
+
+class TestSuccessfulSolveLogLinesAreRedacted:
+    """2026-09-15 review follow-up: the success log lines mask credentials.
+
+    ``log_solved`` masks the problem name for every backend, and the Fujitsu
+    DA backend masks the vendor's job id in both of its INFO lines. The
+    credential is the live value of a declared env var, so masking has to
+    come from ``redact``; nothing else in these lines would hide it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _credentials_in_env(self, monkeypatch):
+        monkeypatch.setenv("DWAVE_API_TOKEN", FAKE_TOKEN)
+        monkeypatch.setenv("FUJITSU_DA_API_KEY", FAKE_TOKEN)
+
+    @staticmethod
+    def info_lines(caplog, logger_name: str) -> list[str]:
+        return [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == logger_name and record.levelno == logging.INFO
+        ]
+
+    def test_fujitsu_da_masks_the_job_id_and_the_name(self, caplog):
+        compiled = BQMCompiler().compile(_named_problem("fujitsu_da"), hard_penalty=100.0)
+        width = len(compiled.model.variables)
+        fake = FakeDATransport(
+            solutions=[bits_solution([0] * width, 0.0)], job_id=_LEAKY_JOB_ID
+        )
+        logger_name = "annealbridge.solvers.fujitsu_da"
+
+        with caplog.at_level(logging.INFO, logger=logger_name):
+            raw = da_backend(fake).solve(compiled, da_preferences())
+
+        assert raw.num_samples == 1
+        # Also pins the shared success-line format the DA backend now uses.
+        assert self.info_lines(caplog, logger_name) == [
+            "Backend fujitsu_da submitted job job-***",
+            f"Backend fujitsu_da solved problem weekly plan ***: {width} variables, "
+            "1 samples (job_id=job-***, solve_time_us=5041000.0, "
+            "effective_time_limit_seconds=10.0)",
+        ]
+
+    def test_an_ocean_backend_masks_the_name(self, caplog):
+        problem = _named_problem("dwave_qpu")
+        compiled = BQMCompiler().compile(problem, hard_penalty=100.0)
+        backend = DWaveQPUBackend(sampler_factory=FakeQPUSampler)
+        logger_name = "annealbridge.solvers.dwave_qpu"
+
+        with caplog.at_level(logging.INFO, logger=logger_name):
+            backend.solve(compiled, problem.solver)
+
+        (line,) = self.info_lines(caplog, logger_name)
+        assert line.startswith("Backend dwave_qpu solved problem weekly plan ***: ")
+        assert_no_key_fragment(line, FAKE_TOKEN)
+
+    def test_a_local_backend_masks_the_name(self, caplog):
+        problem = _named_problem("exact")
+        compiled = BQMCompiler().compile(problem, hard_penalty=100.0)
+        logger_name = "annealbridge.solvers.exact"
+
+        with caplog.at_level(logging.INFO, logger=logger_name):
+            ExactSolverBackend().solve(compiled, problem.solver)
+
+        (line,) = self.info_lines(caplog, logger_name)
+        assert line.startswith("Backend exact solved problem weekly plan ***: ")
+        assert_no_key_fragment(line, FAKE_TOKEN)

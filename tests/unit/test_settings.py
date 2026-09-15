@@ -3,9 +3,11 @@
 import logging
 import os
 
+import annotated_types
 import pytest
 
 from pydantic import ValidationError
+from pydantic.fields import FieldInfo
 from pydantic_settings import SettingsError as PydanticSettingsError
 
 from annealbridge.config import ServerSettings, SettingsError, load_settings
@@ -193,6 +195,60 @@ class TestToPolicy:
 
     def test_enabled_backends_defaults_to_none(self, clean_env):
         assert ServerSettings().to_policy().enabled_backends is None
+
+
+def _bounds(field: FieldInfo) -> list[annotated_types.BaseMetadata]:
+    """The constraint metadata of ``field`` (``Ge``, ``Gt``, ``Le``, ``Lt``,
+    ``MultipleOf``, ...), in declaration order.
+
+    Every ``annotated_types`` constraint derives from ``BaseMetadata``, so a
+    bound added later (``le=``, ``multiple_of=``) is compared without editing
+    this helper; markers that are not constraints, such as pydantic-settings'
+    ``NoDecode`` on ``enabled_backends``, are left out.
+    """
+    return [item for item in field.metadata if isinstance(item, annotated_types.BaseMetadata)]
+
+
+class TestPolicyFieldsMirrorExecutionPolicy:
+    """2026-09-15 consolidation: the settings cannot drift from the policy
+    they build.
+
+    ``ServerSettings`` repeats every ``ExecutionPolicy`` field so that a bad
+    environment is refused at startup, and ``to_policy`` copies them across
+    by name. Nothing but these tests keeps the two declarations in step: a
+    field, type, default or bound changed on one side only would either be
+    dropped on the way into the policy or be validated differently at the
+    environment boundary than inside the service.
+    """
+
+    SETTINGS_ONLY_FIELDS = {"sa_workers", "http_host", "http_port"}
+
+    @pytest.mark.parametrize("name", sorted(ExecutionPolicy.model_fields))
+    def test_policy_field_is_declared_identically_in_settings(self, name):
+        assert name in ServerSettings.model_fields, (
+            f"ExecutionPolicy.{name} has no ServerSettings field of the same name"
+        )
+        policy_field = ExecutionPolicy.model_fields[name]
+        settings_field = ServerSettings.model_fields[name]
+
+        assert settings_field.annotation == policy_field.annotation
+        assert settings_field.default == policy_field.default
+        assert (settings_field.default_factory is None) == (
+            policy_field.default_factory is None
+        )
+        if policy_field.default_factory is not None:
+            assert settings_field.default_factory() == policy_field.default_factory()
+        assert _bounds(settings_field) == _bounds(policy_field)
+
+    def test_settings_only_fields_are_exactly_the_known_ones(self):
+        extra = set(ServerSettings.model_fields) - set(ExecutionPolicy.model_fields)
+
+        assert extra == self.SETTINGS_ONLY_FIELDS, (
+            "ServerSettings fields missing from ExecutionPolicy changed. A new "
+            "settings-only field (one that configures the composition root, "
+            "not the policy) must be added to SETTINGS_ONLY_FIELDS; a new "
+            "policy field must be added to ExecutionPolicy as well."
+        )
 
 
 class TestEnabledBackends:

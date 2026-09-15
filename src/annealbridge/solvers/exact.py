@@ -15,7 +15,8 @@ from annealbridge.solvers.base import (
     BackendAliases,
     RawSolverResult,
     SolverCapabilities,
-    sampleset_to_arrays,
+    log_solved,
+    result_from_sampleset,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,18 +68,8 @@ class ExactSolverBackend(BackendAliases):
                 f"Exact solver failed: {exc}"
             ) from exc
 
-        variables, samples, energies = sampleset_to_arrays(sampleset)
-        logger.info(
-            "Backend %s solved problem %s: %d variables, %d samples",
-            self.name,
-            compiled_problem.original_problem.name,
-            compiled_problem.num_variables,
-            len(samples),
-        )
-        return RawSolverResult(
-            variables=variables,
-            samples=samples,
-            energies=energies,
+        result = result_from_sampleset(
+            sampleset,
             backend=self.name,
             # A local run leaves no vendor facts behind: no solver id, no
             # timing, no quota. The metadata still says which backend ran
@@ -87,3 +78,11 @@ class ExactSolverBackend(BackendAliases):
             # space once and does not take a read count.
             metadata=SolverExecutionMetadata(backend=self.name, remote=False),
         )
+        log_solved(
+            logger,
+            self.name,
+            compiled_problem.original_problem.name,
+            compiled_problem.num_variables,
+            len(result.samples),
+        )
+        return result

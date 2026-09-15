@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from annealbridge.models import Constraint, OptimizationProblem, Variable
 from annealbridge.orchestration import ExecutionPolicy
+from annealbridge.orchestration.limits import policy_gate_errors
 from annealbridge.solvers import SolverRegistry
 
 
@@ -154,10 +155,11 @@ def build_capabilities(
         backend = registry.get(name)
         caps = backend.capabilities
         status = backend.is_available()
-        in_set = policy.enabled_backends is None or name in policy.enabled_backends
-        # A remote backend the policy refuses to call is not "enabled": reporting
-        # it as enabled would steer agents into a guaranteed REMOTE_DISABLED.
-        enabled = in_set and (not caps.remote or policy.allow_remote)
+        # The very policy gates a solve runs before its availability check,
+        # judged by the registry key: a remote backend the policy refuses to
+        # call is not "enabled", since reporting it as enabled would steer
+        # agents into a guaranteed REMOTE_DISABLED.
+        enabled = policy_gate_errors(name, caps, policy) is None
         backends.append(
             BackendCapability(
                 # The registry key, not caps.name: it is what a request

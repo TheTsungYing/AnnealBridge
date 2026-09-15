@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+from importlib import metadata
 from pathlib import Path
 
 import pytest
@@ -39,10 +40,8 @@ async def test_stdio_entrypoint_serves_the_four_tools():
     assert sorted(tool.name for tool in tools) == EXPECTED_TOOLS
 
 
-async def test_console_script_serves_the_four_tools():
-    """2026-09-11 install verification (gaps 3 and 4): the generated
-    ``annealbridge-mcp`` script — not ``python -m`` — must start the real
-    server through the entry-point shim and serve the same four tools."""
+def _console_script() -> str:
+    """The ``annealbridge-mcp`` script generated next to this interpreter."""
     script = shutil.which("annealbridge-mcp", path=str(Path(sys.executable).parent))
     if script is None:
         pytest.fail(
@@ -50,6 +49,14 @@ async def test_console_script_serves_the_four_tools():
             f"{sys.executable}; reinstall the project with "
             'pip install -e ".[all,dev]"'
         )
+    return script
+
+
+async def test_console_script_serves_the_four_tools():
+    """2026-09-11 install verification (gaps 3 and 4): the generated
+    ``annealbridge-mcp`` script — not ``python -m`` — must start the real
+    server through the entry-point shim and serve the same four tools."""
+    script = _console_script()
 
     params = StdioServerParameters(command=script, args=[])
     async with Client(params) as client:
@@ -114,3 +121,48 @@ def test_invalid_settings_exit_2_with_a_message_and_no_traceback():
     assert "ANNEALBRIDGE_MAX_CONCURRENT_SOLVES" in completed.stderr
     assert "Traceback" not in completed.stderr
     assert completed.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "extra_env",
+    [
+        {},
+        {
+            "ANNEALBRIDGE_MAX_CONCURRENT_SOLVES": "0",
+            "ANNEALBRIDGE_NOT_A_REAL_SETTING": "1",
+        },
+        {"ANNEALBRIDGE_NOT_A_REAL_SETTING": "1"},
+    ],
+    ids=["valid-settings", "invalid-settings", "unknown-variable"],
+)
+def test_version_exits_0_before_the_settings_are_read(extra_env):
+    """2026-09-15 consolidation: ``--version`` is answered before
+    ``load_settings()``, so an invalid value cannot block it and an unknown
+    variable is not even warned about — stdout carries the version, and
+    stderr carries neither a settings error nor the unknown-variable warning.
+
+    Had the settings been read, ``invalid-settings`` would end with
+    ``Error: Invalid server settings`` and exit 2 (the invalid value is
+    refused before unknown variables are checked), and ``unknown-variable``
+    would log a ``WARNING`` record naming the variable. stderr is not
+    required to be empty: an unrelated interpreter warning on a developer
+    machine (``PYTHONWARNINGS``, say) may legitimately write to it.
+
+    Driven through the console script: under ``python -m`` the interpreter
+    itself writes runpy's "found in sys.modules" RuntimeWarning to stderr
+    before the server code runs, which is noise this test has no use for."""
+    completed = subprocess.run(
+        [_console_script(), "--version"],
+        env={**os.environ, **extra_env},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == f"annealbridge {metadata.version('annealbridge')}\n"
+    # The two traces load_settings() leaves: the unknown-variable WARNING
+    # log record and the "Error: Invalid server settings" line.
+    assert "WARNING" not in completed.stderr
+    assert "Error:" not in completed.stderr
+    assert "Traceback" not in completed.stderr

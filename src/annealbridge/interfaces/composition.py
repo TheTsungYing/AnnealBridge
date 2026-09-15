@@ -6,7 +6,9 @@ Importing it has no side effects: the environment is read only when
 ``build_state``/``build_service`` is called.
 """
 
+import sys
 from dataclasses import dataclass
+from typing import NoReturn
 
 from annealbridge.config import ServerSettings, SettingsError, load_settings
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
@@ -35,6 +37,20 @@ def build_state_from_policy(
         # §11.3): a configuration error, reported like any other bad setting.
         raise SettingsError(f"Invalid server settings: {exc}") from None
     return AppState(policy=policy, registry=registry, service=service)
+
+
+def exit_on_settings_error(exc: SettingsError) -> NoReturn:
+    """Report invalid settings on stderr and end the process with exit code 2.
+
+    The one place both entry points turn a :class:`SettingsError` into a
+    process exit, so the CLI and the MCP server print the same
+    ``Error: ...`` line and return the same exit code. The message is
+    already operator-formatted and never echoes a value (review F-20). Only
+    the standard library is used, so the MCP server does not depend on
+    Typer through it and the CLI does not depend on the ``[mcp]`` extra.
+    """
+    print(f"Error: {exc}", file=sys.stderr)
+    sys.exit(2)
 
 
 def build_state(settings: ServerSettings | None = None) -> AppState:

@@ -246,6 +246,50 @@ def preference_limit_errors(
     return errors
 
 
+def policy_gate_errors(
+    backend_name: str, capabilities: SolverCapabilities, policy: ExecutionPolicy
+) -> tuple[SolveStatus, str, list[SolveError]] | None:
+    """§16.2 steps 3–4: the policy gates, enabled_backends → allow_remote.
+
+    Reads only the policy and the backend's declaration; it never calls
+    ``is_available()``. Returns ``(status, reported_backend_name, errors)``
+    for the first gate that refuses, or None when policy permits the
+    backend. ``enabled_backends`` holds registry keys, so that gate compares
+    and reports ``backend_name``; the remote gate reports
+    ``capabilities.name``.
+
+    The single definition of "enabled by policy": :func:`gate_errors` runs
+    it before the availability check, and the capabilities view reports
+    ``enabled`` from it. A future policy gate belongs here, so the two can
+    never disagree about which backends a solve may reach.
+    """
+    if policy.enabled_backends is not None and backend_name not in policy.enabled_backends:
+        return (
+            "backend_unavailable",
+            backend_name,
+            [
+                catalog_error(
+                    "BACKEND_DISABLED_BY_POLICY",
+                    f"Backend '{backend_name}' is disabled by server policy; "
+                    f"enabled backends: {', '.join(sorted(policy.enabled_backends))}",
+                )
+            ],
+        )
+    if capabilities.remote and not policy.allow_remote:
+        return (
+            "backend_unavailable",
+            capabilities.name,
+            [
+                catalog_error(
+                    "REMOTE_DISABLED",
+                    f"Backend '{capabilities.name}' is remote and remote solving is "
+                    f"disabled by server policy",
+                )
+            ],
+        )
+    return None
+
+
 def gate_errors(
     backend_name: str, backend: SolverBackend, policy: ExecutionPolicy
 ) -> tuple[SolveStatus, str, list[SolveError]] | None:
@@ -254,6 +298,8 @@ def gate_errors(
     The gates short-circuit in that order, so ``is_available()`` is only
     called once policy allows the backend at all (the D-Wave availability
     check reads the Ocean config file; this keeps Phase 2's lazy order).
+    The first two are :func:`policy_gate_errors`, shared with the
+    capabilities view.
 
     Returns ``(status, reported_backend_name, errors)`` or None when the
     backend may run. ``enabled_backends`` holds registry keys — the names
@@ -272,30 +318,9 @@ def gate_errors(
     here, so neither can be taken down by one backend's broken check.
     """
     caps = backend.capabilities
-    if policy.enabled_backends is not None and backend_name not in policy.enabled_backends:
-        return (
-            "backend_unavailable",
-            backend_name,
-            [
-                catalog_error(
-                    "BACKEND_DISABLED_BY_POLICY",
-                    f"Backend '{backend_name}' is disabled by server policy; "
-                    f"enabled backends: {', '.join(sorted(policy.enabled_backends))}",
-                )
-            ],
-        )
-    if caps.remote and not policy.allow_remote:
-        return (
-            "backend_unavailable",
-            caps.name,
-            [
-                catalog_error(
-                    "REMOTE_DISABLED",
-                    f"Backend '{caps.name}' is remote and remote solving is "
-                    f"disabled by server policy",
-                )
-            ],
-        )
+    refused = policy_gate_errors(backend_name, caps, policy)
+    if refused is not None:
+        return refused
     try:
         availability = backend.is_available()
     except Exception as exc:

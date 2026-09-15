@@ -8,7 +8,9 @@ material looks like in ``SolverCapabilities.credentials``
 (:class:`~annealbridge.models.capabilities.CredentialDeclaration`), and
 that declaration reaches :func:`declare_credentials` twice: the backend
 declares it in its own ``__init__`` (so a directly constructed instance is
-masked too) and ``SolverRegistry`` declares it again when the backend is
+masked too; the Ocean backends do so through
+``solvers.ocean.ocean_sampler_holder``, the call that also creates their
+sampler holder) and ``SolverRegistry`` declares it again when the backend is
 registered. A credential that is not an environment variable at all (e.g.
 a token in a vendor config file) is contributed by the backend through
 :func:`register_secret_source`. :func:`redact` reads both process-level
@@ -46,7 +48,7 @@ import json
 import os
 import re
 import urllib.parse
-from typing import Callable, Iterable, TypeVar
+from typing import Any, Callable, Iterable, Mapping, TypeVar
 
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models.capabilities import CredentialDeclaration
@@ -61,6 +63,7 @@ __all__ = [
     "guarded_call",
     "redact",
     "register_secret_source",
+    "remote_metadata",
     "sanitize_sampleset_info",
 ]
 
@@ -92,8 +95,8 @@ TIMING_WHITELIST = frozenset(
         "run_time",
         "charge_time",
         # Digital-annealer style keys (3b spec §21); the backend converts the
-        # vendor's millisecond strings to float microseconds before calling
-        # ``sanitize_sampleset_info``.
+        # vendor's millisecond strings to float microseconds itself and
+        # passes them to ``remote_metadata``.
         "solve_time",
         "total_elapsed_time",
     }
@@ -192,7 +195,60 @@ def _timing_value(value: object) -> float | None:
     return float(value)
 
 
-def sanitize_sampleset_info(info: dict, backend: str) -> SolverExecutionMetadata:
+def remote_metadata(
+    backend: str,
+    timing_us: Mapping[str, object],
+    *,
+    solver_id: str | None = None,
+    num_reads_requested: int | None = None,
+    effective_time_limit_seconds: float | None = None,
+    average_chain_break_fraction: float | None = None,
+    embedding_max_chain_length: int | None = None,
+    sampler_reported_feasible: int | None = None,
+) -> SolverExecutionMetadata:
+    """The execution metadata of a remote run, from timing already in microseconds.
+
+    The one place a remote backend's ``SolverExecutionMetadata`` is built
+    (2026-09-15 consolidation): :func:`sanitize_sampleset_info` calls it for
+    an Ocean ``info`` dict, and a backend whose vendor reports timing some
+    other way (the digital annealer's millisecond strings) converts to float
+    microseconds itself and calls it directly.
+
+    ``timing_us`` is filtered through the spec §17 whitelist *here*,
+    whatever the caller already did, so calling this instead of
+    :func:`sanitize_sampleset_info` cannot bypass it: a key
+    :data:`TIMING_WHITELIST` does not name, or a value that is not a plain
+    number (``bool`` included), is dropped — never raised on, never passed
+    through (fail-safe, see the whitelist). Surviving values are coerced to
+    float and keep the caller's key order; the mapping itself is never
+    kept. The keyword fields are the vendor-side facts a remote backend
+    reports, each with a caller; any other keyword is a ``TypeError``. The
+    result is always ``remote=True``.
+    """
+    whitelisted: dict[str, float] = {}
+    for key, raw in timing_us.items():
+        if key not in TIMING_WHITELIST:
+            continue
+        value = _timing_value(raw)
+        if value is not None:
+            whitelisted[key] = value
+
+    return SolverExecutionMetadata(
+        backend=str(backend),
+        remote=True,
+        timing_us=whitelisted,
+        solver_id=solver_id,
+        num_reads_requested=num_reads_requested,
+        effective_time_limit_seconds=effective_time_limit_seconds,
+        average_chain_break_fraction=average_chain_break_fraction,
+        embedding_max_chain_length=embedding_max_chain_length,
+        sampler_reported_feasible=sampler_reported_feasible,
+    )
+
+
+def sanitize_sampleset_info(
+    info: dict, backend: str, **fields: Any
+) -> SolverExecutionMetadata:
     """Extract whitelisted timing facts from a raw ``sampleset.info`` dict.
 
     Only the spec §17 whitelist keys survive, taken from the nested
@@ -204,10 +260,13 @@ def sanitize_sampleset_info(info: dict, backend: str) -> SolverExecutionMetadata
     This is the remote backends' tool for turning a vendor's ``info`` dict
     into metadata, so the result is always ``remote=True``; the former
     ``remote=`` keyword had no production caller (2026-09-09 review F-18).
-    The local backends have no vendor info to extract and build their own
-    ``SolverExecutionMetadata(remote=False)`` directly, without this
-    function. A test double that wants a different flag overrides it with
-    ``model_copy``.
+    ``fields`` are the vendor-side facts the backend computed itself
+    (``num_reads_requested``, ``effective_time_limit_seconds``, …) and go
+    to :func:`remote_metadata` unchanged, which accepts only its named
+    keywords. The local backends have no vendor info to extract and build
+    their own ``SolverExecutionMetadata(remote=False)`` directly, without
+    this function. A test double that wants a different flag overrides it
+    with ``model_copy``.
     """
     timing_us: dict[str, float] = {}
 
@@ -222,11 +281,7 @@ def sanitize_sampleset_info(info: dict, backend: str) -> SolverExecutionMetadata
             if value is not None:
                 timing_us[key] = value
 
-    return SolverExecutionMetadata(
-        backend=str(backend),
-        remote=True,
-        timing_us=timing_us,
-    )
+    return remote_metadata(backend, timing_us, **fields)
 
 
 def _literal_forms(secret: str) -> list[str]:

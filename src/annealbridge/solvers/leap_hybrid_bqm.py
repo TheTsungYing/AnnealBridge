@@ -15,20 +15,17 @@ from annealbridge.solvers.base import (
     ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
-    sampleset_to_arrays,
+    log_solved,
+    result_from_sampleset,
 )
-from annealbridge.solvers.metadata import (
-    declare_credentials,
-    sanitize_sampleset_info,
-)
+from annealbridge.solvers.metadata import sanitize_sampleset_info
 from annealbridge.solvers.ocean import (
     OCEAN_CREDENTIALS,
     HYBRID_SAMPLE_EXCEPTION_CODES,
     HybridTimeLimitMemo,
-    LazySampler,
     call_ocean,
     dwave_availability,
-    register_ocean_config_token,
+    ocean_sampler_holder,
     resolve_hybrid_sampler,
     resolved,
 )
@@ -85,15 +82,15 @@ class LeapHybridBQMBackend(BackendAliases):
     """
 
     def __init__(self, sampler_factory: Callable[[], Any] | None = None) -> None:
-        self._sampler = LazySampler(sampler_factory, _default_sampler_factory)
+        # Review F-03: the holder comes with this backend's credential
+        # declaration and the Ocean config-file token source, so a directly
+        # constructed backend redacts its token too (see ocean_sampler_holder).
+        self._sampler = ocean_sampler_holder(
+            sampler_factory, _default_sampler_factory, _CAPABILITIES
+        )
         # The ``min_time_limit`` of the service's pre-submission check is
         # reused by the solve of the same attempt (see HybridTimeLimitMemo).
         self._time_limit_memo = HybridTimeLimitMemo()
-        register_ocean_config_token()
-        # Review F-03: declared here, not only by ``SolverRegistry``, so a
-        # directly constructed backend redacts its token too. Idempotent; the
-        # registry declares the same thing again under the same name.
-        declare_credentials(_CAPABILITIES.name, _CAPABILITIES.credentials)
 
     @property
     def capabilities(self) -> SolverCapabilities:
@@ -159,22 +156,18 @@ class LeapHybridBQMBackend(BackendAliases):
             holder=self._sampler,
         )
 
-        variables, samples, energies = sampleset_to_arrays(sampleset)
-        metadata = sanitize_sampleset_info(sampleset.info, backend=self.name)
-        metadata.effective_time_limit_seconds = effective_time_limit
-        logger.info(
-            "Backend %s solved problem %s: %d variables, %d samples "
-            "(effective_time_limit_seconds=%s)",
+        metadata = sanitize_sampleset_info(
+            sampleset.info,
+            backend=self.name,
+            effective_time_limit_seconds=effective_time_limit,
+        )
+        result = result_from_sampleset(sampleset, backend=self.name, metadata=metadata)
+        log_solved(
+            logger,
             self.name,
             compiled_problem.original_problem.name,
             compiled_problem.num_variables,
-            len(samples),
-            effective_time_limit,
+            len(result.samples),
+            effective_time_limit_seconds=effective_time_limit,
         )
-        return RawSolverResult(
-            variables=variables,
-            samples=samples,
-            energies=energies,
-            backend=self.name,
-            metadata=metadata,
-        )
+        return result

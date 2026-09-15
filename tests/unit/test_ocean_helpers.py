@@ -15,6 +15,8 @@ import time
 import pytest
 
 from annealbridge.exceptions import SolverExecutionError
+from annealbridge.models import CredentialDeclaration, SolverCapabilities
+import annealbridge.solvers.metadata as metadata_module
 import annealbridge.solvers.ocean as ocean_module
 from annealbridge.solvers.ocean import (
     HYBRID_SAMPLE_EXCEPTION_CODES,
@@ -94,6 +96,73 @@ def holder_of(sampler: object) -> LazySampler:
 
 
 MODEL = object()
+
+
+class TestOceanSamplerHolder:
+    """2026-09-15 consolidation: the holder a D-Wave constructor gets comes
+    with its redaction.
+
+    ``ocean_sampler_holder`` is the only way the Ocean backends build their
+    :class:`LazySampler`, so the credential declaration and the config-file
+    token source cannot be forgotten by one of them. Pinned with a fake
+    vendor, starting from empty process-level tables.
+    """
+
+    FAKE_ENV = "FAKE_OCEAN_LIKE_API_KEY"
+    FAKE_VALUE = "fake-ocean-like-secret-0123456789"
+
+    @pytest.fixture(autouse=True)
+    def _clean_tables(self, monkeypatch):
+        monkeypatch.setattr(metadata_module, "_DECLARATIONS", {})
+        monkeypatch.setattr(metadata_module, "_SECRET_SOURCES", {})
+        # The registered source must not read a real Ocean config file.
+        monkeypatch.setattr(ocean_module, "_ocean_config_secrets", lambda: ())
+
+    def capabilities(self) -> SolverCapabilities:
+        return SolverCapabilities(
+            name="fake_ocean_backend",
+            remote=True,
+            heuristic=True,
+            exhaustive=False,
+            supports_seed=False,
+            supports_num_reads=False,
+            supports_time_limit=True,
+            supported_model_types=["bqm"],
+            returns_multiple_samples=False,
+            description="Test double.",
+            credentials=CredentialDeclaration(env_vars=[self.FAKE_ENV]),
+        )
+
+    def test_declares_the_credentials_and_registers_the_config_source(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setenv(self.FAKE_ENV, self.FAKE_VALUE)
+        assert metadata_module.redact(self.FAKE_VALUE) == self.FAKE_VALUE
+
+        ocean_module.ocean_sampler_holder(None, CountingFactory(), self.capabilities())
+
+        assert metadata_module.credential_env_vars() == [self.FAKE_ENV]
+        assert "ocean_config" in metadata_module._SECRET_SOURCES
+        assert metadata_module.redact(f"key {self.FAKE_VALUE}") == "key ***"
+
+    def test_returns_a_lazy_holder_that_builds_nothing_yet(self) -> None:
+        seam = CountingFactory()
+        default = CountingFactory()
+
+        holder = ocean_module.ocean_sampler_holder(seam, default, self.capabilities())
+
+        assert isinstance(holder, LazySampler)
+        assert (seam.calls, default.calls) == (0, 0)
+        holder.get()
+        assert (seam.calls, default.calls) == (1, 0)
+
+    def test_without_a_seam_the_default_factory_is_used(self) -> None:
+        default = CountingFactory()
+
+        holder = ocean_module.ocean_sampler_holder(None, default, self.capabilities())
+        holder.get()
+
+        assert default.calls == 1
 
 
 class TestResolveHybridTimeLimit:

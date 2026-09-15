@@ -80,6 +80,16 @@ configured. See [CLI](cli.md#capabilities).
   extra ones; and reproducibility holds for the same `dwave-samplers` and
   `numpy` versions, whose sampler and seed-derivation algorithms the result
   depends on.
+- Sharding adds a fixed cost per sampler call, independent of `num_reads` and
+  `num_sweeps`: every shard re-runs the sampler's default beta-range
+  estimate. Measured with `ANNEALBRIDGE_SA_WORKERS=1` and 400 reads (16
+  shards) on `dwave-samplers` 1.8.0 and an Intel Core i5-12500, that cost is
+  about 15 ms per call for 300 variables / 13.6k interactions and 110 ms for
+  800 variables / 96k interactions. Against a single sampler call this adds
+  +9 % (300 variables) to +18 % (800 variables) wall time at the default 1000
+  sweeps, and +52 % to +73 % at 200 sweeps. Raising
+  `ANNEALBRIDGE_SA_WORKERS` so shards run in parallel offsets it, and the
+  more sweeps a request asks for, the smaller its share.
 - `num_reads` is bounded by `ANNEALBRIDGE_MAX_LOCAL_READS`
   (`LOCAL_READS_LIMIT`) and `num_sweeps` by `ANNEALBRIDGE_MAX_SWEEPS`
   (`SWEEPS_LIMIT`). An over-limit value is rejected, never clamped.
@@ -446,8 +456,11 @@ system dispatches on — never the backend's name:
   layer knows no vendor, so a new backend is protected without touching the
   solver layer. A backend that carries credentials should therefore call
   `declare_credentials(self.capabilities.name, self.capabilities.credentials)`
-  in its constructor, as the four built-in remote backends do. See
-  [Security](security.md).
+  in its constructor, as the Fujitsu DA backend does. The three D-Wave backends
+  get the same declaration, plus the Ocean config-file token source, from
+  `solvers.ocean.ocean_sampler_holder`, the call that creates their lazy
+  sampler; a new Ocean-based backend should build its sampler holder through
+  it. See [Security](security.md).
 - `description` — the text an agent sees in
   `get_optimization_capabilities`.
 

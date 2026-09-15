@@ -6,32 +6,66 @@ No optimization logic lives here (spec §45).
 """
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Optional, get_args
+from typing import Annotated, Optional, TypeVar, get_args
 
 import typer
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from annealbridge.config import SettingsError
 from annealbridge.interfaces.capabilities import BackendCapability, build_capabilities
-from annealbridge.interfaces.composition import AppState, build_state
+from annealbridge.interfaces.composition import (
+    AppState,
+    build_state,
+    exit_on_settings_error,
+)
 from annealbridge.models import (
     OptimizationProblem,
     SolveError,
     SolveResult,
     SolverPreferences,
 )
+from annealbridge.orchestration import OptimizationService
 from annealbridge.validation import (
     BackendRecommendationResult,
     ProblemValidationResult,
 )
+from annealbridge.version import package_version
 
 app = typer.Typer(
     help="Optimization Tool Middleware CLI",
     add_completion=False,
     pretty_exceptions_enable=False,
 )
+
+
+def _print_version(value: bool) -> None:
+    """Eager ``--version``: print the installed version and exit 0.
+
+    Runs while the options are parsed, before any command body, so it reads
+    no ``ANNEALBRIDGE_*`` setting and answers even when they are invalid.
+    """
+    if value:
+        typer.echo(f"annealbridge {package_version()}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _global_options(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_print_version,
+            is_eager=True,
+            help="Show the version and exit.",
+        ),
+    ] = False,
+) -> None:
+    # Deliberately no docstring: the top-level help text stays the one given
+    # to typer.Typer(help=...). The eager callback does all the work.
+    pass
 
 
 def _format_number(value: float) -> str:
@@ -78,8 +112,7 @@ def _build_state() -> AppState:
     try:
         return build_state()
     except SettingsError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=2)
+        exit_on_settings_error(exc)
 
 
 def _override_backend(problem: OptimizationProblem, backend: str) -> OptimizationProblem:
@@ -213,33 +246,69 @@ def _render_human(problem: OptimizationProblem, result: SolveResult) -> str:
     return "\n".join(lines)
 
 
-@app.command()
-def solve(
-    problem_file: Path = typer.Argument(
-        ..., help="Path to an OptimizationProblem JSON file"
-    ),
-    backend: Optional[str] = typer.Option(
-        None, "--backend", help="Override solver.backend from the JSON"
-    ),
-    json_output: bool = typer.Option(
-        False, "--json", help="Print the full SolveResult as JSON"
-    ),
+# The arguments ``solve``, ``validate`` and ``recommend`` share, declared
+# once. Each ``--json`` option keeps its own declaration: its help names the
+# result model that command prints.
+ProblemFileArgument = Annotated[
+    Path, typer.Argument(help="Path to an OptimizationProblem JSON file")
+]
+BackendOption = Annotated[
+    Optional[str],
+    typer.Option("--backend", help="Override solver.backend from the JSON"),
+]
+
+ResultT = TypeVar("ResultT", bound=BaseModel)
+
+
+def _run(
+    problem_file: Path,
+    backend: Optional[str],
+    json_output: bool,
+    call: Callable[[OptimizationService, OptimizationProblem], ResultT],
+    render: Callable[[OptimizationProblem, ResultT], str],
+    failed: Callable[[ResultT], bool],
 ) -> None:
-    """Solve an optimization problem loaded from a JSON file."""
+    """The shared body of ``solve``, ``validate`` and ``recommend``.
+
+    Loads the problem, applies ``--backend`` when one is given, wires the
+    service from the environment — the same composition root as the MCP
+    server (spec §30) — and makes the command's one delegating ``call``.
+    The result is printed as JSON or through the command's ``render``, and
+    the process exits 1 when ``failed`` says so. No optimization logic
+    lives here.
+    """
     problem = _load_problem(problem_file)
     if backend is not None:
         problem = _override_backend(problem, backend)
 
-    # Same composition root as the MCP server (spec §30).
-    result = _build_state().service.solve(problem)
+    result = call(_build_state().service, problem)
 
     if json_output:
         typer.echo(result.model_dump_json(indent=2))
     else:
-        typer.echo(_render_human(problem, result))
+        typer.echo(render(problem, result))
 
-    if result.status != "success":
+    if failed(result):
         raise typer.Exit(code=1)
+
+
+@app.command()
+def solve(
+    problem_file: ProblemFileArgument,
+    backend: BackendOption = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print the full SolveResult as JSON")
+    ] = False,
+) -> None:
+    """Solve an optimization problem loaded from a JSON file."""
+    _run(
+        problem_file,
+        backend,
+        json_output,
+        call=lambda service, problem: service.solve(problem),
+        render=_render_human,
+        failed=lambda result: result.status != "success",
+    )
 
 
 def _render_validation(
@@ -266,31 +335,23 @@ def _render_validation(
 
 @app.command()
 def validate(
-    problem_file: Path = typer.Argument(
-        ..., help="Path to an OptimizationProblem JSON file"
-    ),
-    backend: Optional[str] = typer.Option(
-        None, "--backend", help="Override solver.backend from the JSON"
-    ),
-    json_output: bool = typer.Option(
-        False, "--json", help="Print the full ProblemValidationResult as JSON"
-    ),
+    problem_file: ProblemFileArgument,
+    backend: BackendOption = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print the full ProblemValidationResult as JSON"),
+    ] = False,
 ) -> None:
     """Validate an optimization problem without solving it."""
-    problem = _load_problem(problem_file)
-    if backend is not None:
-        problem = _override_backend(problem, backend)
-
-    # Same composition root and the same one-line delegation as MCP.
-    result = _build_state().service.validate(problem)
-
-    if json_output:
-        typer.echo(result.model_dump_json(indent=2))
-    else:
-        typer.echo(_render_validation(problem, result))
-
-    if not result.valid:
-        raise typer.Exit(code=1)
+    # The same one-line delegation as MCP.
+    _run(
+        problem_file,
+        backend,
+        json_output,
+        call=lambda service, problem: service.validate(problem),
+        render=_render_validation,
+        failed=lambda result: not result.valid,
+    )
 
 
 def _render_recommendation(
@@ -332,30 +393,26 @@ def _render_recommendation(
 
 @app.command()
 def recommend(
-    problem_file: Path = typer.Argument(
-        ..., help="Path to an OptimizationProblem JSON file"
-    ),
-    json_output: bool = typer.Option(
-        False, "--json", help="Print the full BackendRecommendationResult as JSON"
-    ),
+    problem_file: ProblemFileArgument,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print the full BackendRecommendationResult as JSON"),
+    ] = False,
 ) -> None:
     """Rank the backends for a problem without solving it.
 
     Advisory only: ``solve`` still uses solver.backend exactly as given.
     """
-    problem = _load_problem(problem_file)
-
-    # Same composition root and the same one-line delegation as MCP; no
-    # ranking logic lives here.
-    result = _build_state().service.recommend(problem)
-
-    if json_output:
-        typer.echo(result.model_dump_json(indent=2))
-    else:
-        typer.echo(_render_recommendation(problem, result))
-
-    if not result.valid:
-        raise typer.Exit(code=1)
+    # The same one-line delegation as MCP; no ranking logic lives here, and
+    # there is no --backend: every backend is ranked.
+    _run(
+        problem_file,
+        None,
+        json_output,
+        call=lambda service, problem: service.recommend(problem),
+        render=_render_recommendation,
+        failed=lambda result: not result.valid,
+    )
 
 
 def _format_limits(limits: dict[str, float | int]) -> str:

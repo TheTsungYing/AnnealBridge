@@ -25,6 +25,7 @@ from annealbridge.interfaces.composition import (  # noqa: F401  (re-exports)
     build_state,
     build_state_from_policy,
 )
+from annealbridge.interfaces.composition import exit_on_settings_error
 from annealbridge.version import package_version
 
 # The smallest complete problem, shown to the host at initialize so an agent
@@ -163,6 +164,17 @@ def _port_argument(value: str) -> int:
         raise argparse.ArgumentTypeError(str(exc)) from None
 
 
+def _add_version_argument(parser: argparse.ArgumentParser) -> None:
+    """``--version``: print ``annealbridge <version>`` and exit 0, with the
+    same text and help as the CLI's ``--version``."""
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"annealbridge {package_version()}",
+        help="Show the version and exit.",
+    )
+
+
 def main() -> None:
     """Entry point for ``annealbridge-mcp`` (spec §25).
 
@@ -175,6 +187,10 @@ def main() -> None:
     Invalid ``ANNEALBRIDGE_*`` settings are reported on stderr and end the
     process with exit code 2 instead of a traceback.
 
+    ``--version`` is answered first, before the settings are read: it prints
+    ``annealbridge <version>`` and exits 0 even when those settings are
+    invalid, and logs no unknown-variable warning.
+
     The ``annealbridge-mcp`` console script does not point here directly: it
     enters through ``annealbridge.interfaces.mcp_entrypoint``, which imports
     this module lazily so a core-only install (no ``[mcp]`` extra) reports the
@@ -182,15 +198,21 @@ def main() -> None:
     ``python -m annealbridge.interfaces.mcp.server`` still reaches this
     function unchanged.
     """
+    # Only --version is recognised here; everything else, --help included,
+    # is left to the full parser, which needs the settings for its defaults.
+    version_parser = argparse.ArgumentParser(prog="annealbridge-mcp", add_help=False)
+    _add_version_argument(version_parser)
+    version_parser.parse_known_args()
     try:
         settings = load_settings()
     except SettingsError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(2)
+        exit_on_settings_error(exc)
     parser = argparse.ArgumentParser(
         prog="annealbridge-mcp",
         description="Run the AnnealBridge MCP server.",
     )
+    # Already answered above; declared again so --help lists it.
+    _add_version_argument(parser)
     parser.add_argument(
         "--transport",
         choices=("stdio", "streamable-http"),

@@ -38,6 +38,7 @@ from annealbridge.models import OptimizationProblem, SolverPreferences, catalog_
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.solvers import SolverRegistry
 import annealbridge.solvers.metadata as metadata_module
+import annealbridge.solvers.ocean as ocean_module
 from annealbridge.solvers.metadata import guarded_call, redact
 from tests.fakes.declared_backend import (
     FAKE_CREDENTIAL_ENV,
@@ -376,6 +377,19 @@ class TestEveryCredentialBearingBackendDeclaresOnConstruction:
     ``SolverRegistry.default()`` so a seventh backend is covered the moment
     it declares a credential, with no edit to this test.
     """
+
+    @pytest.fixture(autouse=True)
+    def _no_ocean_config_secrets(self, monkeypatch):
+        # Clearing ``_SECRET_SOURCES`` does not stop a D-Wave constructor from
+        # registering the ``ocean_config`` source again, and with
+        # dwave-cloud-client installed that source reads Ocean's merged
+        # configuration — where the env token wins — so it would mask FAKE_KEY
+        # with no declaration at all. ``register_ocean_config_token`` looks
+        # ``_ocean_config_secrets`` up by module-global name when it runs, so
+        # the source a constructor registers here yields nothing and the
+        # D-Wave proof, like every other, can only come from the declaration.
+        monkeypatch.setattr(ocean_module, "_ocean_config_secrets", lambda: ())
+        monkeypatch.setattr(ocean_module, "_resolve_ocean_config", lambda: ("ok", None))
 
     @pytest.mark.parametrize("backend_class, env_vars", CREDENTIAL_BEARING_BACKENDS)
     def test_construction_alone_declares_the_env_vars(

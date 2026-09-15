@@ -136,22 +136,18 @@ class ServerSettings(BaseSettings):
         return validate_limits(value)
 
     def to_policy(self) -> ExecutionPolicy:
-        """Build the :class:`ExecutionPolicy` these settings describe."""
+        """Build the :class:`ExecutionPolicy` these settings describe.
+
+        Copies exactly the fields ``ExecutionPolicy`` declares, by name, so
+        a limit added to both models reaches the policy without this method
+        having to list it. The settings-only fields (``sa_workers``,
+        ``http_host``, ``http_port``) are left out on purpose rather than
+        passed and silently ignored: they configure the composition root,
+        not the policy. That every policy field exists here with the same
+        type, default and bounds is pinned by ``tests/unit/test_settings.py``.
+        """
         return ExecutionPolicy(
-            allow_remote=self.allow_remote,
-            allow_remote_retries=self.allow_remote_retries,
-            exact_max_variables=self.exact_max_variables,
-            max_qpu_reads=self.max_qpu_reads,
-            max_qpu_annealing_time_us=self.max_qpu_annealing_time_us,
-            max_remote_time_seconds=self.max_remote_time_seconds,
-            max_concurrent_solves=self.max_concurrent_solves,
-            max_local_reads=self.max_local_reads,
-            max_sweeps=self.max_sweeps,
-            max_local_retries=self.max_local_retries,
-            max_remote_retries=self.max_remote_retries,
-            max_top_k=self.max_top_k,
-            enabled_backends=self.enabled_backends,
-            limits=self.limits,
+            **{name: getattr(self, name) for name in ExecutionPolicy.model_fields}
         )
 
 
