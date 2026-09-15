@@ -13,7 +13,11 @@ import pytest
 
 from annealbridge.compiler import BQMCompiler
 from annealbridge.exceptions import CompilationError
-from annealbridge.models import OptimizationProblem, SolverCapabilities
+from annealbridge.models import (
+    OptimizationProblem,
+    SolverCapabilities,
+    SolverPreferences,
+)
 from annealbridge.solvers import SolverRegistry
 from annealbridge.validation import validate_problem, validate_problem_full
 from annealbridge.validation import problem_validator
@@ -1194,3 +1198,90 @@ class TestBoundsAwareObjectiveScale:
         # corners {0, 0, -5, 3} -> 8; total 25.
         assert result.objective_scale == 25.0
         assert compute_objective_scale(problem.objective) == 4.0  # binary reading
+
+
+class TestIgnoredParameters:
+    """The pure decision helper behind the PARAMETER_IGNORED warnings (§9.3).
+
+    The list is asserted whole, so both the membership and the order the
+    warnings are emitted in are pinned.
+    """
+
+    def test_defaults_are_never_reported(self):
+        # Every preference at its default: nothing is "ignored" even when the
+        # declaration supports none of them.
+        assert (
+            problem_validator._ignored_parameters(
+                SolverPreferences(),
+                caps(
+                    supports_num_reads=False,
+                    supports_num_sweeps=False,
+                    exhaustive=True,
+                ),
+                "bqm",
+            )
+            == []
+        )
+
+    def test_cqm_path_ignores_penalty_multiplier_and_retries(self):
+        assert problem_validator._ignored_parameters(
+            SolverPreferences(penalty_multiplier=3.0, max_retries=1),
+            caps(supported_model_types=["cqm"]),
+            "cqm",
+        ) == [
+            ("penalty_multiplier", "applies no hard penalty on the CQM path"),
+            (
+                "max_retries",
+                "applies no hard penalty on the CQM path, so there is nothing to retry",
+            ),
+        ]
+
+    def test_exhaustive_backend_ignores_retries_on_the_bqm_path(self):
+        assert problem_validator._ignored_parameters(
+            SolverPreferences(max_retries=1), caps(exhaustive=True), "bqm"
+        ) == [("max_retries", "is exhaustive, so a retry can never surface new samples")]
+
+    def test_unsupported_reads_and_sweeps(self):
+        assert problem_validator._ignored_parameters(
+            SolverPreferences(num_reads=50, num_sweeps=10),
+            caps(supports_num_reads=False, supports_num_sweeps=False),
+            "bqm",
+        ) == [
+            ("num_reads", "does not take a number of reads"),
+            ("num_sweeps", "does not take a number of sweeps"),
+        ]
+
+    def test_every_condition_at_once_keeps_the_reporting_order(self):
+        assert problem_validator._ignored_parameters(
+            SolverPreferences(
+                num_reads=50, num_sweeps=10, penalty_multiplier=3.0, max_retries=1
+            ),
+            caps(
+                supports_num_reads=False,
+                supports_num_sweeps=False,
+                exhaustive=True,
+                supported_model_types=["cqm"],
+            ),
+            "cqm",
+        ) == [
+            ("num_reads", "does not take a number of reads"),
+            ("num_sweeps", "does not take a number of sweeps"),
+            ("penalty_multiplier", "applies no hard penalty on the CQM path"),
+            (
+                "max_retries",
+                "applies no hard penalty on the CQM path, so there is nothing to retry",
+            ),
+        ]
+
+    def test_a_backend_that_honours_everything_reports_nothing(self):
+        # Non-default across the board, but every preference has an effect.
+        assert (
+            problem_validator._ignored_parameters(
+                SolverPreferences(
+                    num_reads=50, num_sweeps=10, penalty_multiplier=3.0, max_retries=1
+                ),
+                caps(),
+                "bqm",
+            )
+            == []
+        )

@@ -48,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compile/solve/validate loop is split into `_prepare_attempts`,
   `_solve_attempt` and the pure `_infeasible_message`, with the last
   attempt's metadata assigned in exactly one place.
+- Internal tidy-up of `validation/` and `orchestration/limits.py`, with a new
+  `models/reflection.py` (no behaviour change): the backend-fit warnings are
+  split into `_warn_exact_limits` and `_warn_embedding_density`, the decision
+  behind `PARAMETER_IGNORED` is the pure `_ignored_parameters`, and the
+  annotation reflection the validator and the limit checks each carried is
+  now one set of primitives in `models/reflection.py`. Every warning code,
+  message, path and order is unchanged.
 
 ### Performance
 

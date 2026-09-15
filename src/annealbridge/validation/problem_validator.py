@@ -21,8 +21,6 @@ backend, never reads policy and never imports ``solvers`` (spec §4).
 
 import logging
 import math
-import types
-import typing
 from collections import Counter
 
 from pydantic import BaseModel, Field
@@ -38,6 +36,7 @@ from annealbridge.models import (
     Variable,
     catalog_error,
 )
+from annealbridge.models.reflection import is_number_type, model_class, union_members
 from annealbridge.validation.estimates import (
     Bounds,
     accumulate_terms,
@@ -110,57 +109,29 @@ VALIDATOR_ERROR_CODES: frozenset[str] = frozenset(
 )
 
 
-def _optional_members(annotation: object) -> list[object] | None:
-    """The non-None members of an optional union annotation, else None.
-
-    Accepts both spellings — ``types.UnionType`` (``X | None``) and
-    ``typing.Union`` / ``Optional[X]``; anything that is not a union
-    (a bare type, a Literal, ...) yields None.
-    """
-    origin = typing.get_origin(annotation)
-    if origin is not types.UnionType and origin is not typing.Union:
-        return None
-    return [arg for arg in typing.get_args(annotation) if arg is not type(None)]
-
-
 def _optional_model(annotation: object) -> type[BaseModel] | None:
     """The ``Model`` in a ``Model | None`` annotation, else None (3a §9.4).
 
     Only a union of exactly one BaseModel subclass with None counts as an
-    option block; ``int | None`` (``seed``) and bare types do not.
+    option block; ``int | None`` (``seed``), bare types and a model wrapped
+    in ``Annotated`` or ``list`` do not. Both union spellings are accepted
+    (``X | None`` and ``Optional[X]``).
     """
-    members = _optional_members(annotation)
+    members = union_members(annotation)
     if members is None or len(members) != 1:
         return None
-    (member,) = members
-    if isinstance(member, type) and issubclass(member, BaseModel):
-        return member
-    return None
-
-
-def _unwrap_annotated(annotation: object) -> object:
-    """The underlying type of an ``Annotated[T, ...]``, else the annotation.
-
-    The IR's numeric fields are ``Annotated`` aliases (``Quantity`` / ``Count``
-    from models/quantities.py, 2026-09-09 review F-11); the reflection below
-    cares about ``T``, not about the validators attached to it.
-    """
-    while hasattr(annotation, "__metadata__"):  # an Annotated alias
-        annotation = typing.get_args(annotation)[0]
-    return annotation
+    return model_class(members[0])
 
 
 def _optional_number(annotation: object) -> bool:
     """True for ``int | None`` / ``float | None`` (either union spelling).
 
-    ``Annotated`` wrappers are transparent, so ``Quantity | None`` counts.
+    ``Annotated`` wrappers are transparent, so ``Quantity | None`` counts;
+    ``bool | None`` and a bare ``int`` do not, nor does a union of several
+    numeric types.
     """
-    members = _optional_members(annotation)
-    return (
-        members is not None
-        and len(members) == 1
-        and _unwrap_annotated(members[0]) in (int, float)
-    )
+    members = union_members(annotation)
+    return members is not None and len(members) == 1 and is_number_type(members[0])
 
 
 def _option_blocks() -> dict[str, type[BaseModel]]:
@@ -400,9 +371,8 @@ def validate_problem_full(
     _warn_constraint_ranges(problem, bounds, warnings)
     _warn_integer_encoding(problem, bounds, model_type, warnings)
     if capabilities is not None:
-        _warn_backend_fit(
-            problem, estimated, bounds, capabilities, max_compiled_variables, warnings
-        )
+        _warn_exact_limits(estimated, capabilities, max_compiled_variables, warnings)
+        _warn_embedding_density(problem, estimated, bounds, capabilities, warnings)
         _warn_ignored_parameters(problem, capabilities, model_type, warnings)
     warnings.extend(duplicate_warnings)
 
@@ -611,15 +581,13 @@ def _warn_integer_encoding(
         )
 
 
-def _warn_backend_fit(
-    problem: OptimizationProblem,
+def _warn_exact_limits(
     estimated: int,
-    bounds: Bounds,
     caps: SolverCapabilities,
     max_compiled_variables: int | None,
     warnings: list[SolveError],
 ) -> None:
-    """3a §9.3: size advice from the backend's declared capabilities."""
+    """3a §9.3: size advice for an exhaustive backend."""
     if caps.exhaustive and max_compiled_variables is not None:
         if estimated > max_compiled_variables:
             warnings.append(
@@ -647,6 +615,15 @@ def _warn_backend_fit(
                 )
             )
 
+
+def _warn_embedding_density(
+    problem: OptimizationProblem,
+    estimated: int,
+    bounds: Bounds,
+    caps: SolverCapabilities,
+    warnings: list[SolveError],
+) -> None:
+    """3a §9.3 / 3b §9.3: density advice for a backend that needs minor-embedding."""
     if caps.requires_embedding:
         # A squared penalty forms its clique over compiled *bits* (3b §9.3):
         # one per binary variable, the encoding bits of an integer one, plus
@@ -687,6 +664,34 @@ def _is_default(solver: SolverPreferences, field: str) -> bool:
     return getattr(solver, field) == getattr(_DEFAULT_SOLVER_PREFERENCES, field)
 
 
+def _ignored_parameters(
+    solver: SolverPreferences, caps: SolverCapabilities, model_type: ModelType
+) -> list[tuple[str, str]]:
+    """Non-default preferences the backend or the model path will ignore.
+
+    ``(field, reason)`` pairs, in the order the warnings are reported.
+    """
+    ignored: list[tuple[str, str]] = []
+    if not _is_default(solver, "num_reads") and not caps.supports_num_reads:
+        ignored.append(("num_reads", "does not take a number of reads"))
+    if not _is_default(solver, "num_sweeps") and not caps.supports_num_sweeps:
+        ignored.append(("num_sweeps", "does not take a number of sweeps"))
+    if not _is_default(solver, "penalty_multiplier") and model_type == "cqm":
+        ignored.append(
+            ("penalty_multiplier", "applies no hard penalty on the CQM path")
+        )
+    if not _is_default(solver, "max_retries") and (
+        model_type == "cqm" or caps.exhaustive
+    ):
+        reason = (
+            "applies no hard penalty on the CQM path, so there is nothing to retry"
+            if model_type == "cqm"
+            else "is exhaustive, so a retry can never surface new samples"
+        )
+        ignored.append(("max_retries", reason))
+    return ignored
+
+
 def _warn_ignored_parameters(
     problem: OptimizationProblem,
     caps: SolverCapabilities,
@@ -710,25 +715,7 @@ def _warn_ignored_parameters(
             )
         )
 
-    ignored: list[tuple[str, str]] = []  # (field, reason)
-    if not _is_default(solver, "num_reads") and not caps.supports_num_reads:
-        ignored.append(("num_reads", "does not take a number of reads"))
-    if not _is_default(solver, "num_sweeps") and not caps.supports_num_sweeps:
-        ignored.append(("num_sweeps", "does not take a number of sweeps"))
-    if not _is_default(solver, "penalty_multiplier") and model_type == "cqm":
-        ignored.append(
-            ("penalty_multiplier", "applies no hard penalty on the CQM path")
-        )
-    if not _is_default(solver, "max_retries") and (
-        model_type == "cqm" or caps.exhaustive
-    ):
-        reason = (
-            "applies no hard penalty on the CQM path, so there is nothing to retry"
-            if model_type == "cqm"
-            else "is exhaustive, so a retry can never surface new samples"
-        )
-        ignored.append(("max_retries", reason))
-    for field, reason in ignored:
+    for field, reason in _ignored_parameters(solver, caps, model_type):
         warnings.append(
             _warning(
                 "PARAMETER_IGNORED",

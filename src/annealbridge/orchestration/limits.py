@@ -7,9 +7,7 @@ concrete backend or compiler (spec §4, overview principle 4).
 """
 
 import logging
-import types
-import typing
-from typing import Annotated, get_args, get_origin
+from typing import get_args
 
 from pydantic import BaseModel
 
@@ -21,6 +19,12 @@ from annealbridge.models import (
     SolverCapabilities,
     SolverPreferences,
     catalog_error,
+)
+from annealbridge.models.reflection import (
+    is_number_type,
+    model_class,
+    strip_annotated,
+    union_members,
 )
 from annealbridge.orchestration.policy import ExecutionPolicy
 from annealbridge.solvers.base import SolverBackend
@@ -51,12 +55,16 @@ _AVAILABILITY_FALLBACK: tuple[SolveStatus, str] = AVAILABILITY_MAP["unavailable"
 def _nested_model(annotation: object) -> type[BaseModel] | None:
     """The BaseModel subclass a field annotation refers to, if any.
 
-    Handles both a bare model type and ``Model | None``; anything else
-    (``int``, ``float``, ...) is a leaf and returns None.
+    Looks at the annotation itself, then at its immediate type arguments, and
+    returns the first BaseModel subclass found: a bare ``Model`` and
+    ``Model | None``, but also any generic alias with a model argument such as
+    ``list[Model]`` or ``Annotated[Model, ...]``. Everything else (``int``,
+    ``float``, ``Literal[...]``, ...) is a leaf and returns None.
     """
     for candidate in (annotation, *get_args(annotation)):
-        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
-            return candidate
+        model = model_class(candidate)
+        if model is not None:
+            return model
     return None
 
 
@@ -68,13 +76,11 @@ def _numeric_leaf(annotation: object) -> bool:
     member to be exactly ``int`` or ``float``. ``bool`` is not numeric
     even though it subclasses ``int``: a limit on a flag is meaningless.
     """
-    origin = get_origin(annotation)
-    if origin is Annotated:
-        return _numeric_leaf(get_args(annotation)[0])
-    if origin is types.UnionType or origin is typing.Union:
-        members = [arg for arg in get_args(annotation) if arg is not type(None)]
+    annotation = strip_annotated(annotation)
+    members = union_members(annotation)
+    if members is not None:
         return bool(members) and all(_numeric_leaf(member) for member in members)
-    return annotation is int or annotation is float
+    return is_number_type(annotation)
 
 
 def read_preference(preferences: SolverPreferences, path: str) -> float | int | None:
