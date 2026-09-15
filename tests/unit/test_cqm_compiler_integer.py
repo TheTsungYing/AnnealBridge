@@ -20,7 +20,6 @@
 import itertools
 import json
 import random
-from pathlib import Path
 
 import dimod
 import numpy as np
@@ -54,13 +53,13 @@ from annealbridge.validation.estimates import (
     estimate_cqm_variables,
     variable_bounds,
 )
+from tests.conftest import EXAMPLES_DIR
 from tests.fakes.local_cqm_backend import FAKE_LOCAL_CQM_NAME, FakeLocalCQMBackend
-
-EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
+from tests.model_builders import lin, quad
 
 
 # --------------------------------------------------------------------------
-# Helpers（與 test_bqm_compiler_integer.py 同形式，刻意不跨檔 import）
+# Helpers（與 test_bqm_compiler_integer.py 同形式；lin / quad 共用 tests/model_builders.py）
 # --------------------------------------------------------------------------
 
 
@@ -70,16 +69,6 @@ def integer(name: str, lower: int, upper: int) -> Variable:
 
 def binary(name: str) -> Variable:
     return Variable(name=name)
-
-
-def lin(variable: str, coefficient: float) -> LinearTerm:
-    return LinearTerm(variable=variable, coefficient=coefficient)
-
-
-def quad(variable1: str, variable2: str, coefficient: float) -> QuadraticTerm:
-    return QuadraticTerm(
-        variable1=variable1, variable2=variable2, coefficient=coefficient
-    )
 
 
 def constraint(
@@ -684,7 +673,7 @@ def solve_on_fake(problem: OptimizationProblem, **preferences):
 
 
 def load_example(filename: str) -> OptimizationProblem:
-    payload = json.loads((EXAMPLES / filename).read_text(encoding="utf-8"))
+    payload = json.loads((EXAMPLES_DIR / filename).read_text(encoding="utf-8"))
     return OptimizationProblem.model_validate(payload)
 
 

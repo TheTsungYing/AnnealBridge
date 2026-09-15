@@ -10,15 +10,15 @@ reads before choosing a backend.
 
 import json
 import os
-from pathlib import Path
 
 import pytest
 
 from annealbridge.interfaces.capabilities import build_capabilities
 from annealbridge.interfaces.composition import build_state
 from annealbridge.models import OptimizationProblem
+from tests.conftest import EXAMPLES_DIR
 
-KNAPSACK = Path(__file__).resolve().parents[2] / "examples" / "knapsack.json"
+KNAPSACK = EXAMPLES_DIR / "knapsack.json"
 
 
 @pytest.fixture

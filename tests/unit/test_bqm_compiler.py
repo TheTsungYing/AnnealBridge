@@ -8,6 +8,7 @@ import pytest
 from annealbridge.compiler import BQMCompiler
 from annealbridge.models import OptimizationProblem
 from annealbridge.penalty.strategy import compute_objective_scale
+from tests.builders import hard, lin, quad, soft
 
 
 def make_problem(
@@ -32,37 +33,6 @@ def make_problem(
             "constraints": constraints or [],
         }
     )
-
-
-def lin(variable: str, coefficient: float) -> dict:
-    return {"variable": variable, "coefficient": coefficient}
-
-
-def quad(variable1: str, variable2: str, coefficient: float) -> dict:
-    return {"variable1": variable1, "variable2": variable2, "coefficient": coefficient}
-
-
-def hard(constraint_id: str, operator: str, rhs: float, terms: list[dict]) -> dict:
-    return {
-        "id": constraint_id,
-        "type": "hard",
-        "terms": terms,
-        "operator": operator,
-        "rhs": rhs,
-    }
-
-
-def soft(
-    constraint_id: str, operator: str, rhs: float, terms: list[dict], weight: float
-) -> dict:
-    return {
-        "id": constraint_id,
-        "type": "soft",
-        "terms": terms,
-        "operator": operator,
-        "rhs": rhs,
-        "weight": weight,
-    }
 
 
 def compile_problem(problem: OptimizationProblem, hard_penalty: float = 10.0):

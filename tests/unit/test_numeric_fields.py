@@ -12,7 +12,6 @@ model it belongs here too.
 """
 
 import json
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -30,8 +29,7 @@ from annealbridge.models import (
     SolverPreferences,
     Variable,
 )
-
-EXAMPLES_DIR = Path(__file__).resolve().parents[2] / "examples"
+from tests.conftest import EXAMPLES_DIR
 
 # (model, legal base payload, field under test, "int" | "float")
 NUMERIC_FIELDS = [

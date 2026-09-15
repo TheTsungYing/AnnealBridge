@@ -6,18 +6,16 @@ recorded attempt carries the three stage timings plus the compiled size.
 """
 
 from importlib.metadata import version
-from pathlib import Path
 
 from annealbridge.models import OptimizationProblem
 from annealbridge.orchestration import OptimizationService
 from annealbridge.validation.estimates import estimate_compiled_variables
-
-EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
+from tests.conftest import EXAMPLES_DIR
 
 
 def _knapsack(backend: str, **solver) -> OptimizationProblem:
     problem = OptimizationProblem.model_validate_json(
-        (EXAMPLES / "knapsack.json").read_text(encoding="utf-8")
+        (EXAMPLES_DIR / "knapsack.json").read_text(encoding="utf-8")
     )
     return problem.model_copy(
         update={"solver": problem.solver.model_copy(update={"backend": backend, **solver})}

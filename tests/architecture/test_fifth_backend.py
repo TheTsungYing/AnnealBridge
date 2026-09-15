@@ -40,6 +40,7 @@ from annealbridge.solvers import SolverRegistry
 import annealbridge.solvers.metadata as metadata_module
 import annealbridge.solvers.ocean as ocean_module
 from annealbridge.solvers.metadata import guarded_call, redact
+from tests.conftest import EXAMPLES_DIR
 from tests.fakes.declared_backend import (
     FAKE_CREDENTIAL_ENV,
     FAKE_CREDENTIAL_HEADER,
@@ -51,7 +52,7 @@ from tests.fakes.declared_backend import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src" / "annealbridge"
-KNAPSACK = REPO_ROOT / "examples" / "knapsack.json"
+KNAPSACK = EXAMPLES_DIR / "knapsack.json"
 
 ITERATIONS_LIMIT = 1000.0
 

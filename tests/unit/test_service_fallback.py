@@ -21,7 +21,6 @@ in ``test_exceptions.py``.
 
 import json
 import logging
-from pathlib import Path
 
 import pytest
 
@@ -35,6 +34,7 @@ from annealbridge.models import (
 )
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.solvers import RawSolverResult, SolverRegistry
+from tests.conftest import EXAMPLES_DIR
 from tests.fakes.declared_backend import (
     FAKE_CREDENTIAL_ENV,
     FAKE_DECLARED_NAME,
@@ -43,7 +43,7 @@ from tests.fakes.declared_backend import (
     FakeDeclaredBackend,
 )
 
-KNAPSACK = Path(__file__).resolve().parents[2] / "examples" / "knapsack.json"
+KNAPSACK = EXAMPLES_DIR / "knapsack.json"
 FAKE_KEY = "fake-key-ABC123"
 
 

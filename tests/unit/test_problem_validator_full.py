@@ -27,37 +27,7 @@ from annealbridge.validation.estimates import (
     count_slack_bits,
     estimate_compiled_variables,
 )
-
-
-def lin(variable: str, coefficient: float) -> dict:
-    return {"variable": variable, "coefficient": coefficient}
-
-
-def quad(variable1: str, variable2: str, coefficient: float) -> dict:
-    return {"variable1": variable1, "variable2": variable2, "coefficient": coefficient}
-
-
-def hard(constraint_id: str, operator: str, rhs: float, terms: list[dict]) -> dict:
-    return {
-        "id": constraint_id,
-        "type": "hard",
-        "terms": terms,
-        "operator": operator,
-        "rhs": rhs,
-    }
-
-
-def soft(
-    constraint_id: str, operator: str, rhs: float, terms: list[dict], weight: float
-) -> dict:
-    return {
-        "id": constraint_id,
-        "type": "soft",
-        "terms": terms,
-        "operator": operator,
-        "rhs": rhs,
-        "weight": weight,
-    }
+from tests.builders import hard, lin, quad, soft
 
 
 def make_problem(

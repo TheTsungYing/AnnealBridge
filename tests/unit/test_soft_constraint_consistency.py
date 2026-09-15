@@ -49,6 +49,7 @@ from annealbridge.validation.estimates import (
     variable_bounds,
 )
 from tests.fakes.local_cqm_backend import FAKE_LOCAL_CQM_NAME, FakeLocalCQMBackend
+from tests.model_builders import lin
 
 
 # --------------------------------------------------------------------------
@@ -62,10 +63,6 @@ def binary(name: str) -> Variable:
 
 def integer(name: str, lower: int, upper: int) -> Variable:
     return Variable(name=name, type="integer", lower_bound=lower, upper_bound=upper)
-
-
-def lin(variable: str, coefficient: float) -> LinearTerm:
-    return LinearTerm(variable=variable, coefficient=coefficient)
 
 
 def soft(identifier: str, operator: str, rhs: float, terms, weight: float) -> Constraint:

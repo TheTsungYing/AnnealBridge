@@ -18,7 +18,6 @@ import itertools
 import json
 import math
 import random
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -44,8 +43,8 @@ from annealbridge.validation.estimates import (
     integer_encoding_bits,
     variable_bounds,
 )
-
-EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
+from tests.conftest import EXAMPLES_DIR
+from tests.model_builders import lin, quad
 
 HARD_PENALTY = 10.0
 
@@ -61,16 +60,6 @@ def integer(name: str, lower: int, upper: int) -> Variable:
 
 def binary(name: str) -> Variable:
     return Variable(name=name)
-
-
-def lin(variable: str, coefficient: float) -> LinearTerm:
-    return LinearTerm(variable=variable, coefficient=coefficient)
-
-
-def quad(variable1: str, variable2: str, coefficient: float) -> QuadraticTerm:
-    return QuadraticTerm(
-        variable1=variable1, variable2=variable2, coefficient=coefficient
-    )
 
 
 def constraint(
@@ -240,7 +229,7 @@ KNAPSACK_OBJECTIVE = 34.0
 
 
 def load_knapsack() -> OptimizationProblem:
-    payload = json.loads((EXAMPLES / "integer_knapsack.json").read_text(encoding="utf-8"))
+    payload = json.loads((EXAMPLES_DIR / "integer_knapsack.json").read_text(encoding="utf-8"))
     return OptimizationProblem.model_validate(payload)
 
 

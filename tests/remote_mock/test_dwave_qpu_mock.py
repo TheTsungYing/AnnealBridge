@@ -12,7 +12,6 @@ against: a sampleset that only fails when it is *resolved*
 """
 
 import sys
-import traceback
 
 import pytest
 
@@ -24,30 +23,30 @@ from annealbridge.models import (
     SolverPreferences,
 )
 from annealbridge.solvers import (
-    AvailabilityStatus,
     DWaveQPUBackend,
     SolverCapabilities,
 )
 import annealbridge.solvers.ocean as ocean_module
-from annealbridge.solvers.ocean import (
-    REASON_CONFIG_INVALID,
-    REASON_CREDENTIALS_MISSING,
-    REASON_NOT_INSTALLED,
-)
 from tests.remote_mock.conftest import (
     FAKE_EMBEDDING_CONTEXT,
     FAKE_TOKEN,
     FAKE_UNPATTERNED_TOKEN,
-    ConfigFileError,
     CountingFactory,
     EmbeddingError,
     FakeQPUSampler,
     RequestTimeout,
     SolverAuthenticationError,
     SolverFailureError,
-    SolverNotFoundError,
     ValidationError,
     make_problem,
+)
+from tests.remote_mock.ocean_contract import (
+    IsAvailableContract,
+    MetadataSanitizationContract,
+    OceanBackendCase,
+    OriginalExceptionIsNotReachableContract,
+    SamplerCachingContract,
+    SamplerInitExceptionClassificationContract,
 )
 
 
@@ -85,6 +84,22 @@ def solve_with_fake(
     compiled = compiled if compiled is not None else make_compiled_problem()
     result = backend.solve(compiled, preferences)
     return fake, compiled, result
+
+
+# The shared Ocean contracts (tests/remote_mock/ocean_contract.py) run
+# against this backend through this case.
+DWAVE_QPU_CASE = OceanBackendCase(
+    backend_cls=DWaveQPUBackend,
+    fake_sampler_cls=FakeQPUSampler,
+    backend_name="dwave_qpu",
+    make_compiled_problem=make_compiled_problem,
+    make_preferences=make_preferences,
+    expected_timing_us={
+        "qpu_access_time": 12345.0,
+        "qpu_sampling_time": 6789.0,
+        "qpu_anneal_time_per_sample": 20.0,
+    },
+)
 
 
 class TestCapabilities:
@@ -268,15 +283,8 @@ class TestSampleSetConversion:
         assert compiled.internal_variables <= set(result.variables)
 
 
-class TestMetadataSanitization:
-    def test_only_whitelisted_timing_keys_survive(self):
-        _, _, result = solve_with_fake(make_preferences())
-
-        assert result.metadata.timing_us == {
-            "qpu_access_time": 12345.0,
-            "qpu_sampling_time": 6789.0,
-            "qpu_anneal_time_per_sample": 20.0,
-        }
+class TestMetadataSanitization(MetadataSanitizationContract):
+    case = DWAVE_QPU_CASE
 
     def test_dirty_info_keys_do_not_leak_anywhere(self):
         _, _, result = solve_with_fake(make_preferences())
@@ -400,62 +408,14 @@ class TestExceptionClassification:
         assert FAKE_TOKEN not in str(exc_info.value)
 
 
-class TestSamplerInitExceptionClassification:
+class TestSamplerInitExceptionClassification(SamplerInitExceptionClassificationContract):
     """Spec §15: sampler construction has its own classification table.
 
     ``DWaveSampler()`` runs Client.from_config() / get_solver(), so a
     ValueError there is a *configuration* problem — never an embedding one.
     """
 
-    @pytest.mark.parametrize(
-        ("exception", "expected_code"),
-        [
-            (ValueError(f"invalid region, token={FAKE_TOKEN}"), "DWAVE_CONFIG_INVALID"),
-            (
-                ValidationError(f"1 validation error, token={FAKE_TOKEN}"),
-                "DWAVE_CONFIG_INVALID",
-            ),
-            (
-                SolverNotFoundError(f"no solver matches, token={FAKE_TOKEN}"),
-                "DWAVE_CONFIG_INVALID",
-            ),
-            (
-                ConfigFileError(f"bad dwave.conf, token={FAKE_TOKEN}"),
-                "DWAVE_CONFIG_INVALID",
-            ),
-            (
-                SolverAuthenticationError(f"invalid token={FAKE_TOKEN}"),
-                "REMOTE_AUTH_FAILED",
-            ),
-            (RequestTimeout(f"timed out, token={FAKE_TOKEN}"), "REMOTE_TIMEOUT"),
-            (
-                RuntimeError(f"client exploded, token={FAKE_TOKEN}"),
-                "REMOTE_SOLVER_ERROR",
-            ),
-        ],
-        ids=[
-            "value_error",
-            "validation_error",
-            "solver_not_found",
-            "config_file_error",
-            "auth",
-            "timeout",
-            "other",
-        ],
-    )
-    def test_factory_exceptions_map_to_codes_and_are_redacted(
-        self, exception, expected_code
-    ):
-        factory = CountingFactory(FakeQPUSampler(), failures=[exception])
-        backend = DWaveQPUBackend(sampler_factory=factory)
-
-        with pytest.raises(SolverExecutionError) as exc_info:
-            backend.solve(make_compiled_problem(), make_preferences())
-
-        assert exc_info.value.code == expected_code
-        message = str(exc_info.value)
-        assert FAKE_TOKEN not in message
-        assert "***" in message
+    case = DWAVE_QPU_CASE
 
     @pytest.mark.parametrize(
         "exception",
@@ -547,83 +507,18 @@ class TestLazySampleSetResolution:
         }
 
 
-class TestOriginalExceptionIsNotReachable:
+class TestOriginalExceptionIsNotReachable(OriginalExceptionIsNotReachableContract):
     """Spec §19: the wrapped error carries no chain back to the original,
     so a traceback dump cannot print credential-bearing text."""
 
-    def test_sample_failure_has_no_cause_or_context(self):
-        fake = FakeQPUSampler(
-            raise_on_sample=RuntimeError(f"solver exploded, token={FAKE_TOKEN}")
-        )
-        backend = DWaveQPUBackend(sampler_factory=lambda: fake)
-
-        with pytest.raises(SolverExecutionError) as exc_info:
-            backend.solve(make_compiled_problem(), make_preferences())
-
-        error = exc_info.value
-        assert error.__cause__ is None
-        assert error.__context__ is None
-        formatted = "".join(traceback.format_exception(error))
-        assert FAKE_TOKEN not in formatted
-
-    def test_factory_failure_has_no_cause_or_context(self):
-        factory = CountingFactory(
-            FakeQPUSampler(),
-            failures=[SolverNotFoundError(f"Authorization: Bearer {FAKE_TOKEN}")],
-        )
-        backend = DWaveQPUBackend(sampler_factory=factory)
-
-        with pytest.raises(SolverExecutionError) as exc_info:
-            backend.solve(make_compiled_problem(), make_preferences())
-
-        error = exc_info.value
-        assert error.__cause__ is None
-        assert error.__context__ is None
-        formatted = "".join(traceback.format_exception(error))
-        assert FAKE_TOKEN not in formatted
+    case = DWAVE_QPU_CASE
 
 
-class TestSamplerCaching:
+class TestSamplerCaching(SamplerCachingContract):
     """Spec §15: DWaveSampler() is expensive, so it is built once per
     backend instance — and a failed construction is never cached."""
 
-    def test_sampler_is_built_once_per_backend(self):
-        factory = CountingFactory(FakeQPUSampler())
-        backend = DWaveQPUBackend(sampler_factory=factory)
-        compiled = make_compiled_problem()
-
-        backend.solve(compiled, make_preferences())
-        backend.solve(compiled, make_preferences())
-
-        assert factory.calls == 1
-        assert factory.sampler.sample_calls == 2
-
-    def test_failed_construction_is_not_cached(self):
-        factory = CountingFactory(
-            FakeQPUSampler(),
-            failures=[SolverAuthenticationError(f"denied, token={FAKE_TOKEN}")],
-        )
-        backend = DWaveQPUBackend(sampler_factory=factory)
-        compiled = make_compiled_problem()
-
-        with pytest.raises(SolverExecutionError) as exc_info:
-            backend.solve(compiled, make_preferences())
-        assert exc_info.value.code == "REMOTE_AUTH_FAILED"
-
-        result = backend.solve(compiled, make_preferences())
-
-        assert factory.calls == 2
-        assert result.backend == "dwave_qpu"
-        assert factory.sampler.sample_calls == 1
-
-    def test_each_backend_instance_builds_its_own_sampler(self):
-        factory = CountingFactory(FakeQPUSampler())
-        compiled = make_compiled_problem()
-
-        DWaveQPUBackend(sampler_factory=factory).solve(compiled, make_preferences())
-        DWaveQPUBackend(sampler_factory=factory).solve(compiled, make_preferences())
-
-        assert factory.calls == 2
+    case = DWAVE_QPU_CASE
 
     def test_rotated_token_rebuilds_the_sampler(self, monkeypatch):
         """2026-09-09 review F-21: the cache is keyed on the credential
@@ -646,27 +541,6 @@ class TestSamplerCaching:
 
         assert factory.calls == 2
 
-    def test_auth_failure_at_sampling_invalidates_the_cache(self):
-        """F-21: the cloud rejecting the client is the one signal a local
-        fingerprint cannot see, so the cached sampler is dropped there."""
-        sampler = FakeQPUSampler(
-            raise_on_sample=SolverAuthenticationError(f"denied, token={FAKE_TOKEN}")
-        )
-        factory = CountingFactory(sampler)
-        backend = DWaveQPUBackend(sampler_factory=factory)
-        compiled = make_compiled_problem()
-
-        with pytest.raises(SolverExecutionError) as exc_info:
-            backend.solve(compiled, make_preferences())
-        assert exc_info.value.code == "REMOTE_AUTH_FAILED"
-        assert factory.calls == 1
-
-        sampler.raise_on_sample = None
-        result = backend.solve(compiled, make_preferences())
-
-        assert factory.calls == 2
-        assert result.backend == "dwave_qpu"
-
 
 class TestResolveTimeLimit:
     """Spec §16/§20: the QPU takes no time limit, and answering that
@@ -681,37 +555,8 @@ class TestResolveTimeLimit:
         assert factory.sampler.sample_calls == 0
 
 
-class TestIsAvailable:
+class TestIsAvailable(IsAvailableContract):
     """The backend answers through the shared check in solvers.ocean, so
     the installability / credential probes are patched there."""
 
-    def test_dwave_system_not_installed(self, monkeypatch):
-        monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: False)
-
-        assert DWaveQPUBackend().is_available() == AvailabilityStatus(
-            category="not_installed", detail=REASON_NOT_INSTALLED
-        )
-
-    def test_credentials_not_configured(self, monkeypatch):
-        monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: True)
-        monkeypatch.setattr(ocean_module, "ocean_config_status", lambda: "missing")
-
-        assert DWaveQPUBackend().is_available() == AvailabilityStatus(
-            category="credentials_missing", detail=REASON_CREDENTIALS_MISSING
-        )
-
-    def test_configuration_invalid(self, monkeypatch):
-        monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: True)
-        monkeypatch.setattr(ocean_module, "ocean_config_status", lambda: "invalid")
-
-        assert DWaveQPUBackend().is_available() == AvailabilityStatus(
-            category="config_invalid",
-            detail=REASON_CONFIG_INVALID,
-            error_code="DWAVE_CONFIG_INVALID",
-        )
-
-    def test_available_when_installed_and_configured(self, monkeypatch):
-        monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: True)
-        monkeypatch.setattr(ocean_module, "ocean_config_status", lambda: "ok")
-
-        assert DWaveQPUBackend().is_available() == AvailabilityStatus(category="available")
+    case = DWAVE_QPU_CASE

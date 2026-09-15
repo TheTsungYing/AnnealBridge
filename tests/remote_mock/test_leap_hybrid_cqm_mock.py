@@ -14,7 +14,6 @@ reported, never trusted (overview principle 2).
 """
 
 import sys
-import traceback
 import types
 
 import dimod
@@ -32,31 +31,30 @@ from annealbridge.models import (
 from annealbridge.orchestration import OptimizationService
 from annealbridge.orchestration.policy import ExecutionPolicy
 from annealbridge.solvers import (
-    AvailabilityStatus,
     LeapHybridCQMBackend,
     SolverCapabilities,
     SolverRegistry,
 )
 import annealbridge.solvers.leap_hybrid_cqm as cqm_module
-import annealbridge.solvers.ocean as ocean_module
-from annealbridge.solvers.ocean import (
-    REASON_CONFIG_INVALID,
-    REASON_CREDENTIALS_MISSING,
-    REASON_NOT_INSTALLED,
-)
 from tests.remote_mock.conftest import (
     FAKE_MIN_TIME_LIMIT,
     FAKE_TOKEN,
-    ConfigFileError,
     CountingFactory,
     FakeCQMSampler,
     RequestTimeout,
     SolverAuthenticationError,
     SolverFailureError,
     SolverNotFoundError,
-    ValidationError,
     make_problem,
     make_remote_available,
+)
+from tests.remote_mock.ocean_contract import (
+    IsAvailableContract,
+    MetadataSanitizationContract,
+    OceanBackendCase,
+    OriginalExceptionIsNotReachableContract,
+    SamplerCachingContract,
+    SamplerInitExceptionClassificationContract,
 )
 
 BACKEND = "leap_hybrid_cqm"
@@ -92,6 +90,22 @@ def solve_with_fake(
     compiled = make_compiled_problem()
     result = backend.solve(compiled, preferences)
     return fake, compiled, result
+
+
+# The shared Ocean contracts (tests/remote_mock/ocean_contract.py) run
+# against this backend through this case.
+LEAP_HYBRID_CQM_CASE = OceanBackendCase(
+    backend_cls=LeapHybridCQMBackend,
+    fake_sampler_cls=FakeCQMSampler,
+    backend_name=BACKEND,
+    make_compiled_problem=make_compiled_problem,
+    make_preferences=lambda: make_preferences(None),
+    expected_timing_us={
+        "run_time": 2900000.0,
+        "charge_time": 2871000.0,
+        "qpu_access_time": 12345.0,
+    },
+)
 
 
 def make_service(fake: FakeCQMSampler, **policy_kwargs) -> OptimizationService:
@@ -412,15 +426,8 @@ class TestSampleSetConversion:
         assert fake.sample_calls == 1
 
 
-class TestMetadataSanitization:
-    def test_only_whitelisted_timing_keys_survive(self):
-        _, _, result = solve_with_fake(make_preferences(None))
-
-        assert result.metadata.timing_us == {
-            "run_time": 2900000.0,
-            "charge_time": 2871000.0,
-            "qpu_access_time": 12345.0,
-        }
+class TestMetadataSanitization(MetadataSanitizationContract):
+    case = LEAP_HYBRID_CQM_CASE
 
     def test_dirty_info_keys_do_not_leak_anywhere(self):
         _, _, result = solve_with_fake(make_preferences(None))
@@ -496,60 +503,11 @@ class TestExceptionClassification:
         assert exc_info.value.code == "REMOTE_AUTH_FAILED"
 
 
-class TestSamplerInitExceptionClassification:
+class TestSamplerInitExceptionClassification(SamplerInitExceptionClassificationContract):
     """§17.4: sampler construction has its own table — ``SolverNotFoundError``
     / ``ConfigFileError`` / ``ValueError`` there mean invalid configuration."""
 
-    @pytest.mark.parametrize(
-        ("exception", "expected_code"),
-        [
-            (
-                SolverNotFoundError(f"no solver matches, token={FAKE_TOKEN}"),
-                "DWAVE_CONFIG_INVALID",
-            ),
-            (
-                ConfigFileError(f"bad dwave.conf, token={FAKE_TOKEN}"),
-                "DWAVE_CONFIG_INVALID",
-            ),
-            (ValueError(f"invalid region, token={FAKE_TOKEN}"), "DWAVE_CONFIG_INVALID"),
-            (
-                ValidationError(f"1 validation error, token={FAKE_TOKEN}"),
-                "DWAVE_CONFIG_INVALID",
-            ),
-            (
-                SolverAuthenticationError(f"invalid token={FAKE_TOKEN}"),
-                "REMOTE_AUTH_FAILED",
-            ),
-            (RequestTimeout(f"timed out, token={FAKE_TOKEN}"), "REMOTE_TIMEOUT"),
-            (
-                RuntimeError(f"client exploded, token={FAKE_TOKEN}"),
-                "REMOTE_SOLVER_ERROR",
-            ),
-        ],
-        ids=[
-            "solver_not_found",
-            "config_file_error",
-            "value_error",
-            "validation_error",
-            "auth",
-            "timeout",
-            "other",
-        ],
-    )
-    def test_factory_exceptions_map_to_codes_and_are_redacted(
-        self, exception, expected_code
-    ):
-        backend = LeapHybridCQMBackend(
-            sampler_factory=CountingFactory(FakeCQMSampler(), failures=[exception])
-        )
-
-        with pytest.raises(SolverExecutionError) as exc_info:
-            backend.solve(make_compiled_problem(), make_preferences(None))
-
-        assert exc_info.value.code == expected_code
-        message = str(exc_info.value)
-        assert FAKE_TOKEN not in message
-        assert "***" in message
+    case = LEAP_HYBRID_CQM_CASE
 
 
 class TestLazySampleSetResolution:
@@ -596,143 +554,22 @@ class TestLazySampleSetResolution:
         assert fake.sample_kwargs == {"time_limit": FAKE_MIN_TIME_LIMIT}
 
 
-class TestOriginalExceptionIsNotReachable:
+class TestOriginalExceptionIsNotReachable(OriginalExceptionIsNotReachableContract):
     """Phase 2 §19: no ``__cause__`` / ``__context__`` back to the raw error."""
 
-    def test_sample_failure_has_no_cause_or_context(self):
-        fake = FakeCQMSampler(
-            raise_on_sample=RuntimeError(f"solver exploded, token={FAKE_TOKEN}")
-        )
-        backend = LeapHybridCQMBackend(sampler_factory=lambda: fake)
-
-        with pytest.raises(SolverExecutionError) as exc_info:
-            backend.solve(make_compiled_problem(), make_preferences(None))
-
-        error = exc_info.value
-        assert error.__cause__ is None
-        assert error.__context__ is None
-        assert FAKE_TOKEN not in "".join(traceback.format_exception(error))
-
-    def test_factory_failure_has_no_cause_or_context(self):
-        backend = LeapHybridCQMBackend(
-            sampler_factory=CountingFactory(
-                FakeCQMSampler(),
-                failures=[SolverNotFoundError(f"Authorization: Bearer {FAKE_TOKEN}")],
-            )
-        )
-
-        with pytest.raises(SolverExecutionError) as exc_info:
-            backend.solve(make_compiled_problem(), make_preferences(None))
-
-        error = exc_info.value
-        assert error.__cause__ is None
-        assert error.__context__ is None
-        assert FAKE_TOKEN not in "".join(traceback.format_exception(error))
+    case = LEAP_HYBRID_CQM_CASE
 
 
-class TestSamplerCaching:
+class TestSamplerCaching(SamplerCachingContract):
     """§17.5 ``LazySampler``: built once per backend, failures never cached."""
 
-    def test_sampler_is_built_once_per_backend(self):
-        factory = CountingFactory(FakeCQMSampler())
-        backend = LeapHybridCQMBackend(sampler_factory=factory)
-        compiled = make_compiled_problem()
-
-        backend.solve(compiled, make_preferences(None))
-        backend.solve(compiled, make_preferences(None))
-
-        assert factory.calls == 1
-        assert factory.sampler.sample_calls == 2
-
-    def test_failed_construction_is_not_cached(self):
-        factory = CountingFactory(
-            FakeCQMSampler(),
-            failures=[SolverAuthenticationError(f"denied, token={FAKE_TOKEN}")],
-        )
-        backend = LeapHybridCQMBackend(sampler_factory=factory)
-        compiled = make_compiled_problem()
-
-        with pytest.raises(SolverExecutionError) as exc_info:
-            backend.solve(compiled, make_preferences(None))
-        assert exc_info.value.code == "REMOTE_AUTH_FAILED"
-
-        result = backend.solve(compiled, make_preferences(None))
-
-        assert factory.calls == 2
-        assert result.backend == BACKEND
-        assert factory.sampler.sample_calls == 1
-
-    def test_each_backend_instance_builds_its_own_sampler(self):
-        factory = CountingFactory(FakeCQMSampler())
-        compiled = make_compiled_problem()
-
-        LeapHybridCQMBackend(sampler_factory=factory).solve(
-            compiled, make_preferences(None)
-        )
-        LeapHybridCQMBackend(sampler_factory=factory).solve(
-            compiled, make_preferences(None)
-        )
-
-        assert factory.calls == 2
-
-    def test_auth_failure_at_sampling_invalidates_the_cache(self):
-        """2026-09-09 review F-21: a rejected client is known-bad, so the
-        guard that classifies ``REMOTE_AUTH_FAILED`` also drops the cached
-        sampler; the next solve builds a fresh one."""
-        sampler = FakeCQMSampler(
-            raise_on_sample=SolverAuthenticationError(f"denied, token={FAKE_TOKEN}")
-        )
-        factory = CountingFactory(sampler)
-        backend = LeapHybridCQMBackend(sampler_factory=factory)
-        compiled = make_compiled_problem()
-
-        with pytest.raises(SolverExecutionError) as exc_info:
-            backend.solve(compiled, make_preferences(None))
-        assert exc_info.value.code == "REMOTE_AUTH_FAILED"
-        assert factory.calls == 1
-
-        sampler.raise_on_sample = None
-        result = backend.solve(compiled, make_preferences(None))
-
-        assert factory.calls == 2
-        assert result.backend == BACKEND
+    case = LEAP_HYBRID_CQM_CASE
 
 
-class TestIsAvailable:
+class TestIsAvailable(IsAvailableContract):
     """The backend answers through the shared check in solvers.ocean."""
 
-    def test_dwave_system_not_installed(self, monkeypatch):
-        monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: False)
-
-        assert LeapHybridCQMBackend().is_available() == AvailabilityStatus(
-            category="not_installed", detail=REASON_NOT_INSTALLED
-        )
-
-    def test_credentials_not_configured(self, monkeypatch):
-        monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: True)
-        monkeypatch.setattr(ocean_module, "ocean_config_status", lambda: "missing")
-
-        assert LeapHybridCQMBackend().is_available() == AvailabilityStatus(
-            category="credentials_missing", detail=REASON_CREDENTIALS_MISSING
-        )
-
-    def test_configuration_invalid(self, monkeypatch):
-        monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: True)
-        monkeypatch.setattr(ocean_module, "ocean_config_status", lambda: "invalid")
-
-        assert LeapHybridCQMBackend().is_available() == AvailabilityStatus(
-            category="config_invalid",
-            detail=REASON_CONFIG_INVALID,
-            error_code="DWAVE_CONFIG_INVALID",
-        )
-
-    def test_available_when_installed_and_configured(self, monkeypatch):
-        monkeypatch.setattr(ocean_module, "dwave_system_installed", lambda: True)
-        monkeypatch.setattr(ocean_module, "ocean_config_status", lambda: "ok")
-
-        assert LeapHybridCQMBackend().is_available() == AvailabilityStatus(
-            category="available"
-        )
+    case = LEAP_HYBRID_CQM_CASE
 
 
 # ---------------------------------------------------------------------------

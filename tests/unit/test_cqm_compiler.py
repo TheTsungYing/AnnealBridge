@@ -14,7 +14,6 @@ and semantically against ``dimod.ExactCQMSolver``:
 """
 
 import json
-from pathlib import Path
 
 import dimod
 import pytest
@@ -29,8 +28,8 @@ from annealbridge.validation import (
     validate_problem_full,
     validate_solution,
 )
-
-EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
+from tests.builders import hard, lin, quad, soft
+from tests.conftest import EXAMPLES_DIR
 
 
 def make_problem(
@@ -55,37 +54,6 @@ def make_problem(
             "constraints": constraints or [],
         }
     )
-
-
-def lin(variable: str, coefficient: float) -> dict:
-    return {"variable": variable, "coefficient": coefficient}
-
-
-def quad(variable1: str, variable2: str, coefficient: float) -> dict:
-    return {"variable1": variable1, "variable2": variable2, "coefficient": coefficient}
-
-
-def hard(constraint_id: str, operator: str, rhs: float, terms: list[dict]) -> dict:
-    return {
-        "id": constraint_id,
-        "type": "hard",
-        "terms": terms,
-        "operator": operator,
-        "rhs": rhs,
-    }
-
-
-def soft(
-    constraint_id: str, operator: str, rhs: float, terms: list[dict], weight: float
-) -> dict:
-    return {
-        "id": constraint_id,
-        "type": "soft",
-        "terms": terms,
-        "operator": operator,
-        "rhs": rhs,
-        "weight": weight,
-    }
 
 
 def compile_problem(problem: OptimizationProblem):
@@ -466,7 +434,7 @@ def _assert_feasibility_agrees(problem: OptimizationProblem) -> None:
 
 class TestCrossValidationWithExactCQMSolver:
     def test_knapsack_example(self):
-        raw = json.loads((EXAMPLES / "knapsack.json").read_text(encoding="utf-8"))
+        raw = json.loads((EXAMPLES_DIR / "knapsack.json").read_text(encoding="utf-8"))
         problem = OptimizationProblem.model_validate(raw)
         _assert_feasibility_agrees(problem)
 

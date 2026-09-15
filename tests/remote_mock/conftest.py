@@ -24,7 +24,10 @@ FAKE_UNPATTERNED_TOKEN = "DEV-FAKE-TOKEN-1234567890abcdefghij"
 FAKE_MIN_TIME_LIMIT = 3.0
 
 # Nested QPU timing (whitelist keys) plus dirty keys that sanitization must
-# drop. The embedding context is NOT part of this dict: EmbeddingComposite
+# drop. ``unlisted_timing`` is a plain number the spec §17 whitelist does not
+# name: every other dirty key is non-numeric and the type filter alone would
+# drop it, so this one makes the whitelist itself responsible for the drop.
+# The embedding context is NOT part of this dict: EmbeddingComposite
 # only populates it when return_embedding=True is requested, so the fake
 # injects it separately (see FakeQPUSampler.embedding_context).
 FAKE_QPU_SAMPLESET_INFO = {
@@ -32,6 +35,7 @@ FAKE_QPU_SAMPLESET_INFO = {
         "qpu_access_time": 12345,
         "qpu_sampling_time": 6789,
         "qpu_anneal_time_per_sample": 20,
+        "unlisted_timing": 999,
     },
     "problem_id": "fake-problem-id-456",
     "messages": [{"nested": "structure"}],
@@ -44,11 +48,14 @@ FAKE_QPU_SAMPLESET_INFO = {
 FAKE_MINIMAL_SAMPLESET_INFO = {"timing": {"qpu_access_time": 12345}}
 
 # Hybrid solvers report timing at the top level. Whitelist keys plus dirty
-# keys that sanitization must drop.
+# keys that sanitization must drop. ``unlisted_timing`` is a plain number
+# the spec §17 whitelist does not name, so it is the whitelist (not the
+# type filter, which drops every other dirty key) that has to drop it.
 FAKE_HYBRID_SAMPLESET_INFO = {
     "run_time": 2900000,
     "charge_time": 2871000,
     "qpu_access_time": 12345,
+    "unlisted_timing": 999,
     "problem_id": "fake-problem-id-123",
     "messages": [{"nested": "structure"}],
     "raw_blob": b"\x00\x01\x02",

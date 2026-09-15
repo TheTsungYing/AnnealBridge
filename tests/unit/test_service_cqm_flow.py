@@ -24,7 +24,6 @@ first time the service, ``CQMCompiler`` and a real
 """
 
 import json
-from pathlib import Path
 
 import dimod
 import pytest
@@ -40,13 +39,14 @@ from annealbridge.models import (
 )
 from annealbridge.orchestration import OptimizationService
 from annealbridge.solvers import SolverRegistry
+from tests.conftest import EXAMPLES_DIR
 from tests.fakes.local_cqm_backend import (
     FAKE_LOCAL_CQM_NAME,
     FakeLocalCQMBackend,
     all_feasible_sampleset,
 )
 
-KNAPSACK = Path(__file__).resolve().parents[2] / "examples" / "knapsack.json"
+KNAPSACK = EXAMPLES_DIR / "knapsack.json"
 KNAPSACK_BUSINESS_NAMES = {"item_a", "item_b", "item_c", "item_d"}
 KNAPSACK_OPTIMUM_VALUE = 17.0
 KNAPSACK_OPTIMUM_SELECTION = {"item_a": 1, "item_b": 0, "item_c": 1, "item_d": 0}

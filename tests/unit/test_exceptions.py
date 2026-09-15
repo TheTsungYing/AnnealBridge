@@ -13,7 +13,6 @@ core has never heard of, whose ``solve()`` raises. Nothing in
 """
 
 import json
-from pathlib import Path
 from typing import get_args
 
 import pytest
@@ -26,13 +25,14 @@ from annealbridge.exceptions import (
 from annealbridge.models import OptimizationProblem, SolveStatus, SolverPreferences
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.solvers import SolverRegistry
+from tests.conftest import EXAMPLES_DIR
 from tests.fakes.declared_backend import (
     FAKE_DECLARED_NAME,
     FAKE_LIMIT_KEY,
     FakeDeclaredBackend,
 )
 
-KNAPSACK = Path(__file__).resolve().parents[2] / "examples" / "knapsack.json"
+KNAPSACK = EXAMPLES_DIR / "knapsack.json"
 
 
 class TestSolverExecutionError:
