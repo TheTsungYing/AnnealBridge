@@ -34,8 +34,9 @@ from annealbridge.solvers import (
     SolverRegistry,
 )
 from annealbridge.validation import validate_problem
-from tests.unit.test_settings import clean_env  # noqa: F401  (fixture)
-
+from tests.unit.test_settings import (
+    fixture_clean_env,  # noqa: F401  (registers the clean_env fixture)
+)
 
 # --------------------------------------------------------------------------
 # Helpers

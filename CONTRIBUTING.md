@@ -18,8 +18,8 @@ pip install -e ".[all,dev]"
 ```
 
 `[all]` pulls in the `mcp` SDK and `dwave-system`; `[dev]` adds `pytest`,
-`anyio` and the MCP CLI used by the Inspector. The core package works with no
-extras at all, and CI checks that too (see
+`anyio`, `ruff` and the MCP CLI used by the Inspector. The core package
+works with no extras at all, and CI checks that too (see
 [docs/testing.md](docs/testing.md)).
 
 ## Running the tests
@@ -39,6 +39,30 @@ pytest -m remote        # CONSUMES REAL VENDOR QUOTA
 Live tests skip individually unless their credential is present
 (`DWAVE_API_TOKEN` for the three D-Wave tests, `FUJITSU_DA_API_KEY` for the
 Fujitsu one). Do not run them casually.
+
+## Linting
+
+```bash
+ruff check .
+```
+
+Run this before submitting a pull request; CI runs the same check, and a lint
+failure there does not stop `pytest` from running. Only the F (Pyflakes) and
+I (import sorting) rules are enabled, and there is no formatter — do not run
+`ruff format`. To apply the safe fixes these rules offer:
+
+```bash
+ruff check --fix .
+```
+
+Besides re-sorting imports, this can delete any import `ruff` judges unused —
+including a pytest fixture imported from another test module, which must carry
+`# noqa: F401` to survive — so review the diff before committing. Where import
+order matters, keep it with an `# isort: split` line and a comment saying why,
+as `src/annealbridge/interfaces/mcp/__init__.py` does for its
+`server`-before-`tools` order.
+
+`ruff` is installed with the `[dev]` extra.
 
 ## Checking the built package
 

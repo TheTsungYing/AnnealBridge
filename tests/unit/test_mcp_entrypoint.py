@@ -54,6 +54,26 @@ def test_missing_mcp_extra_exits_2_with_one_line_and_no_traceback(
     assert captured.out == ""
 
 
+def test_core_only_install_without_mcp_or_anyio_still_exits_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """2026-09-15 ruff import-sort review: a real core-only install lacks
+    ``anyio`` as well as ``mcp`` (both come with the ``[mcp]`` extra). The
+    package ``__init__`` must import the server before the tools, or the
+    missing ``anyio`` surfaces first and the shim prints a traceback."""
+    _forget_mcp_modules(monkeypatch)
+    monkeypatch.setitem(sys.modules, "mcp", None)
+    monkeypatch.setitem(sys.modules, "anyio", None)
+
+    with pytest.raises(SystemExit) as excinfo:
+        mcp_entrypoint.main()
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "annealbridge[mcp]" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_delegates_to_the_server_main_when_the_extra_is_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

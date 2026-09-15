@@ -32,7 +32,6 @@ from annealbridge.models import (
 from annealbridge.validation import estimates
 from annealbridge.validation.estimates import (
     accumulate_terms,
-    nonzero_coefficients,
     analyze_inequality,
     compute_objective_scale,
     compute_slack_coefficients,
@@ -44,6 +43,7 @@ from annealbridge.validation.estimates import (
     estimate_encoded_interactions,
     integer_encoding_bits,
     lhs_bounds,
+    nonzero_coefficients,
     variable_bounds,
 )
 

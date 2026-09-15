@@ -26,6 +26,7 @@ import numpy as np
 import pytest
 
 from annealbridge.compiler import CQMCompiler, expand_square_qm
+
 # The rhs half of the non-finite guard has no route through a validated
 # problem, so it is pinned on the helper directly (as
 # ``test_candidate_arrays.py`` does with the optimizer's private helpers).
@@ -56,7 +57,6 @@ from annealbridge.validation.estimates import (
 from tests.conftest import EXAMPLES_DIR
 from tests.fakes.local_cqm_backend import FAKE_LOCAL_CQM_NAME, FakeLocalCQMBackend
 from tests.model_builders import lin, quad
-
 
 # --------------------------------------------------------------------------
 # Helpers（與 test_bqm_compiler_integer.py 同形式；lin / quad 共用 tests/model_builders.py）

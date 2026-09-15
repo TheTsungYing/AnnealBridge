@@ -1,7 +1,6 @@
 """Tests for the pre-compilation Problem Validator (spec §12)."""
 
 import logging
-
 import math
 
 import pytest

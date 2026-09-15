@@ -20,6 +20,7 @@ import dimod
 import numpy as np
 import pytest
 
+import annealbridge.solvers.leap_hybrid_cqm as cqm_module
 from annealbridge.compiler import CQMCompiler
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import (
@@ -35,7 +36,6 @@ from annealbridge.solvers import (
     SolverCapabilities,
     SolverRegistry,
 )
-import annealbridge.solvers.leap_hybrid_cqm as cqm_module
 from tests.remote_mock.conftest import (
     FAKE_MIN_TIME_LIMIT,
     FAKE_TOKEN,

@@ -31,6 +31,8 @@ from typing import Any
 
 import pytest
 
+import annealbridge.solvers.metadata as metadata_module
+import annealbridge.solvers.ocean as ocean_module
 from annealbridge.compiler import BQMCompiler, CQMCompiler
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.orchestration import OptimizationService
@@ -43,8 +45,6 @@ from annealbridge.solvers import (
     SolverRegistry,
 )
 from annealbridge.solvers.exact import ExactSolverBackend
-import annealbridge.solvers.metadata as metadata_module
-import annealbridge.solvers.ocean as ocean_module
 from tests.fakes import FakeDATransport, bits_solution, json_response
 from tests.remote_mock.conftest import (
     FAKE_UNPATTERNED_TOKEN,

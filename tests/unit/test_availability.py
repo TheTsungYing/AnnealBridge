@@ -13,8 +13,8 @@ import types
 
 import pytest
 
-from annealbridge.models import AvailabilityStatus
 import annealbridge.solvers.ocean as ocean_module
+from annealbridge.models import AvailabilityStatus
 from annealbridge.solvers.ocean import (
     REASON_CONFIG_INVALID,
     REASON_CREDENTIALS_MISSING,

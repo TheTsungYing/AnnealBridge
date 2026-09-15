@@ -15,6 +15,8 @@ import threading
 import dimod
 import pytest
 
+import annealbridge.solvers.dwave_qpu as qpu_module
+import annealbridge.solvers.leap_hybrid_bqm as leap_module
 from annealbridge.compiler import BQMCompiler
 from annealbridge.models import (
     DWaveQPUOptions,
@@ -36,8 +38,6 @@ from annealbridge.solvers import (
     SolverCapabilities,
     SolverRegistry,
 )
-import annealbridge.solvers.dwave_qpu as qpu_module
-import annealbridge.solvers.leap_hybrid_bqm as leap_module
 from tests.remote_mock.conftest import (
     FAKE_MINIMAL_SAMPLESET_INFO,
     CountingFactory,

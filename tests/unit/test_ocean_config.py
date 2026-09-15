@@ -20,8 +20,8 @@ import types
 import pytest
 
 import annealbridge.solvers.metadata as metadata_module
-from annealbridge.solvers.metadata import redact
 import annealbridge.solvers.ocean as ocean_module
+from annealbridge.solvers.metadata import redact
 from annealbridge.solvers.ocean import (
     TOKEN_ENV,
     _resolve_ocean_config,

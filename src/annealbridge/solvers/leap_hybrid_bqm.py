@@ -20,8 +20,8 @@ from annealbridge.solvers.base import (
 )
 from annealbridge.solvers.metadata import sanitize_sampleset_info
 from annealbridge.solvers.ocean import (
-    OCEAN_CREDENTIALS,
     HYBRID_SAMPLE_EXCEPTION_CODES,
+    OCEAN_CREDENTIALS,
     HybridTimeLimitMemo,
     call_ocean,
     dwave_availability,

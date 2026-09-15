@@ -14,7 +14,6 @@ from annealbridge.models import (
     SolverExecutionMetadata,
     SolverPreferences,
 )
-from annealbridge.solvers.metadata import redact
 
 # The capability / availability models live in ``models.capabilities``
 # (Phase 3a spec §4) and are re-exported here so existing
@@ -27,6 +26,7 @@ from annealbridge.models.capabilities import (  # noqa: F401
     ParameterLimit,
     SolverCapabilities,
 )
+from annealbridge.solvers.metadata import redact
 
 
 def _coerce_samples(samples: Any, num_variables: int) -> np.ndarray:

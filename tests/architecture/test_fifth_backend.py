@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+import annealbridge.solvers.metadata as metadata_module
+import annealbridge.solvers.ocean as ocean_module
 from annealbridge.config import SettingsError
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.interfaces.capabilities import build_capabilities
@@ -37,8 +39,6 @@ from annealbridge.interfaces.composition import build_state_from_policy
 from annealbridge.models import OptimizationProblem, SolverPreferences, catalog_error
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.solvers import SolverRegistry
-import annealbridge.solvers.metadata as metadata_module
-import annealbridge.solvers.ocean as ocean_module
 from annealbridge.solvers.metadata import guarded_call, redact
 from tests.conftest import EXAMPLES_DIR
 from tests.fakes.declared_backend import (

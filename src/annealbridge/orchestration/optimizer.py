@@ -36,11 +36,11 @@ from annealbridge.models import (
     Solution,
     SolveAttempt,
     SolveError,
-    SolveResult,
-    SolveStatus,
     SolverCapabilities,
+    SolveResult,
     SolverExecutionMetadata,
     SolverPreferences,
+    SolveStatus,
     catalog_error,
 )
 from annealbridge.orchestration.limits import (

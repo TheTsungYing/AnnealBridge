@@ -14,10 +14,10 @@ import time
 
 import pytest
 
-from annealbridge.exceptions import SolverExecutionError
-from annealbridge.models import CredentialDeclaration, SolverCapabilities
 import annealbridge.solvers.metadata as metadata_module
 import annealbridge.solvers.ocean as ocean_module
+from annealbridge.exceptions import SolverExecutionError
+from annealbridge.models import CredentialDeclaration, SolverCapabilities
 from annealbridge.solvers.ocean import (
     HYBRID_SAMPLE_EXCEPTION_CODES,
     SAMPLER_INIT_EXCEPTION_CODES,

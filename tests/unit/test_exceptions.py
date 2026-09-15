@@ -22,7 +22,7 @@ from annealbridge.exceptions import (
     SolverErrorStatus,
     SolverExecutionError,
 )
-from annealbridge.models import OptimizationProblem, SolveStatus, SolverPreferences
+from annealbridge.models import OptimizationProblem, SolverPreferences, SolveStatus
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.solvers import SolverRegistry
 from tests.conftest import EXAMPLES_DIR

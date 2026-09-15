@@ -15,6 +15,7 @@ import sys
 
 import pytest
 
+import annealbridge.solvers.ocean as ocean_module
 from annealbridge.compiler import BQMCompiler
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import (
@@ -26,7 +27,6 @@ from annealbridge.solvers import (
     DWaveQPUBackend,
     SolverCapabilities,
 )
-import annealbridge.solvers.ocean as ocean_module
 from tests.remote_mock.conftest import (
     FAKE_EMBEDDING_CONTEXT,
     FAKE_TOKEN,

@@ -13,6 +13,7 @@ What this change does and why. Link the issue if there is one.
 ## Checklist
 
 - [ ] `pytest` passes locally with no new `skip` / `xfail`.
+- [ ] `ruff check .` passes (F and I rules).
 - [ ] `tests/architecture/` still passes (import boundaries, no backend
       names in the core, no third-party HTTP client in the core).
 - [ ] No vendor credential, token, or `dwave.conf` content appears in code,

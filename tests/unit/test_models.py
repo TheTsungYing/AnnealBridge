@@ -16,9 +16,9 @@ from annealbridge.models import (
     Objective,
     OptimizationProblem,
     ProblemError,
-    SolverPreferences,
     SolveError,
     SolveResult,
+    SolverPreferences,
     Variable,
 )
 from annealbridge.validation import (

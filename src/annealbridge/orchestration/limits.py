@@ -15,9 +15,9 @@ from annealbridge.compiler.base import ModelCompiler
 from annealbridge.models import (
     ModelType,
     SolveError,
-    SolveStatus,
     SolverCapabilities,
     SolverPreferences,
+    SolveStatus,
     catalog_error,
 )
 from annealbridge.models.reflection import (

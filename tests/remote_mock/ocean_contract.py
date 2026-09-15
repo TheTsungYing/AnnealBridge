@@ -27,10 +27,10 @@ from typing import Callable, ClassVar
 
 import pytest
 
+import annealbridge.solvers.ocean as ocean_module
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers import AvailabilityStatus
-import annealbridge.solvers.ocean as ocean_module
 from annealbridge.solvers.ocean import (
     REASON_CONFIG_INVALID,
     REASON_CREDENTIALS_MISSING,

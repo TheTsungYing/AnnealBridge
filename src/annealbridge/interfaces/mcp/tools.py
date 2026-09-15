@@ -13,17 +13,16 @@ event loop and with it every other client of the server.
 
 import anyio
 
-from annealbridge.models import OptimizationProblem, SolveResult
-from annealbridge.validation import (
-    BackendRecommendationResult,
-    ProblemValidationResult,
-)
-
 from annealbridge.interfaces.mcp.models import (
     OptimizationCapabilities,
     build_capabilities,
 )
 from annealbridge.interfaces.mcp.server import get_state, mcp
+from annealbridge.models import OptimizationProblem, SolveResult
+from annealbridge.validation import (
+    BackendRecommendationResult,
+    ProblemValidationResult,
+)
 
 
 @mcp.tool()

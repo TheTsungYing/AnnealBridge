@@ -14,9 +14,9 @@ only. All tokens are synthetic test values, never real credentials.
 
 import pytest
 
-from annealbridge.models import CredentialDeclaration
 import annealbridge.solvers.fujitsu_da as fujitsu_da
 import annealbridge.solvers.metadata as metadata_module
+from annealbridge.models import CredentialDeclaration
 from annealbridge.solvers import SolverRegistry
 from annealbridge.solvers.dwave_qpu import DWaveQPUBackend
 from annealbridge.solvers.fujitsu_da import FujitsuDABackend

@@ -24,6 +24,7 @@ import numpy as np
 import pydantic
 import pytest
 
+import annealbridge.solvers.metadata as metadata_module
 from annealbridge.compiler import BQMCompiler
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import (
@@ -47,7 +48,6 @@ from annealbridge.solvers.fujitsu_da import (
     REASON_URL_NOT_HTTPS,
     SOLVER_ID,
 )
-import annealbridge.solvers.metadata as metadata_module
 from annealbridge.solvers.metadata import redact
 from tests.fakes import (
     FAKE_JOB_ID,

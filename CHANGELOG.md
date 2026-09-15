@@ -98,6 +98,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explains why the simulated-annealing seed range copies the
   `dwave-samplers` rule, with a test pinning that rule and the single- and
   multi-shard paths to it.
+- Development tooling adopts `ruff` (no runtime behaviour change): it is
+  installed with the `[dev]` extra and enables only the F (Pyflakes) and I
+  (import sorting) rules, configured under `[tool.ruff]` in `pyproject.toml`.
+  CI's Test job runs `ruff check .` before `pytest`, and `pytest` still runs
+  when that step fails. Imports were re-sorted to match, except in
+  `annealbridge.interfaces.mcp`, whose server-before-tools order is kept so a
+  core-only `annealbridge-mcp` still exits 2 with the install hint; one unused
+  import was removed from a test and a shared test fixture was renamed. There
+  is no formatter.
 
 ### Performance
 

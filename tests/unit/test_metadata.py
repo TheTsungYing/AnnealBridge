@@ -17,9 +17,9 @@ import urllib.parse
 
 import pytest
 
+import annealbridge.solvers.metadata as metadata_module
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.models import CredentialDeclaration, SolverExecutionMetadata
-import annealbridge.solvers.metadata as metadata_module
 from annealbridge.solvers.metadata import (
     credential_env_vars,
     declare_credentials,

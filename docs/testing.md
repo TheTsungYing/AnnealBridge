@@ -104,7 +104,10 @@ Runs on `push` and `pull_request`. Three jobs:
   fail-fast) and runs a plain `pytest`. No `-m` flag is passed, so the
   project's own `-m "not remote"` applies: unit, scenarios, architecture, MCP
   and remote-mock tests all run, and no vendor quota is touched. The workflow
-  therefore needs neither `DWAVE_API_TOKEN` nor `FUJITSU_DA_API_KEY`.
+  therefore needs neither `DWAVE_API_TOKEN` nor `FUJITSU_DA_API_KEY`. Before
+  `pytest`, the job runs `ruff check .`, which checks only the F (Pyflakes)
+  and I (import sorting) rules; there is no formatter check. A lint failure
+  fails the job, but `pytest` still runs.
 - **Minimal install** — installs the package with *no* extras and checks that
   the core still stands on its own: the solver registry imports and lists its
   backends, `annealbridge export-schema` works, and `annealbridge validate` /

@@ -10,6 +10,7 @@ is the registry key — the value that goes into ``solver.backend`` and the one
 ``enabled_backends`` is matched against.
 """
 
+import annealbridge.solvers.dwave_qpu as qpu_module
 from annealbridge.interfaces.capabilities import (
     _problem_json_schema_json,
     build_capabilities,
@@ -17,7 +18,6 @@ from annealbridge.interfaces.capabilities import (
 from annealbridge.models import AvailabilityStatus, OptimizationProblem
 from annealbridge.orchestration import ExecutionPolicy
 from annealbridge.solvers import ExactSolverBackend, SolverRegistry
-import annealbridge.solvers.dwave_qpu as qpu_module
 
 
 class TestSchemaCache:

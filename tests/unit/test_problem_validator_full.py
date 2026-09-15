@@ -19,8 +19,11 @@ from annealbridge.models import (
     SolverPreferences,
 )
 from annealbridge.solvers import SolverRegistry
-from annealbridge.validation import validate_problem, validate_problem_full
-from annealbridge.validation import problem_validator
+from annealbridge.validation import (
+    problem_validator,
+    validate_problem,
+    validate_problem_full,
+)
 from annealbridge.validation.estimates import (
     analyze_inequality,
     compute_objective_scale,

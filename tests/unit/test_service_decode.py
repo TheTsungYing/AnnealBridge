@@ -44,7 +44,7 @@ from annealbridge.models import (
 from annealbridge.orchestration import OptimizationService, evaluate_objective
 from annealbridge.solvers import RawSolverResult, SolverRegistry
 from annealbridge.solvers.base import AvailabilityStatus, SolverCapabilities
-from tests.fakes.local_cqm_backend import FAKE_LOCAL_CQM_NAME, FakeLocalCQMBackend
+from tests.fakes.local_cqm_backend import FakeLocalCQMBackend
 
 SHUFFLING_BQM_NAME = "fake_shuffling_bqm"
 

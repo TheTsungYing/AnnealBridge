@@ -1,6 +1,7 @@
 # CI — spec §29
 #
-# An ordinary push / PR runs: unit, scenarios, architecture, mcp, remote_mock.
+# An ordinary push / PR runs: a ruff lint (F and I rules only), then unit,
+# scenarios, architecture, mcp, remote_mock.
 # The package job additionally builds the sdist and the wheel and exercises the
 # installed distribution — not the checkout — in clean virtual environments on
 # Linux and Windows (2026-09-11 install verification, gap 4).
@@ -43,11 +44,18 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install package with all extras
+        id: install
         run: pip install -e ".[all,dev]"
+
+      # Lint only: F (pyflakes) and I (import sorting); no formatter.
+      - name: Lint (ruff)
+        run: ruff check .
 
       # No -m here: the pyproject addopts = -m "not remote" applies, which
       # covers unit / scenarios / architecture / mcp / remote_mock.
+      # Runs even if lint fails: lint never hides test results; job still fails.
       - name: Run tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pytest
 
   minimal-install:

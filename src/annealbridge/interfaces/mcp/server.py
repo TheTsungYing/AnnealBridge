@@ -11,6 +11,7 @@ import argparse
 import json
 import logging
 import sys
+
 from mcp.server import MCPServer
 
 from annealbridge.config import (
@@ -19,13 +20,13 @@ from annealbridge.config import (
     validate_http_host,
     validate_http_port,
 )
-from annealbridge.interfaces.composition import (  # noqa: F401  (re-exports)
+from annealbridge.interfaces.composition import (  # noqa: F401  (re-exports build_service, build_state_from_policy)
     AppState,
     build_service,
     build_state,
     build_state_from_policy,
+    exit_on_settings_error,
 )
-from annealbridge.interfaces.composition import exit_on_settings_error
 from annealbridge.version import package_version
 
 # The smallest complete problem, shown to the host at initialize so an agent

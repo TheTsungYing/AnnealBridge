@@ -51,7 +51,6 @@ from annealbridge.validation.estimates import (
 from tests.fakes.local_cqm_backend import FAKE_LOCAL_CQM_NAME, FakeLocalCQMBackend
 from tests.model_builders import lin
 
-
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------

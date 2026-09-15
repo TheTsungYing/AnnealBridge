@@ -5,7 +5,6 @@ import os
 
 import annotated_types
 import pytest
-
 from pydantic import ValidationError
 from pydantic.fields import FieldInfo
 from pydantic_settings import SettingsError as PydanticSettingsError
@@ -46,8 +45,8 @@ ENV_SUFFIXES = [
 ]
 
 
-@pytest.fixture
-def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+@pytest.fixture(name="clean_env")
+def fixture_clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """Remove every ``ANNEALBRIDGE_*`` variable for the duration of a test.
 
     Settings lookups are case-insensitive, so anything with the prefix is
