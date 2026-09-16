@@ -2,14 +2,15 @@
 
 # Command-line interface
 
-This page documents the `annealbridge` command: its five subcommands, their
+This page documents the `annealbridge` command: its six subcommands, their
 options and output, and the exit codes a script can rely on. The CLI is
-installed by the core package — no extra required.
+installed by the core package — no extra required, though `mcp` needs the
+`[mcp]` extra to do anything.
 
 It is a presentation layer only. It parses arguments, loads the problem JSON,
 calls the service, and formats the result; no optimization logic lives in it.
 
-The five commands, as `annealbridge --help` describes them (the real output
+The six commands, as `annealbridge --help` describes them (the real output
 is rendered in Rich panels; only the text is shown here):
 
 ```text
@@ -18,9 +19,11 @@ is rendered in Rich panels; only the text is shown here):
   recommend      Rank the backends for a problem without solving it.
   capabilities   List backends with availability, policy status and limits.
   export-schema  Print the OptimizationProblem JSON schema.
+  mcp            Run the MCP server (needs the "mcp" extra; same options as
+                 annealbridge-mcp).
 ```
 
-All five commands read the `ANNEALBRIDGE_*` environment
+They all read the `ANNEALBRIDGE_*` environment
 ([Configuration](configuration.md)) except `export-schema`, which needs no
 configuration at all.
 
@@ -280,6 +283,27 @@ structured output, and the same one returned inside
 `get_optimization_capabilities`. It is generated from the pydantic models, so
 it can never drift from what the server actually accepts. See
 [Problem format](problem-format.md) for the human-readable description.
+
+## `mcp`
+
+Run the MCP server, exactly as the `annealbridge-mcp` console script does.
+
+```bash
+annealbridge mcp [--transport {stdio,streamable-http}] [--host HOST] [--port PORT]
+```
+
+Every argument is handed to the server's own parser, `--help` and `--version`
+included, so this subcommand and `annealbridge-mcp` answer identically; the
+options are documented in [the MCP server page](mcp.md). Without the `[mcp]`
+extra it prints the same one-line install hint on stderr and exits `2`.
+
+It exists because the MCP Registry composes a package command as
+`<runtimeHint> <runtimeArguments> <identifier> <packageArguments>`, and
+`identifier` must be the PyPI project name (`annealbridge`) for the registry's
+ownership check. A registry client therefore runs
+`uvx --from=annealbridge[mcp] annealbridge mcp`. Use whichever entry point
+suits you; a hand-written host configuration is shorter with
+`annealbridge-mcp`.
 
 ## Exit codes
 

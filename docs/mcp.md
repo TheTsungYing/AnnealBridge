@@ -35,6 +35,18 @@ uvx --from "annealbridge[mcp]" annealbridge-mcp
 `pipx install "annealbridge[mcp]"` is the equivalent that puts
 `annealbridge-mcp` on the `PATH` permanently.
 
+The same server is also reachable as a subcommand of the CLI:
+
+```bash
+annealbridge mcp
+```
+
+The two entry points are interchangeable — every argument, `--help` and
+`--version` included, reaches the same parser, and a missing `[mcp]` extra
+ends both the same way. The subcommand exists for the
+[MCP Registry](#mcp-registry), whose command layout cannot express a console
+script whose name differs from the PyPI project.
+
 The `annealbridge-mcp` command itself is installed either way, extra or not.
 Without the extra it does not start: it prints one line on stderr,
 
@@ -99,6 +111,28 @@ A pip or pipx install upgrades the usual way, with
 every `solve_optimization` result carries the same string as
 `annealbridge_version` — the two are the fastest way to tell a stale cached
 environment from a current one.
+
+### MCP Registry
+
+The server is published to the [MCP Registry](https://registry.modelcontextprotocol.io)
+as `io.github.TheTsungYing/annealbridge`, described by `server.json` in the
+repository root. A registry client resolves that entry to:
+
+```bash
+uvx --from=annealbridge[mcp] annealbridge mcp
+```
+
+which is why the CLI carries an `mcp` subcommand: the registry composes a
+package command as `<runtimeHint> <runtimeArguments> <identifier>
+<packageArguments>`, and `identifier` must be the PyPI project name
+(`annealbridge`) because the registry proves ownership by looking for an
+`mcp-name: io.github.TheTsungYing/annealbridge` line in the package
+description PyPI renders from `README.md`. That line must therefore survive in
+the README, and a release that drops it breaks the next registry publish.
+
+`server.json` pins a concrete version in two places — the server version and
+the package version — and both must equal the `pyproject.toml` version of the
+release being published, so they move together with every version bump.
 
 ## Tools
 

@@ -78,15 +78,50 @@ def test_delegates_to_the_server_main_when_the_extra_is_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """2026-09-11 install verification (gap 3): with the extra present the shim
-    is transparent — it calls the real server entry point exactly once."""
+    is transparent — it calls the real server entry point exactly once. The
+    console script passes the server's own defaults, so it keeps reading
+    ``sys.argv`` and naming itself ``annealbridge-mcp``."""
     from annealbridge.interfaces.mcp import server
 
     calls: list[tuple] = []
-    monkeypatch.setattr(server, "main", lambda *args: calls.append(args))
+    monkeypatch.setattr(server, "main", lambda *args, **kwargs: calls.append((args, kwargs)))
 
     mcp_entrypoint.main()
 
-    assert calls == [()]
+    assert calls == [((None,), {"prog": "annealbridge-mcp"})]
+
+
+def test_run_passes_argv_and_prog_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ``annealbridge mcp`` subcommand reaches the server through the same
+    guard, with the arguments Typer did not consume and its own program name."""
+    from annealbridge.interfaces.mcp import server
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(server, "main", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    mcp_entrypoint.run(["--transport", "streamable-http"], prog="annealbridge mcp")
+
+    assert calls == [
+        ((["--transport", "streamable-http"],), {"prog": "annealbridge mcp"})
+    ]
+
+
+def test_run_reports_the_missing_extra_for_the_subcommand_too(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A core-only install must fail the same way whichever entry point is
+    used: one stderr line, exit 2, no traceback."""
+    _forget_mcp_modules(monkeypatch)
+    monkeypatch.setitem(sys.modules, "mcp", None)
+
+    with pytest.raises(SystemExit) as excinfo:
+        mcp_entrypoint.run([], prog="annealbridge mcp")
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "annealbridge[mcp]" in captured.err
+    assert "Traceback" not in captured.err
+    assert captured.out == ""
 
 
 @pytest.mark.parametrize(

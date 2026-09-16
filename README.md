@@ -1,5 +1,7 @@
 # AnnealBridge
 
+<!-- mcp-name: io.github.TheTsungYing/annealbridge -->
+
 [![CI](https://github.com/TheTsungYing/AnnealBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/TheTsungYing/AnnealBridge/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/annealbridge.svg)](https://pypi.org/project/annealbridge/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
@@ -306,7 +308,7 @@ development version without a checkout:
 Architecture rules, design principles and the pull-request checklist are in
 [CONTRIBUTING.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/CONTRIBUTING.md).
 
-Version 0.2.0: the problem contract (`1.0` / `1.1`), the six backends, the
+Version 0.2.1: the problem contract (`1.0` / `1.1`), the six backends, the
 CLI and the MCP tools are complete and covered by tests. What is not
 supported, by design for now, is listed in
 [docs/limitations.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/limitations.md);

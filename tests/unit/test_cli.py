@@ -515,6 +515,70 @@ class TestVersion:
         assert "Missing command" in _output(result)
 
 
+class TestMcpSubcommand:
+    """``annealbridge mcp`` runs the MCP server through the same shim the
+    ``annealbridge-mcp`` console script uses (2026-09-16 MCP Registry entry).
+
+    The registry composes a package command as
+    ``<runtimeHint> <runtimeArguments> <identifier> <packageArguments>``, and
+    ``identifier`` must be the PyPI project name, so the server needs an entry
+    point reachable as ``annealbridge mcp``.
+    """
+
+    def test_top_level_help_lists_it(self):
+        result = runner.invoke(app, ["--help"])
+
+        assert result.exit_code == 0
+        assert "mcp" in _plain(result.output)
+
+    def test_every_argument_reaches_the_server_parser(self, monkeypatch):
+        """Typer consumes none of them: unknown options, ``--help`` and
+        ``--version`` included, are handed over verbatim."""
+        calls: list[tuple] = []
+        monkeypatch.setattr(
+            "annealbridge.interfaces.mcp_entrypoint.run",
+            lambda argv, prog: calls.append((list(argv), prog)),
+        )
+
+        result = runner.invoke(
+            app, ["mcp", "--transport", "streamable-http", "--port", "9000"]
+        )
+
+        assert result.exit_code == 0
+        assert calls == [
+            (["--transport", "streamable-http", "--port", "9000"], "annealbridge mcp")
+        ]
+
+    def test_no_arguments_delegates_with_an_empty_list(self, monkeypatch):
+        calls: list[tuple] = []
+        monkeypatch.setattr(
+            "annealbridge.interfaces.mcp_entrypoint.run",
+            lambda argv, prog: calls.append((list(argv), prog)),
+        )
+
+        result = runner.invoke(app, ["mcp"])
+
+        assert result.exit_code == 0
+        assert calls == [([], "annealbridge mcp")]
+
+    def test_help_comes_from_the_server_and_lists_its_options(self):
+        """Not Typer's help: the subcommand must document the same
+        ``--transport`` / ``--host`` / ``--port`` as ``annealbridge-mcp``."""
+        result = runner.invoke(app, ["mcp", "--help"])
+
+        assert result.exit_code == 0
+        text = _plain(result.output)
+        assert "annealbridge mcp" in text
+        for option in ("--transport", "--host", "--port"):
+            assert option in text
+
+    def test_version_is_answered_by_the_server(self):
+        result = runner.invoke(app, ["mcp", "--version"])
+
+        assert result.exit_code == 0
+        assert result.output == TestVersion.EXPECTED
+
+
 class TestRenderInfeasibleAttempts:
     """3a §16.4: an attempt without a hard penalty prints ``penalty=-``."""
 

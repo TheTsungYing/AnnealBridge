@@ -11,6 +11,7 @@ import argparse
 import json
 import logging
 import sys
+from collections.abc import Sequence
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -191,7 +192,7 @@ def _add_version_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None, prog: str = "annealbridge-mcp") -> None:
     """Entry point for ``annealbridge-mcp`` (spec §25).
 
     stdio is the default transport. Streamable HTTP binds 127.0.0.1:8000
@@ -215,12 +216,17 @@ def main() -> None:
     missing dependency instead of raising ``ModuleNotFoundError``. Running
     ``python -m annealbridge.interfaces.mcp.server`` still reaches this
     function unchanged.
+
+    ``argv`` and ``prog`` exist for the ``annealbridge mcp`` subcommand, which
+    reaches this function through the same missing-extra guard with the
+    arguments Typer did not consume. They default to ``sys.argv[1:]`` and
+    ``annealbridge-mcp``, so the console script's behaviour is unchanged.
     """
     # Only --version is recognised here; everything else, --help included,
     # is left to the full parser, which needs the settings for its defaults.
-    version_parser = argparse.ArgumentParser(prog="annealbridge-mcp", add_help=False)
+    version_parser = argparse.ArgumentParser(prog=prog, add_help=False)
     _add_version_argument(version_parser)
-    version_parser.parse_known_args()
+    version_parser.parse_known_args(argv)
     # Logging is configured before the settings are read, so even the
     # unknown-variable WARNING they may log comes out in this format.
     # ``force=True`` is required: constructing ``MCPServer`` at import time
@@ -241,7 +247,7 @@ def main() -> None:
     except SettingsError as exc:
         exit_on_settings_error(exc)
     parser = argparse.ArgumentParser(
-        prog="annealbridge-mcp",
+        prog=prog,
         description="Run the AnnealBridge MCP server.",
     )
     # Already answered above; declared again so --help lists it.
@@ -272,7 +278,7 @@ def main() -> None:
             "ignored for stdio)."
         ),
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # The settings were validated above; wire the state from them now so
     # the first tool call cannot hit a configuration error. Wiring can still

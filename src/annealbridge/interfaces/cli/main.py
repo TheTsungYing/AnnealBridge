@@ -462,6 +462,27 @@ def export_schema() -> None:
     typer.echo(json.dumps(OptimizationProblem.model_json_schema(), indent=2))
 
 
+@app.command(
+    "mcp",
+    context_settings={
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+        "help_option_names": [],
+    },
+    add_help_option=False,
+)
+def mcp(ctx: typer.Context) -> None:
+    """Run the MCP server (needs the "mcp" extra; same options as annealbridge-mcp)."""
+    # Every argument is handed to the server's own parser, ``--help`` and
+    # ``--version`` included, so this subcommand and ``annealbridge-mcp``
+    # answer identically. The import is deferred and goes through
+    # ``mcp_entrypoint``: a core-only install must still run every other CLI
+    # command, and a missing extra must be one stderr line and exit 2 here too.
+    from annealbridge.interfaces.mcp_entrypoint import run
+
+    run(ctx.args, prog="annealbridge mcp")
+
+
 def main() -> None:
     app()
 

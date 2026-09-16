@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-16
+
+Published to the [MCP Registry](https://registry.modelcontextprotocol.io) as
+`io.github.TheTsungYing/annealbridge`. No optimization behaviour changed.
+
+### Added
+
+- `annealbridge mcp` runs the MCP server, exactly as the `annealbridge-mcp`
+  console script does. Every argument is handed to the server's own parser,
+  `--help` and `--version` included, so the two entry points answer
+  identically, and a missing `[mcp]` extra prints the same one-line install
+  hint on stderr and exits `2` through the same shim. It exists for the MCP
+  Registry, which composes a package command as `<runtimeHint>
+  <runtimeArguments> <identifier> <packageArguments>` and requires
+  `identifier` to be the PyPI project name, so no console script whose name
+  differs from the project is reachable. `server.main()` gained optional
+  `argv` and `prog` parameters to support it; their defaults are the console
+  script's previous behaviour. Documented in the new `mcp` section of
+  `docs/cli.md` and the *Installation* section of `docs/mcp.md`.
+- `server.json` in the repository root describes the server for the MCP
+  Registry. A registry client resolves it to
+  `uvx --from=annealbridge[mcp] annealbridge mcp`, covered by a real
+  subprocess test. Its two version fields must equal the `pyproject.toml`
+  version of the release being published.
+
+### Changed
+
+- `README.md` carries an `mcp-name: io.github.TheTsungYing/annealbridge` HTML
+  comment. The MCP Registry proves ownership of a PyPI package by looking for
+  that line in the description PyPI renders from the README, so it must
+  survive every release; dropping it breaks the next registry publish.
+  Documented in the new *MCP Registry* section of `docs/mcp.md`.
+
 ## [0.2.0] - 2026-09-16
 
 ### Added
@@ -452,6 +485,7 @@ First public release.
   truncated to `solver.top_k`. The previous wording ("how many satisfied
   every hard constraint") read as a count of raw solver rows.
 
-[Unreleased]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/TheTsungYing/AnnealBridge/releases/tag/v0.1.0

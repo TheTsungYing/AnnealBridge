@@ -1,10 +1,11 @@
-"""The ``annealbridge-mcp`` entry point: four real subprocesses, the rest in-process.
+"""The MCP entry points: five real subprocesses, the rest in-process.
 
 This is the only test file allowed to spawn a subprocess (spec §26), and only
-four of its tests do. Two serve the four tools over stdio, covering both ways
-the server is started: ``python -m annealbridge.interfaces.mcp.server``, and
-the ``annealbridge-mcp`` console script the installed distribution generates.
-The latter is the regression test for the 2026-09-11 install verification
+five of its tests do. Three serve the four tools over stdio, covering every way
+the server is started: ``python -m annealbridge.interfaces.mcp.server``, the
+``annealbridge-mcp`` console script the installed distribution generates, and
+the ``annealbridge mcp`` subcommand the MCP Registry entry resolves to.
+The second is the regression test for the 2026-09-11 install verification
 gaps 3 and 4 — the script now enters through
 ``annealbridge.interfaces.mcp_entrypoint``, and nothing else may notice.
 The other two keep one invalid ``--port`` and one ``--version`` run in a real
@@ -77,6 +78,33 @@ async def test_console_script_serves_the_four_tools():
     script = _console_script()
 
     params = StdioServerParameters(command=script, args=[])
+    async with Client(params) as client:
+        tools = (await client.list_tools()).tools
+
+    assert sorted(tool.name for tool in tools) == EXPECTED_TOOLS
+
+
+def _cli_script() -> str:
+    """The ``annealbridge`` script generated next to this interpreter."""
+    script = shutil.which("annealbridge", path=str(Path(sys.executable).parent))
+    if script is None:
+        pytest.fail(
+            "the annealbridge console script is missing next to "
+            f"{sys.executable}; reinstall the project with "
+            'pip install -e ".[all,dev]"'
+        )
+    return script
+
+
+async def test_cli_subcommand_serves_the_four_tools():
+    """2026-09-16 MCP Registry entry: the registry composes a package command
+    as ``<runtimeHint> <runtimeArguments> <identifier> <packageArguments>``,
+    and ``identifier`` must be the PyPI project name — so what a client
+    actually runs is ``uvx --from annealbridge[mcp] annealbridge mcp``. That
+    last part has to start the same server as the dedicated console script."""
+    script = _cli_script()
+
+    params = StdioServerParameters(command=script, args=["mcp"])
     async with Client(params) as client:
         tools = (await client.list_tools()).tools
 
