@@ -30,11 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Both READMEs now open with *Install* (the `uvx` host entry, `claude mcp
-  add`, the pip matrix) and *A conversation* (what a user asks, the three
-  tool calls the agent makes, what comes back), followed by the command
-  line and Python examples; *How it works*, *Features* and the rest moved
-  below them. The extra install paths live under *Installation in depth*.
+- Both READMEs were restructured for a first-time reader: a PyPI badge, a
+  Mermaid flowchart of the pipeline under the tagline (replacing the ASCII
+  diagram), then *Quick start* (`pip install` and a self-contained Python
+  knapsack that needs no file), *Use it from an AI agent (MCP)* (the `uvx`
+  host entry, `claude mcp add` and the three tool calls behind one chat
+  turn), *Use it from the command line*, *The problem JSON*, *How it works*,
+  *Backends*, *Design guarantees* (the former *Features*), *Documentation*
+  and *Development*. *Installation in depth*, *Security in one paragraph*
+  and *Status* were folded into one-line pointers to `docs/mcp.md`,
+  `docs/security.md` and `docs/limitations.md`; no technical statement
+  changed.
 - Dependency floors now match what the code actually calls:
   `pydantic-settings>=2.7` (`NoDecode`) and `dwave-system>=1.10`
   (`LeapHybridCQMSampler`). Older versions installed but failed on import or
