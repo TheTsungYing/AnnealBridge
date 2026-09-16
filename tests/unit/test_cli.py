@@ -1,6 +1,7 @@
 """CLI tests for the spec §30 commands (capabilities, export-schema, solve errors)."""
 
 import json
+import re
 from importlib import metadata
 
 import pytest
@@ -26,6 +27,23 @@ from tests.conftest import EXAMPLES_DIR
 from tests.unit.test_limits import FAKE_TOKEN, SpyBackend, make_capabilities
 
 runner = CliRunner()
+
+
+_SGR = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """``text`` without the colour escapes rich adds when colour is enabled.
+
+    Typer renders its help through rich, which highlights a switch as two
+    separately styled spans — ``-`` and then ``-version`` — so a literal
+    ``"--version"`` is *absent* from the raw output whenever colour is on.
+    It is on under CI (``FORCE_COLOR``) and off in a plain local run, which
+    is why an assertion on the raw text passes here and fails there. What
+    the reader sees is the same either way, so tests that look for an
+    option name strip the escapes first.
+    """
+    return _SGR.sub("", text)
 
 
 def _output(result) -> str:
@@ -485,9 +503,10 @@ class TestVersion:
         result = runner.invoke(app, ["--help"])
 
         assert result.exit_code == 0
-        assert "--version" in result.output
-        assert "Show the version and exit." in result.output
-        assert "Optimization Tool Middleware CLI" in result.output
+        help_text = _plain(result.output)
+        assert "--version" in help_text
+        assert "Show the version and exit." in help_text
+        assert "Optimization Tool Middleware CLI" in help_text
 
     def test_no_command_is_still_an_error(self):
         result = runner.invoke(app, [])
