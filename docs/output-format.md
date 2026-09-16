@@ -353,7 +353,7 @@ Ranks 3–5 are elided below; they continue the same pattern down to
   },
   "message": null,
   "elapsed_ms": 6.1,
-  "annealbridge_version": "0.1.0"
+  "annealbridge_version": "0.2.0"
 }
 ```
 

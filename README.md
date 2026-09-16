@@ -114,7 +114,9 @@ The wording is the agent's; the numbers are the tool result. A fourth tool,
 `recommend_backend`, ranks the backends for a problem and is advisory only.
 Any stdio-capable MCP host works the same way, a streamable-http transport
 exists, and `pipx` or a pip-installed server behind an absolute path work in
-place of `uvx`; see [docs/mcp.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/mcp.md).
+place of `uvx`. `uvx` reuses the environment it resolved on its first run, so
+a new release reaches an existing install only after `uv cache clean
+annealbridge` and a host restart; see [docs/mcp.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/mcp.md).
 
 ## Use it from the command line
 
@@ -304,7 +306,7 @@ development version without a checkout:
 Architecture rules, design principles and the pull-request checklist are in
 [CONTRIBUTING.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/CONTRIBUTING.md).
 
-Version 0.1.0: the problem contract (`1.0` / `1.1`), the six backends, the
+Version 0.2.0: the problem contract (`1.0` / `1.1`), the six backends, the
 CLI and the MCP tools are complete and covered by tests. What is not
 supported, by design for now, is listed in
 [docs/limitations.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/limitations.md);

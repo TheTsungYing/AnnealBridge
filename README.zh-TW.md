@@ -110,7 +110,9 @@ claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
 措辭是 agent 的，數字來自工具結果。第四個工具 `recommend_backend` 會針對
 問題把 backend 排名，僅供參考。任何支援 stdio 的 MCP host 用法都相同，另外
 也有 streamable-http transport；`pipx` 或用 pip 安裝後以絕對路徑指定的
-server 都可以取代 `uvx`；見 [docs/mcp.md](docs/mcp.md)。
+server 都可以取代 `uvx`。`uvx` 會沿用第一次解析出來的環境，因此既有安裝要先
+`uv cache clean annealbridge` 再重啟 host 才會換到新版；見
+[docs/mcp.md](docs/mcp.md)。
 
 ## 從命令列使用
 
@@ -290,7 +292,7 @@ live 測試要自己指定才會跑（`pytest -m remote`）。不用 checkout �
 架構規則、設計原則與 pull request 檢查清單都在
 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-版本 0.1.0：問題契約（`1.0` / `1.1`）、六個 backend、CLI 與 MCP 工具都已
+版本 0.2.0：問題契約（`1.0` / `1.1`）、六個 backend、CLI 與 MCP 工具都已
 完成並有測試涵蓋。目前刻意不支援的項目列在
 [docs/limitations.md](docs/limitations.md)；變更紀錄見
 [CHANGELOG.md](CHANGELOG.md)。

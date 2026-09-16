@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-16
+
 ### Added
 
 - `annealbridge --version` and `annealbridge-mcp --version` print
@@ -49,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passing a failure, and `filterwarnings = error` turns every warning into
   one. CI now runs on pushes to `main` and on pull requests only, cancels a
   superseded run on the same ref, and caches pip downloads between runs.
+- A new *Upgrading* section in `docs/mcp.md` records that `uvx` reuses the
+  environment it resolved on its first run, so a later release does not reach
+  an existing host configuration by itself: `uv cache clean annealbridge` and
+  a host restart do, `--refresh` re-resolves a single run at the cost of a
+  network round trip, and pip or pipx installs upgrade the usual way.
+  `annealbridge-mcp --version` and the `annealbridge_version` field of a
+  result identify the version actually running. Both READMEs point at it from
+  the MCP section.
 - Documentation corrections: the `mcp dev` command in `docs/mcp.md` now points
   at `src/annealbridge/interfaces/mcp/__init__.py` (the previous target,
   `server.py`, loaded a second server instance that exposes no tool); the CLI
@@ -442,5 +452,6 @@ First public release.
   truncated to `solver.top_k`. The previous wording ("how many satisfied
   every hard constraint") read as a count of raw solver rows.
 
-[Unreleased]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/TheTsungYing/AnnealBridge/releases/tag/v0.1.0

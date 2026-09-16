@@ -76,6 +76,30 @@ process: that call returns a tool error,
 never its value, the server logs it at `INFO` without a traceback,
 and the next tool call tries again.
 
+### Upgrading
+
+`uvx` resolves the newest version on its first run and reuses that cached
+environment afterwards, so a host configured as above keeps starting the
+version it fetched the first time: a later release on PyPI does not reach it
+on its own. Drop the cached environment and restart the host to move forward.
+
+```bash
+uv cache clean annealbridge
+```
+
+`uv`'s `--refresh` flag forces the same re-resolution on a single run. Putting
+it in a host configuration re-resolves on every launch, which costs a network
+round trip each time the host starts the server and fails when the machine is
+offline, so it suits a one-off check rather than a permanent entry.
+
+A pip or pipx install upgrades the usual way, with
+`pip install --upgrade "annealbridge[mcp]"` or `pipx upgrade annealbridge`.
+
+`annealbridge-mcp --version` prints the version that would actually run, and
+every `solve_optimization` result carries the same string as
+`annealbridge_version` — the two are the fastest way to tell a stale cached
+environment from a current one.
+
 ## Tools
 
 | Tool | Input | Returns |
