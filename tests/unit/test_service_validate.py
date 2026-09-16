@@ -158,3 +158,55 @@ class TestUnknownBackend:
     def test_registered_backend_does_not_warn(self):
         result = OptimizationService().validate(make_problem(backend="exact"))
         assert "UNKNOWN_BACKEND" not in {w.code for w in result.warnings}
+
+
+SA_SEED_MAX = 2**31 - 1
+
+
+def seed_findings(result) -> list:
+    """Every error and warning the result reports at ``solver.seed``."""
+    return [
+        finding
+        for finding in [*result.errors, *result.warnings]
+        if finding.path == "solver.seed"
+    ]
+
+
+class TestSeedRange:
+    """The registry declaration reaches the validator, so a seed outside
+    ``simulated_annealing``'s declared ``seed_min``..``seed_max`` is an error
+    from validate() rather than a vendor failure that only solve() finds.
+    """
+
+    @pytest.mark.parametrize("seed", [-1, 2**31, 2**40])
+    def test_out_of_range_seed_is_an_error(self, seed):
+        result = OptimizationService().validate(
+            make_problem(backend="simulated_annealing", seed=seed)
+        )
+        assert result.valid is False
+        (error,) = result.errors
+        assert error.code == "INVALID_SOLVER_PREFERENCE"
+        assert error.path == "solver.seed"
+        assert error.message == (
+            f"solver.seed must be an integer between 0 and {SA_SEED_MAX} "
+            f"on backend simulated_annealing, got {seed}"
+        )
+        assert result.warnings == []
+
+    @pytest.mark.parametrize("seed", [0, SA_SEED_MAX])
+    def test_both_ends_of_the_range_are_valid(self, seed):
+        result = OptimizationService().validate(
+            make_problem(backend="simulated_annealing", seed=seed)
+        )
+        assert result.valid is True
+        assert result.errors == []
+        assert seed_findings(result) == []
+
+    @pytest.mark.parametrize("seed", [-1, 2**40])
+    def test_backend_without_seed_support_only_warns_seed_ignored(self, seed):
+        result = OptimizationService().validate(make_problem(backend="exact", seed=seed))
+        assert result.valid is True
+        assert result.errors == []
+        assert [(f.code, f.path) for f in seed_findings(result)] == [
+            ("SEED_IGNORED", "solver.seed")
+        ]

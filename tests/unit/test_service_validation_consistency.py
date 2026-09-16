@@ -24,7 +24,11 @@ from annealbridge.models import (
     Variable,
 )
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
-from annealbridge.solvers import RawSolverResult, SolverRegistry
+from annealbridge.solvers import (
+    RawSolverResult,
+    SimulatedAnnealingBackend,
+    SolverRegistry,
+)
 from annealbridge.solvers.base import AvailabilityStatus, SolverCapabilities
 from tests.fakes.declared_backend import (
     FAKE_DECLARED_NAME,
@@ -538,3 +542,41 @@ class TestRankingFollowsTheCompiledSoftCost:
         assert result.status == "success"
         assert result.solutions[0].variables == {"x": 0}
         assert result.solutions[0].ranking_score == 0.0
+
+
+class TestSeedOutsideTheBackendRange:
+    """A seed outside the backend's declared ``seed_min``..``seed_max`` is a
+    validation error, so solve() answers ``invalid_problem`` and never calls
+    the backend. It used to reach the sampler and come back as
+    ``solver_error`` / ``SOLVER_ERROR`` in the vendor's own wording.
+    """
+
+    @pytest.mark.parametrize("seed", [-1, 2**31, 2**40])
+    def test_solve_is_refused_before_the_backend_runs(self, monkeypatch, seed):
+        calls: list[int | None] = []
+
+        def spy(self, compiled_problem, preferences):
+            calls.append(preferences.seed)
+            raise AssertionError("SimulatedAnnealingBackend.solve must not be called")
+
+        monkeypatch.setattr(SimulatedAnnealingBackend, "solve", spy)
+        problem = feasible_problem().model_copy(
+            update={
+                "solver": SolverPreferences(backend="simulated_annealing", seed=seed)
+            }
+        )
+
+        result = OptimizationService().solve(problem)
+
+        assert result.status == "invalid_problem"
+        assert [(e.code, e.path, e.message) for e in result.errors] == [
+            (
+                "INVALID_SOLVER_PREFERENCE",
+                "solver.seed",
+                f"solver.seed must be an integer between 0 and {2**31 - 1} "
+                f"on backend simulated_annealing, got {seed}",
+            )
+        ]
+        assert calls == []
+        assert result.attempts == []
+        assert result.warnings == []

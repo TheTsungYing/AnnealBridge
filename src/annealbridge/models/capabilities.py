@@ -10,7 +10,7 @@ declaration, and ``validation`` must not import ``solvers`` (spec §4).
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # A new model type is the core's business (it needs a compiler), not
 # something a backend plugin may declare freely -- hence a Literal.
@@ -214,6 +214,26 @@ class SolverCapabilities(BaseModel):
         default=False,
         description="Whether it honours solver.num_sweeps.",
     )
+    # strict: a declaration is code, and ``True`` or ``"0"`` read as a bound
+    # would be a typo accepted silently.
+    seed_min: int | None = Field(
+        default=None,
+        strict=True,
+        description=(
+            "The smallest solver.seed the backend accepts, inclusive. Declared "
+            "together with seed_max, and only when supports_seed is true; "
+            "validation refuses a seed outside the range before anything runs. "
+            "None means no range is declared."
+        ),
+    )
+    seed_max: int | None = Field(
+        default=None,
+        strict=True,
+        description=(
+            "The largest solver.seed the backend accepts, inclusive. Declared "
+            "together with seed_min."
+        ),
+    )
     requires_embedding: bool = Field(
         default=False,
         description=(
@@ -243,6 +263,22 @@ class SolverCapabilities(BaseModel):
         if not value:
             raise ValueError("supported_model_types must contain at least one model type")
         return value
+
+    @model_validator(mode="after")
+    def _consistent_seed_range(self) -> "SolverCapabilities":
+        # A contradictory range is a backend bug: refused at construction,
+        # never read as "no range" and so silently unchecked.
+        if (self.seed_min is None) != (self.seed_max is None):
+            raise ValueError("seed_min and seed_max must be declared together")
+        if self.seed_min is None:
+            return self
+        if not self.supports_seed:
+            raise ValueError("a seed range needs supports_seed=True")
+        if self.seed_min > self.seed_max:
+            raise ValueError(
+                f"seed_min ({self.seed_min}) must not exceed seed_max ({self.seed_max})"
+            )
+        return self
 
     @property
     def preferred_model_type(self) -> ModelType:

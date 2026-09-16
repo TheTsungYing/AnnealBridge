@@ -224,7 +224,14 @@ first solve errored.
 an allow-list on output: only these keys can ever leave the solver layer, and
 anything else a backend reports is silently dropped. This keeps vendor
 diagnostics — and anything a vendor might embed in them — out of a tool
-response.
+response. A whitelisted key whose value is not a finite number (NaN or
+±infinity, an integer too large for a float, a Fujitsu DA millisecond
+string such as `"NaN"` or `"inf"`, or a value that overflows when converted
+to microseconds) is dropped on its own, and the
+other keys are kept: JSON has no number for it, and publishing it as `null`
+would break the `number` type of `timing_us`. For the same reason
+`effective_time_limit_seconds` and `average_chain_break_fraction` are `null`
+(not reported) when the vendor's value is not finite.
 
 ```text
 qpu_access_time              qpu_sampling_time
@@ -390,7 +397,7 @@ no network I/O, no solving, no concurrency slot and no quota consumed.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `valid` | boolean | The problem's own validity. When `false`, `recommendations` is empty. |
+| `valid` | boolean | The problem's own validity. When `false`, `recommendations` is empty. An error only one backend's declaration raises — a `solver.seed` outside the range that backend declares — leaves `valid` true and blocks that backend instead. |
 | `errors` | array of [SolveError](#solveerror) | The problem's errors when it is invalid. |
 | `recommendations` | array of [BackendRecommendation](#backendrecommendation) | Every registered backend, ranked. |
 | `advisory` | string | A fixed sentence restating that a solve always uses `problem.solver.backend` as given. |
@@ -404,9 +411,9 @@ no network I/O, no solving, no concurrency slot and no quota consumed.
 | `usable` | boolean | Whether a solve on it right now would get past every gate and limit. |
 | `model_type` | `"bqm"` \| `"cqm"` \| null | The compiler path it would take; `null` when the server has no compiler for it. |
 | `reasons` | array of string | Fixed routing reason codes, in the order they were applied. See [Recommendation reason codes](errors.md#recommendation-reason-codes). |
-| `blocking` | array of [SolveError](#solveerror) | Why a solve now would fail, e.g. `REMOTE_DISABLED`. |
+| `blocking` | array of [SolveError](#solveerror) | Why a solve now would fail, e.g. `REMOTE_DISABLED`, or `INVALID_SOLVER_PREFERENCE` at `solver.seed` when the seed lies outside the range this backend declares. |
 | `warnings` | array of [SolveError](#solveerror) | The validation warnings for this backend's path. |
-| `estimated_compiled_variables` | integer \| null | The compiled size on this backend's path. |
+| `estimated_compiled_variables` | integer \| null | The compiled size on this backend's path. `null` when there is no compiler path, or when the problem is invalid for this backend (see `blocking`). |
 
 The ranking is **advisory only**: nothing feeds it back into a solve, and
 `problem.solver.backend` is never rewritten.
@@ -435,11 +442,13 @@ configured.
 | `name` | string | The **registry key**: the value to put in `solver.backend`, and the one `ANNEALBRIDGE_ENABLED_BACKENDS` is matched against. |
 | `available` | boolean | Whether the backend can run right now (dependency installed, credentials present, configuration valid). |
 | `enabled` | boolean | Whether server policy permits it: in the enabled-backends list, and remote execution allowed if it is remote. |
-| `unavailable_reason` | string \| null | Categorical detail when `available` is `false`, e.g. "dwave-system not installed". Never contains configuration values. |
+| `unavailable_reason` | string \| null | Categorical detail when `available` is `false`, e.g. "dwave-system not installed". Never contains configuration values. A backend whose availability check raises reads `availability check failed: unexpected <ExceptionClass>: <message>`, and one reporting an unknown category reads its detail (or `no reason reported`) followed by `(unknown availability category '<category>')`; both are redacted, and only that backend is listed as unavailable — the others are reported as usual. |
 | `remote` | boolean | Whether it leaves this machine. |
 | `heuristic` | boolean | Whether it may return a sub-optimal answer. |
 | `exhaustive` | boolean | Whether it enumerates every assignment and can prove infeasibility. |
 | `supports_seed` | boolean | Whether `solver.seed` has any effect. |
+| `seed_min` | integer \| null | The smallest `solver.seed` this backend accepts, inclusive. A seed outside `seed_min`–`seed_max` is refused with `INVALID_SOLVER_PREFERENCE` before anything runs. `null` when the backend declares no seed range. |
+| `seed_max` | integer \| null | The largest `solver.seed` this backend accepts, inclusive. `null` when the backend declares no seed range. |
 | `returns_multiple_samples` | boolean | `false` means the effective `top_k` is at most 1. |
 | `limits` | object of string → number | The policy ceilings that apply to this backend. |
 | `description` | string | One-line description of the backend. |

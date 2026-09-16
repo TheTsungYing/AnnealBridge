@@ -70,7 +70,8 @@ class BackendRecommendation(BaseModel):
         default=None,
         description=(
             "The compiled size on this backend's path, computed arithmetically "
-            "without building a model. Null when there is no compiler path."
+            "without building a model. Null when there is no compiler path, "
+            "or when the problem is invalid for this backend (see blocking)."
         ),
     )
 

@@ -45,6 +45,7 @@ should know:
 """
 
 import json
+import math
 import os
 import re
 import urllib.parse
@@ -189,10 +190,42 @@ def credential_env_vars() -> list[str]:
 
 
 def _timing_value(value: object) -> float | None:
-    """Return ``value`` as a float if it is a plain number, else None."""
+    """Return ``value`` as a float if it is a plain finite number, else None.
+
+    A non-finite value (NaN, ±inf) is dropped exactly like a non-number:
+    better dropped than published, because JSON has no spelling for it —
+    it would be dumped as ``null`` and break the ``number`` type of
+    ``timing_us`` and of the output schema. An int too large for a float has
+    no finite float spelling either, and is dropped the same way rather than
+    failing the whole run with ``OverflowError``.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _finite_or_none(value: float | None) -> float | None:
+    """``value`` unchanged unless it is a non-finite number, which becomes None.
+
+    Only NaN / ±inf are dropped, whatever the float type (a numpy
+    ``float32`` is not a ``float`` subclass). Anything else — an int, or a
+    value ``math.isfinite`` cannot judge — is left to the model's own
+    validation, so a caller that passes a wrong type still fails loudly
+    instead of being reported as "not reported".
+    """
+    if value is None or isinstance(value, int):
+        return value
+    try:
+        finite = math.isfinite(value)
+    except (TypeError, ValueError):
+        return value
+    return value if finite else None
 
 
 def remote_metadata(
@@ -223,7 +256,10 @@ def remote_metadata(
     float and keep the caller's key order; the mapping itself is never
     kept. The keyword fields are the vendor-side facts a remote backend
     reports, each with a caller; any other keyword is a ``TypeError``. The
-    result is always ``remote=True``.
+    two vendor-side floats, ``effective_time_limit_seconds`` and
+    ``average_chain_break_fraction``, are held to the same rule: a
+    non-finite value is dropped to None (not reported). The result is
+    always ``remote=True``.
     """
     whitelisted: dict[str, float] = {}
     for key, raw in timing_us.items():
@@ -239,8 +275,8 @@ def remote_metadata(
         timing_us=whitelisted,
         solver_id=solver_id,
         num_reads_requested=num_reads_requested,
-        effective_time_limit_seconds=effective_time_limit_seconds,
-        average_chain_break_fraction=average_chain_break_fraction,
+        effective_time_limit_seconds=_finite_or_none(effective_time_limit_seconds),
+        average_chain_break_fraction=_finite_or_none(average_chain_break_fraction),
         embedding_max_chain_length=embedding_max_chain_length,
         sampler_reported_feasible=sampler_reported_feasible,
     )

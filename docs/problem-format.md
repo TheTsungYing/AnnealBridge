@@ -397,7 +397,7 @@ The `solver` block is optional; every field has a default.
 | `backend` | enum | `"simulated_annealing"` | One of `simulated_annealing`, `exact`, `dwave_qpu`, `leap_hybrid_bqm`, `leap_hybrid_cqm`, `fujitsu_da`. See [Backends](backends.md). |
 | `num_reads` | integer > 0 | `100` | Number of samples to request. Bounded by policy (`LOCAL_READS_LIMIT` / `QPU_READS_LIMIT`). |
 | `num_sweeps` | integer > 0 | `1000` | Annealing sweeps per read on backends that take them. Bounded by policy (`SWEEPS_LIMIT`). |
-| `seed` | integer \| null | `null` | Random seed. A backend that does not support seeding raises the `SEED_IGNORED` warning. |
+| `seed` | integer \| null | `null` | Random seed. A backend that does not support seeding raises the `SEED_IGNORED` warning. A backend that declares a seed range (currently `simulated_annealing`: `0`–`2147483647`) refuses a seed outside it with `INVALID_SOLVER_PREFERENCE`. |
 | `top_k` | integer > 0 | `5` | Maximum number of ranked solutions to return. Bounded by policy (`TOP_K_LIMIT`). |
 | `max_retries` | integer >= 0 | `3` | Additional attempts with a doubled hard penalty when no feasible solution was found. Bounded by policy (`RETRY_LIMIT`). |
 | `penalty_multiplier` | finite number > 0 | `2.0` | Multiplier applied to `penalty_scale` for the first attempt. |

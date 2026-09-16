@@ -144,6 +144,18 @@ async def test_limits_come_from_policy():
     }
 
 
+async def test_seed_range_is_declared_per_backend():
+    content = (await _get_capabilities()).structured_content
+    by_name = {backend["name"]: backend for backend in content["backends"]}
+    for backend in by_name.values():
+        assert "seed_min" in backend and "seed_max" in backend, backend["name"]
+    sa = by_name["simulated_annealing"]
+    assert (sa["seed_min"], sa["seed_max"]) == (0, 2147483647)
+    for name, backend in by_name.items():
+        if name != "simulated_annealing":
+            assert (backend["seed_min"], backend["seed_max"]) == (None, None), name
+
+
 async def test_capabilities_never_calls_solve(monkeypatch):
     calls: list[str] = []
 

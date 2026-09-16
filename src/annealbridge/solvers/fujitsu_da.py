@@ -17,6 +17,7 @@ this module in an error, a log line or metadata passes through
 
 import json
 import logging
+import math
 import os
 import time
 import urllib.error
@@ -305,7 +306,13 @@ def build_request_body(
 
 
 def _timing_microseconds(timing: Any) -> dict[str, float]:
-    """DA ``timing`` (millisecond strings) → whitelisted float microseconds."""
+    """DA ``timing`` (millisecond strings) → whitelisted float microseconds.
+
+    A value that does not parse, or whose microseconds are not finite
+    (``"NaN"``, ``"inf"``, a JSON ``NaN`` literal, a JSON integer too large
+    for a float, or a millisecond count that overflows when scaled), is
+    dropped on its own.
+    """
     result: dict[str, float] = {}
     if not isinstance(timing, dict):
         return result
@@ -315,9 +322,12 @@ def _timing_microseconds(timing: Any) -> dict[str, float]:
             continue
         try:
             milliseconds = float(value)
-        except ValueError:
+        except (ValueError, OverflowError):
             continue
-        result[key] = milliseconds * 1000.0
+        microseconds = milliseconds * 1000.0
+        if not math.isfinite(microseconds):
+            continue
+        result[key] = microseconds
     return result
 
 

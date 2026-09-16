@@ -548,6 +548,130 @@ class TestSeedIgnored:
         assert "SEED_IGNORED" not in warning_codes(result)
 
 
+SA_SEED_MAX = 2**31 - 1
+
+
+def seed_range_message(seed: int, low: int, high: int, backend: str) -> str:
+    return (
+        f"solver.seed must be an integer between {low} and {high} "
+        f"on backend {backend}, got {seed}"
+    )
+
+
+def seed_findings(result) -> list:
+    """Every error and warning the result reports at ``solver.seed``."""
+    return [
+        finding
+        for finding in [*result.errors, *result.warnings]
+        if finding.path == "solver.seed"
+    ]
+
+
+def with_version(problem: OptimizationProblem, version: str) -> OptimizationProblem:
+    return OptimizationProblem.model_validate({**problem.model_dump(), "version": version})
+
+
+class TestSeedRange:
+    """``SolverCapabilities.seed_min`` / ``seed_max`` (inclusive).
+
+    A seed outside the declared range is an INVALID_SOLVER_PREFERENCE error
+    from the backend-aware layer, so it is refused before any backend runs
+    instead of reaching the sampler and coming back as SOLVER_ERROR in the
+    vendor's wording. Backend-independent validation never checks it.
+    """
+
+    @pytest.mark.parametrize("seed", [-1, 2**31, 2**40])
+    def test_simulated_annealing_rejects_a_seed_outside_its_range(self, seed):
+        problem = make_problem(solver={"backend": "simulated_annealing", "seed": seed})
+        result = validate_problem_full(
+            problem, capabilities=registry_caps("simulated_annealing")
+        )
+        assert result.valid is False
+        (error,) = result.errors
+        assert error.code == "INVALID_SOLVER_PREFERENCE"
+        assert error.path == "solver.seed"
+        assert error.message == seed_range_message(
+            seed, 0, SA_SEED_MAX, "simulated_annealing"
+        )
+        # Same shape as every other error: no advisory data.
+        assert result.warnings == []
+        assert result.estimated_compiled_variables is None
+        assert result.objective_scale is None
+
+    @pytest.mark.parametrize("seed", [0, SA_SEED_MAX])
+    def test_simulated_annealing_accepts_both_ends_of_its_range(self, seed):
+        problem = make_problem(solver={"backend": "simulated_annealing", "seed": seed})
+        result = validate_problem_full(
+            problem, capabilities=registry_caps("simulated_annealing")
+        )
+        assert result.valid is True
+        assert result.errors == []
+        assert seed_findings(result) == []
+
+    @pytest.mark.parametrize("version", ["1.0", "1.1"])
+    @pytest.mark.parametrize("seed", [-1, 2**40])
+    def test_backend_without_seed_support_only_warns_seed_ignored(self, seed, version):
+        # A backend that ignores the seed has nothing to range-check.
+        problem = with_version(
+            make_problem(solver={"backend": "exact", "seed": seed}), version
+        )
+        assert problem.version == version
+        result = validate_problem_full(problem, capabilities=registry_caps("exact"))
+        assert result.valid is True
+        assert result.errors == []
+        assert [(f.code, f.path) for f in seed_findings(result)] == [
+            ("SEED_IGNORED", "solver.seed")
+        ]
+
+    def test_without_capabilities_no_range_is_checked(self):
+        problem = make_problem(solver={"backend": "simulated_annealing", "seed": -1})
+        assert validate_problem(problem) == []
+        assert validate_problem_full(problem).valid is True
+
+    def test_backend_independent_errors_are_listed_first(self):
+        problem = make_problem(
+            solver={"backend": "simulated_annealing", "top_k": 0, "seed": -1}
+        )
+        result = validate_problem_full(
+            problem, capabilities=registry_caps("simulated_annealing")
+        )
+        assert result.valid is False
+        assert [e.code for e in result.errors] == [
+            "INVALID_SOLVER_PREFERENCE",
+            "INVALID_SOLVER_PREFERENCE",
+        ]
+        assert [e.path for e in result.errors] == ["solver.top_k", "solver.seed"]
+
+    @pytest.mark.parametrize("seed", [9, 21])
+    def test_a_third_party_declaration_is_enforced_from_the_declaration(self, seed):
+        """The range comes from the declaration alone, not the backend name.
+
+        ``acme_sampler`` is no built-in backend, so the validator can only
+        have used ``seed_min`` / ``seed_max`` (no name dispatch; see also
+        ``tests/architecture/test_no_backend_names.py``).
+        """
+        declaration = caps(name="acme_sampler", supports_seed=True, seed_min=10, seed_max=20)
+        result = validate_problem_full(
+            make_problem(solver={"seed": seed}), capabilities=declaration
+        )
+        assert result.valid is False
+        (error,) = result.errors
+        assert error.code == "INVALID_SOLVER_PREFERENCE"
+        assert error.path == "solver.seed"
+        assert "between 10 and 20 on backend acme_sampler" in error.message
+
+    @pytest.mark.parametrize("seed", [10, 20])
+    def test_a_third_party_declaration_accepts_its_inclusive_bounds(self, seed):
+        declaration = caps(name="acme_sampler", supports_seed=True, seed_min=10, seed_max=20)
+        # The declaration really carries the range (not silently dropped).
+        assert (declaration.seed_min, declaration.seed_max) == (10, 20)
+        result = validate_problem_full(
+            make_problem(solver={"seed": seed}), capabilities=declaration
+        )
+        assert result.valid is True
+        assert seed_findings(result) == []
+
+
 class TestParameterIgnored:
     """§9.3 PARAMETER_IGNORED rows, one capability condition each."""
 

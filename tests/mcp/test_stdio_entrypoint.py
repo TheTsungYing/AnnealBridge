@@ -18,7 +18,9 @@ for the process exit code, ``capsys`` for its stdout and stderr, and
 capture keeps out of ``capsys``. The ``in_process_main`` fixture replaces
 ``mcp.run`` with a guard that fails the test, so a regression that lets
 ``main()`` reach the transport turns red instead of blocking on stdio or
-binding a socket.
+binding a socket. It also wraps ``server.main`` so the root logger's handlers
+and level are put back when ``main()`` returns or raises: its log setup
+replaces every root handler, pytest's capture handlers included.
 """
 
 import logging
@@ -32,6 +34,7 @@ from pathlib import Path
 import pytest
 from mcp import Client, StdioServerParameters
 
+from annealbridge.config import SettingsError
 from annealbridge.interfaces.mcp import server
 
 pytestmark = pytest.mark.anyio
@@ -183,12 +186,47 @@ def in_process_main(monkeypatch):
     ``reset_state()``. The guard goes into the instance ``__dict__`` so that
     undoing it deletes the entry instead of pinning a bound method there.
     Every ``ANNEALBRIDGE_*`` variable is removed first, so a developer's own
-    server settings cannot change the outcome; a test sets what it needs."""
+    server settings cannot change the outcome; a test sets what it needs.
+
+    ``server.main`` itself is replaced by a wrapper that snapshots the root
+    logger's handlers and level just before calling the real ``main()`` and
+    restores both in a ``finally``, re-raising whatever ``main()`` raised.
+    ``main()`` configures logging with ``force=True``, which removes and
+    closes every root handler — pytest's capture handlers included — so they
+    must be put back. The snapshot and the restore both happen inside the
+    wrapper, during the call phase: pytest attaches its capture handlers to
+    the root logger only for the duration of each phase (setup, call,
+    teardown), so restoring from this fixture's own setup and teardown would
+    leave the setup phase's attachment on the root for good. File handlers
+    (``--log-file``) are detached before the call rather than put back after
+    it: a closed ``FileHandler`` opened with mode ``"w"`` never reopens, so
+    every later record of the session would be lost. A closed stream
+    handler keeps working, so the capture handlers stay attached and
+    ``caplog`` still sees what ``main()`` logs before it configures logging."""
     for name in list(os.environ):
         if _is_server_setting(name):
             monkeypatch.delenv(name)
     monkeypatch.setitem(vars(server.mcp), "run", _refuse_to_serve)
     monkeypatch.setattr(server, "_state", server._state)
+
+    real_main = server.main
+
+    def main_restoring_the_root_logger():
+        root = logging.getLogger()
+        saved_handlers = list(root.handlers)
+        saved_level = root.level
+        root.handlers[:] = [
+            handler
+            for handler in saved_handlers
+            if not isinstance(handler, logging.FileHandler)
+        ]
+        try:
+            return real_main()
+        finally:
+            root.handlers[:] = saved_handlers
+            root.setLevel(saved_level)
+
+    monkeypatch.setattr(server, "main", main_restoring_the_root_logger)
 
 
 @pytest.mark.parametrize(
@@ -300,3 +338,115 @@ def test_version_exits_0_before_the_settings_are_read(
     assert "WARNING" not in captured.err
     assert "Error:" not in captured.err
     assert "Traceback" not in captured.err
+
+
+@pytest.mark.usefixtures("in_process_main")
+def test_settings_refused_while_wiring_the_service_exit_2_with_a_message_and_no_traceback(
+    monkeypatch, capsys
+):
+    """``load_settings()`` accepts every variable, but wiring the service from
+    those settings raises ``SettingsError`` — a backend declaring a limit the
+    policy has no value for, say. ``main()`` ends exactly as it does for an
+    invalid variable: exit code 2, one ``Error:`` line, no traceback, and no
+    serving (the ``in_process_main`` guard)."""
+
+    def refuse_to_wire(settings=None):
+        raise SettingsError(
+            "Invalid server settings: backend 'acme' declares limit "
+            "'iterations' but the policy has no value for it"
+        )
+
+    monkeypatch.setattr(server, "build_state", refuse_to_wire)
+    monkeypatch.setattr(sys, "argv", ["annealbridge-mcp"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        server.main()
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert (
+        "Error: Invalid server settings: backend 'acme' declares limit 'iterations'"
+        in captured.err
+    )
+    assert "Traceback" not in captured.err
+    assert captured.out == ""
+
+
+SERVER_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+@pytest.mark.usefixtures("in_process_main")
+def test_server_logs_through_one_stderr_handler_in_its_own_format(monkeypatch, capsys):
+    """By the time ``main()`` starts serving, the root logger has exactly one
+    handler: a plain ``StreamHandler`` on stderr with the server's format, at
+    ``INFO``.
+
+    Importing the server module already configured the root logger: the SDK's
+    ``MCPServer`` calls ``logging.basicConfig`` with a ``RichHandler`` on a
+    stderr console. A ``basicConfig`` without ``force=True`` is a no-op once
+    the root has any handler, so ``main()``'s own setup would silently never
+    apply. No handler may write to stdout, which is the stdio transport's
+    protocol channel.
+
+    ``mcp.run`` records the root logger when ``main()`` reaches it and
+    returns; afterwards the ``in_process_main`` wrapper must have restored the
+    root logger as it was before the call."""
+    seen = []
+
+    def record_the_root_logger(*args, **kwargs):
+        root = logging.getLogger()
+        handlers = [
+            (
+                type(handler),
+                getattr(handler, "stream", None),
+                handler.formatter._fmt if handler.formatter else None,
+            )
+            for handler in root.handlers
+        ]
+        seen.append((handlers, root.level))
+
+    monkeypatch.setitem(vars(server.mcp), "run", record_the_root_logger)
+    monkeypatch.setattr(sys, "argv", ["annealbridge-mcp"])
+    root = logging.getLogger()
+    handlers_before = list(root.handlers)
+    level_before = root.level
+    # capsys has replaced sys.stderr; the handler must write to this object.
+    stderr = sys.stderr
+
+    server.main()
+
+    assert len(seen) == 1
+    handlers, level = seen[0]
+    assert [
+        stream for _, stream, _ in handlers if stream in (sys.stdout, sys.__stdout__)
+    ] == []
+    assert [kind for kind, _, _ in handlers if kind.__name__ == "RichHandler"] == []
+    assert handlers == [(logging.StreamHandler, stderr, SERVER_LOG_FORMAT)]
+    assert level == logging.INFO
+    assert root.handlers == handlers_before
+    assert root.level == level_before
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.usefixtures("in_process_main")
+def test_unknown_variable_warning_is_logged_in_the_server_format(monkeypatch, capsys):
+    """The log setup runs before ``load_settings()``, so the unknown-variable
+    ``WARNING`` it logs already goes to stderr through the server's handler,
+    in the server's format, before serving starts."""
+    monkeypatch.setenv("ANNEALBRIDGE_NOT_A_REAL_SETTING", "1")
+    stderr_when_serving = []
+
+    def record_stderr(*args, **kwargs):
+        stderr_when_serving.append(capsys.readouterr().err)
+
+    monkeypatch.setitem(vars(server.mcp), "run", record_stderr)
+    monkeypatch.setattr(sys, "argv", ["annealbridge-mcp"])
+
+    server.main()
+
+    assert len(stderr_when_serving) == 1
+    assert (
+        "WARNING annealbridge.config.settings: Ignoring unknown ANNEALBRIDGE_* "
+        "variable(s): ANNEALBRIDGE_NOT_A_REAL_SETTING"
+    ) in stderr_when_serving[0]
+    assert capsys.readouterr().out == ""

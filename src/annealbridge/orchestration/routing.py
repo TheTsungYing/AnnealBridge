@@ -158,6 +158,10 @@ def _assess(
         max_compiled_variables=variable_limit,
         model_type=model_type,
     )
+    # recommend() has already refused every backend-independent error, so
+    # an error left here is this backend's own (a seed outside the range it
+    # declares). solve would refuse the problem with it, so it blocks.
+    blocking.extend(validation.errors)
     warning_codes = {warning.code for warning in validation.warnings}
     if caps.exhaustive and "EXACT_OVER_LIMIT" in warning_codes:
         # What is only advice for validate() is a refusal for solve

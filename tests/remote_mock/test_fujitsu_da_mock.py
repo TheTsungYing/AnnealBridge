@@ -31,6 +31,7 @@ from annealbridge.models import (
     CompiledProblem,
     FujitsuDAOptions,
     OptimizationProblem,
+    SolveResult,
     SolverExecutionMetadata,
     SolverPreferences,
 )
@@ -551,8 +552,46 @@ class TestResultConversion:
 
     @pytest.mark.parametrize(
         "value",
-        ["", "abc", True, None, {"x": 1}, [1]],
-        ids=["empty_string", "text", "bool", "null", "object", "list"],
+        [
+            "",
+            "abc",
+            True,
+            None,
+            {"x": 1},
+            [1],
+            # Parse as floats but are not finite: kept, they would serialize
+            # as ``null`` and break the ``number`` type of ``timing_us``.
+            "NaN",
+            "nan",
+            "inf",
+            "-inf",
+            "Infinity",
+            "1e400",
+            float("nan"),
+            float("inf"),
+            # Finite milliseconds whose microseconds overflow to inf.
+            "1e306",
+            # A JSON integer no float can hold: float() raises OverflowError.
+            10**400,
+        ],
+        ids=[
+            "empty_string",
+            "text",
+            "bool",
+            "null",
+            "object",
+            "list",
+            "nan_string",
+            "lower_nan_string",
+            "inf_string",
+            "negative_inf_string",
+            "infinity_string",
+            "overflowing_string",
+            "nan_float",
+            "inf_float",
+            "overflow_after_scaling",
+            "int_too_large_for_float",
+        ],
     )
     @pytest.mark.parametrize("key", ["solve_time", "total_elapsed_time"])
     def test_unparsable_timing_value_drops_only_that_key(self, monkeypatch, key, value):
@@ -568,6 +607,51 @@ class TestResultConversion:
         assert key not in timing_us
         assert timing_us == {other: 7000.0}
         assert type(timing_us[other]) is float
+
+    @staticmethod
+    def non_finite_timing_body(literal: str) -> bytes:
+        """A ``Done`` body whose ``solve_time`` is the bare JSON ``literal``.
+
+        ``json.loads`` accepts ``NaN`` / ``Infinity`` / ``-Infinity`` and
+        turns them into float nan / inf, so the backend sees a *number*,
+        not a string it would have to parse.
+        """
+        payload = FakeDATransport(solutions=zero_rows(make_compiled())).done_payload()
+        payload["qubo_solution"]["timing"] = {
+            "solve_time": "__LITERAL__",
+            "total_elapsed_time": "7",
+        }
+        text = json.dumps(payload).replace('"__LITERAL__"', literal)
+        parsed = json.loads(text)["qubo_solution"]["timing"]["solve_time"]
+        assert isinstance(parsed, float) and not np.isfinite(parsed)
+        return text.encode("utf-8")
+
+    @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+    def test_non_finite_json_literal_in_the_body_is_dropped(self, monkeypatch, literal):
+        fake = FakeDATransport(solutions=zero_rows(make_compiled()))
+        fake.result_response = (200, self.non_finite_timing_body(literal))
+
+        result, _ = solve(monkeypatch, fake)
+
+        metadata = result.metadata
+        assert metadata.timing_us == {"total_elapsed_time": 7000.0}
+        dumped = metadata.model_dump_json()
+        assert None not in json.loads(dumped)["timing_us"].values()
+        assert SolverExecutionMetadata.model_validate_json(dumped) == metadata
+
+    def test_non_finite_timing_keeps_the_solve_result_json_round_trip(self, monkeypatch):
+        set_key(monkeypatch)
+        fake = FakeDATransport(solutions=zero_rows(make_compiled()))
+        fake.result_response = (200, self.non_finite_timing_body("NaN"))
+
+        result = make_da_service(fake).solve(make_problem(backend="fujitsu_da"))
+
+        assert result.status == "success", (result.status, result.errors)
+        # A NaN that reached the result would be dumped as ``null`` and fail
+        # to validate against the ``float`` it came from.
+        restored = SolveResult.model_validate_json(result.model_dump_json())
+        assert restored == result
+        assert result.metadata.timing_us == {"total_elapsed_time": 7000.0}
 
     def test_vendor_extras_in_the_result_never_reach_metadata(self, monkeypatch):
         # Metadata is built from named facts only: nothing else in the Done

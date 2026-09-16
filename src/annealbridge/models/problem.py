@@ -163,7 +163,9 @@ class SolverPreferences(InputModel):
         description=(
             "Random seed for backends that support seeding, giving "
             "reproducible sampling; ignored (with a SEED_IGNORED warning) on "
-            "the others."
+            "the others. A backend that declares a seed range (seed_min / "
+            "seed_max in get_optimization_capabilities) refuses a seed "
+            "outside it with INVALID_SOLVER_PREFERENCE."
         ),
     )
     top_k: Count = Field(

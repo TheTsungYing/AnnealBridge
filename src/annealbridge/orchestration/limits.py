@@ -290,6 +290,66 @@ def policy_gate_errors(
     return None
 
 
+def availability_refusal(
+    backend: SolverBackend,
+) -> tuple[SolveStatus, SolveError, str | None] | None:
+    """§16.2 step 5: the backend's availability, asked safely.
+
+    Calls ``is_available()`` exactly once. Returns None when the backend can
+    run, otherwise ``(status, error, reason)``: ``status`` and ``error`` are
+    the refusal :func:`gate_errors` reports, and ``reason`` is the
+    capabilities view's ``unavailable_reason`` — for a known category the
+    backend's own ``detail`` unchanged (None when it gave none). The error
+    code is the backend's ``error_code`` when it names one, else the
+    category's default from :data:`AVAILABILITY_MAP`.
+
+    No policy gate lives here. :func:`gate_errors` runs
+    :func:`policy_gate_errors` first and only then calls this, which keeps
+    the short-circuit order; the capabilities view calls it for every
+    backend regardless of policy, since ``available`` and ``enabled`` are
+    reported independently.
+
+    The availability check is third-party code from the service's point
+    of view, so it is guarded like a backend's ``solve`` (2026-09-09
+    review, service-layer follow-ups): an ``is_available()`` that raises,
+    or a status whose category is outside :data:`AVAILABILITY_MAP`, is
+    reported as ``backend_unavailable`` / ``BACKEND_UNAVAILABLE`` with the
+    reason in the message (redacted, since it never passed through the
+    backend's own wrapping). ``solve``, ``recommend`` and the capabilities
+    view all go through here, so none of them can be taken down by one
+    backend's broken check; the view just lists that backend as
+    unavailable.
+    """
+    caps = backend.capabilities
+    try:
+        availability = backend.is_available()
+    except Exception as exc:
+        # Only ``Exception``: KeyboardInterrupt / SystemExit must propagate.
+        failure = f"availability check failed: unexpected {type(exc).__name__}: {exc}"
+        message = redact(f"Backend '{caps.name}' {failure}")
+        logger.warning("%s", message)
+        status, code = _AVAILABILITY_FALLBACK
+        return (status, catalog_error(code, message), redact(failure))
+    if availability.available:
+        return None
+    mapped = AVAILABILITY_MAP.get(availability.category)
+    status, default_code = mapped if mapped is not None else _AVAILABILITY_FALLBACK
+    detail = availability.detail or "no reason reported"
+    reason = availability.detail
+    if mapped is None:
+        # Like an exception's text, a status outside the known categories
+        # never passed through the backend's own wrapping: redacted.
+        detail = redact(
+            f"{detail} (unknown availability category {availability.category!r})"
+        )
+        reason = detail
+    error = catalog_error(
+        availability.error_code or default_code,
+        f"Backend '{caps.name}' is unavailable: {detail}",
+    )
+    return (status, error, reason)
+
+
 def gate_errors(
     backend_name: str, backend: SolverBackend, policy: ExecutionPolicy
 ) -> tuple[SolveStatus, str, list[SolveError]] | None:
@@ -298,8 +358,8 @@ def gate_errors(
     The gates short-circuit in that order, so ``is_available()`` is only
     called once policy allows the backend at all (the D-Wave availability
     check reads the Ocean config file; this keeps Phase 2's lazy order).
-    The first two are :func:`policy_gate_errors`, shared with the
-    capabilities view.
+    The first two are :func:`policy_gate_errors` and the third is
+    :func:`availability_refusal`, both shared with the capabilities view.
 
     Returns ``(status, reported_backend_name, errors)`` or None when the
     backend may run. ``enabled_backends`` holds registry keys — the names
@@ -308,44 +368,17 @@ def gate_errors(
     ``capabilities.name``, which a custom registry may register under a
     different key. Never substitutes another backend.
 
-    The availability check is third-party code from the service's point
-    of view, so it is guarded like a backend's ``solve`` (2026-09-09
-    review, service-layer follow-ups): an ``is_available()`` that raises,
-    or a status whose category is outside :data:`AVAILABILITY_MAP`, is
-    reported as ``backend_unavailable`` / ``BACKEND_UNAVAILABLE`` with the
-    reason in the message (redacted, since it never passed through the
-    backend's own wrapping). Both ``solve`` and ``recommend`` go through
-    here, so neither can be taken down by one backend's broken check.
+    A raising availability check or an unknown category is a structured
+    refusal, not an exception (see :func:`availability_refusal`), so neither
+    ``solve`` nor ``recommend`` can be taken down by one backend's broken
+    check.
     """
     caps = backend.capabilities
     refused = policy_gate_errors(backend_name, caps, policy)
     if refused is not None:
         return refused
-    try:
-        availability = backend.is_available()
-    except Exception as exc:
-        # Only ``Exception``: KeyboardInterrupt / SystemExit must propagate.
-        message = redact(
-            f"Backend '{caps.name}' availability check failed: "
-            f"unexpected {type(exc).__name__}: {exc}"
-        )
-        logger.warning("%s", message)
-        status, code = _AVAILABILITY_FALLBACK
-        return (status, caps.name, [catalog_error(code, message)])
-    if not availability.available:
-        mapped = AVAILABILITY_MAP.get(availability.category)
-        status, default_code = mapped if mapped is not None else _AVAILABILITY_FALLBACK
-        detail = availability.detail or "no reason reported"
-        if mapped is None:
-            detail += f" (unknown availability category {availability.category!r})"
-        return (
-            status,
-            caps.name,
-            [
-                catalog_error(
-                    availability.error_code or default_code,
-                    f"Backend '{caps.name}' is unavailable: {detail}",
-                )
-            ],
-        )
-    return None
+    refusal = availability_refusal(backend)
+    if refusal is None:
+        return None
+    status, error, _reason = refusal
+    return (status, caps.name, [error])

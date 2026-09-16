@@ -6,8 +6,11 @@ from importlib import metadata
 import pytest
 from typer.testing import CliRunner
 
+import annealbridge.interfaces.cli.main as cli_main
 from annealbridge.interfaces.cli.main import _render_human, app
+from annealbridge.interfaces.composition import build_state_from_policy
 from annealbridge.models import (
+    AvailabilityStatus,
     ClosestCandidate,
     HardViolationRate,
     InfeasibilityDiagnostics,
@@ -17,7 +20,10 @@ from annealbridge.models import (
     SolveError,
     SolveResult,
 )
+from annealbridge.orchestration import ExecutionPolicy
+from annealbridge.solvers import ExactSolverBackend, SolverRegistry
 from tests.conftest import EXAMPLES_DIR
+from tests.unit.test_limits import FAKE_TOKEN, SpyBackend, make_capabilities
 
 runner = CliRunner()
 
@@ -108,6 +114,65 @@ class TestCapabilities:
         assert "DEV-FAKE-TOKEN" not in result.output
         assert "127.0.0.1" not in result.output
         assert "8000" not in result.output
+
+    @staticmethod
+    def _invoke_with_registry(monkeypatch, backends: dict):
+        """Run ``capabilities`` against a custom registry and default policy."""
+        state = build_state_from_policy(ExecutionPolicy(), SolverRegistry(backends))
+        monkeypatch.setattr(cli_main, "build_state", lambda: state)
+        return runner.invoke(app, ["capabilities"])
+
+    def test_a_raising_availability_check_only_marks_its_own_row(self, monkeypatch):
+        # 2026-09-15: one backend's broken check must not fail the command.
+        result = self._invoke_with_registry(
+            monkeypatch,
+            {
+                "broken_backend": SpyBackend(
+                    make_capabilities(name="fake_broken", remote=False),
+                    raise_on_available=RuntimeError(f"vendor blew up token={FAKE_TOKEN}"),
+                ),
+                "exact": ExactSolverBackend(),
+            },
+        )
+
+        assert result.exit_code == 0
+        # The table is on stdout; the operator WARNING goes to stderr.
+        rows = {line.split()[0]: line for line in result.stdout.splitlines()[1:]}
+        assert list(rows) == ["broken_backend", "exact"]
+        assert rows["broken_backend"].split()[1] == "no"
+        assert "(availability check failed: unexpected RuntimeError: " in rows["broken_backend"]
+        assert rows["broken_backend"].endswith(")")
+        assert rows["exact"].split()[1:4] == ["yes", "yes", "no"]
+        assert FAKE_TOKEN not in _output(result)
+
+    def test_an_unknown_availability_category_is_shown_with_its_reason(self, monkeypatch):
+        def weird(name: str, detail: str | None) -> SpyBackend:
+            return SpyBackend(
+                make_capabilities(name=name, remote=False),
+                AvailabilityStatus.model_construct(
+                    category="weird", detail=detail, error_code=None
+                ),
+            )
+
+        result = self._invoke_with_registry(
+            monkeypatch,
+            {
+                "weird_silent": weird("fake_silent", None),
+                "weird_detailed": weird("fake_detailed", "scheduled maintenance"),
+                "exact": ExactSolverBackend(),
+            },
+        )
+
+        assert result.exit_code == 0
+        # The table is on stdout; the operator WARNING goes to stderr.
+        rows = {line.split()[0]: line for line in result.stdout.splitlines()[1:]}
+        assert list(rows) == ["weird_silent", "weird_detailed", "exact"]
+        category = "(unknown availability category 'weird')"
+        assert rows["weird_silent"].split()[1] == "no"
+        assert rows["weird_silent"].endswith(f"(no reason reported {category})")
+        assert rows["weird_detailed"].split()[1] == "no"
+        assert rows["weird_detailed"].endswith(f"(scheduled maintenance {category})")
+        assert rows["exact"].split()[1:4] == ["yes", "yes", "no"]
 
 
 class TestSolveErrors:

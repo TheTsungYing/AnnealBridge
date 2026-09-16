@@ -55,11 +55,26 @@ annealbridge-mcp
 
 Configuration comes from the `ANNEALBRIDGE_*` environment
 ([Configuration](configuration.md)). The settings are read and validated
-before the transport starts: an invalid value is reported on stderr and ends
-the process with exit code `2` rather than a traceback, so a misconfigured
-server fails at launch instead of on the first tool call. A missing `[mcp]`
-extra ends the same way, with the same exit code. Logs go to stderr at
-`INFO` level, which keeps stdout clean for the stdio protocol.
+before the transport starts: an invalid value — or settings the service
+refuses to be wired from, such as a registered backend declaring a limit key
+the policy has no value for — is reported on stderr as one `Error: ...` line
+and ends the process with exit code `2` rather than a traceback, so a
+misconfigured server fails at launch instead of on the first tool call. A
+missing `[mcp]` extra ends the same way, with the same exit code. Logs go to
+stderr at `INFO` level, one line per record in the form
+`<asctime> <LEVEL> <logger name>: <message>` — the unknown-variable `WARNING`
+included — which keeps stdout clean for the stdio protocol. That format is
+set up by the entry point, so it applies to `annealbridge-mcp` and
+`python -m annealbridge.interfaces.mcp.server`; a use that bypasses it
+(`mcp dev`, an embedding host, an in-memory `Client(mcp)`) keeps the MCP
+SDK's own log handler and format.
+
+Used without the entry point, the server builds its service on the first
+tool call instead of at launch. An invalid setting then cannot end the
+process: that call returns a tool error,
+`Error executing tool <name>: <settings message>`, naming the variable but
+never its value, the server logs it at `INFO` without a traceback,
+and the next tool call tries again.
 
 ## Tools
 
@@ -108,7 +123,9 @@ Describes what this server accepts and which backends are usable right now.
   constraint operators and objective terms, the accepted schema versions,
   whether inequalities require integer coefficients, the full problem JSON
   schema, and one entry per backend with `available`, `enabled`,
-  `unavailable_reason`, its flags and its resource limits.
+  `unavailable_reason`, its flags, the `seed_min` / `seed_max` range it
+  accepts for `solver.seed` (`null` when it declares none) and its resource
+  limits.
 - **When to call:** before formulating a problem. It performs no solving and
   no network requests.
 
@@ -126,6 +143,11 @@ built-in names, so a backend has to be registered under its own
 already accounts for server policy, so a backend reported as not enabled will
 not become usable by asking for it.
 
+A backend whose own availability check fails — it raises, or reports a
+category the server does not know — does not fail the call: that backend is
+listed with `available: false` and the redacted failure as its
+`unavailable_reason`, and every other backend is listed as usual.
+
 ### `validate_optimization_problem`
 
 Checks a problem without solving it.
@@ -140,8 +162,11 @@ Checks a problem without solving it.
   compiled or solved and no network requests are made.
 
 Validation collects **all** errors in one pass, so one round trip is enough to
-fix a problem. The size estimate follows the model type: on a bqm backend it
-counts the slack bits of every inequality plus the binary-encoding bits of
+fix a problem. That pass includes the one check that depends on the named
+backend: a `solver.seed` outside the `seed_min` / `seed_max` range that
+backend declares is an `INVALID_SOLVER_PREFERENCE` error. The size estimate
+follows the model type: on a bqm backend it counts the slack bits of every
+inequality plus the binary-encoding bits of
 every integer variable, so wider bounds cost more compiled variables; on a cqm
 backend integers are native and no encoding bits are counted.
 

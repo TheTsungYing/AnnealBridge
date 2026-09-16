@@ -249,7 +249,10 @@ fujitsu_da           no         no       yes     max_time=300s, max_remote_retri
 
 - **Available** — the backend can run: its optional dependency is installed
   and its credentials are configured. The parenthesised text is the reason it
-  cannot, in categorical form that never contains a configuration value.
+  cannot, in categorical form that never contains a configuration value. A
+  backend whose availability check itself fails shows `no` with that failure
+  as its reason; the other rows are listed as usual and the command still
+  exits `0`.
 - **Enabled** — server policy permits it: it is in
   `ANNEALBRIDGE_ENABLED_BACKENDS` (or the list is unset) *and*, for a remote
   backend, `ANNEALBRIDGE_ALLOW_REMOTE` is true. A remote backend the policy

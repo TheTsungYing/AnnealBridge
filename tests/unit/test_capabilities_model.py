@@ -8,8 +8,10 @@ from annealbridge.models import (
     ParameterLimit,
     SolverCapabilities,
 )
+from annealbridge.solvers import SimulatedAnnealingBackend, SolverRegistry
 from annealbridge.solvers import SolverCapabilities as ReexportedCapabilities
 from annealbridge.solvers.base import AvailabilityStatus as ReexportedStatus
+from annealbridge.solvers.simulated_annealing import _SEED_LIMIT
 
 
 def make_capabilities(**overrides) -> SolverCapabilities:
@@ -103,3 +105,71 @@ class TestSolverCapabilities:
     def test_parameter_limits_reject_tuples(self):
         with pytest.raises(ValidationError):
             make_capabilities(parameter_limits=[("num_reads", "reads", "QPU_READS_LIMIT")])
+
+
+class TestSeedRange:
+    """``seed_min`` / ``seed_max``: the inclusive seed range a backend accepts.
+
+    Both default to None (no declared range). A declaration that contradicts
+    itself is refused when it is built, so the validator never has to guess
+    what a half-declared or inverted range means.
+    """
+
+    def test_no_range_is_the_default(self):
+        caps = make_capabilities()
+        assert caps.seed_min is None
+        assert caps.seed_max is None
+
+    def test_a_single_seed_range_is_legal(self):
+        caps = make_capabilities(supports_seed=True, seed_min=7, seed_max=7)
+        assert (caps.seed_min, caps.seed_max) == (7, 7)
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"seed_min": 0},
+            {"seed_max": 10},
+            {"seed_min": 11, "seed_max": 10},
+            {"supports_seed": False, "seed_min": 0, "seed_max": 10},
+        ],
+        ids=["only-min", "only-max", "min-above-max", "range-without-seed-support"],
+    )
+    def test_contradictory_declarations_are_rejected(self, overrides):
+        with pytest.raises(ValidationError):
+            make_capabilities(**overrides)
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"seed_min": True, "seed_max": 10},
+            {"seed_min": "0", "seed_max": 10},
+            {"seed_min": 0, "seed_max": 10.0},
+        ],
+        ids=["bool-bound", "string-bound", "float-bound"],
+    )
+    def test_a_bound_must_be_a_plain_int(self, overrides):
+        # A declaration is code: a bool, string or float bound is a typo,
+        # refused instead of coerced into a range nobody wrote.
+        with pytest.raises(ValidationError):
+            make_capabilities(supports_seed=True, **overrides)
+
+    def test_only_simulated_annealing_declares_a_range(self):
+        registry = SolverRegistry.default()
+        assert sorted(registry.names()) == [
+            "dwave_qpu",
+            "exact",
+            "fujitsu_da",
+            "leap_hybrid_bqm",
+            "leap_hybrid_cqm",
+            "simulated_annealing",
+        ]
+        for name in registry.names():
+            caps = registry.get(name).capabilities
+            expected = (0, 2**31 - 1) if name == "simulated_annealing" else (None, None)
+            assert (caps.seed_min, caps.seed_max) == expected, name
+
+    def test_simulated_annealing_range_matches_its_own_seed_check(self):
+        # The backend's internal check accepts 0 <= seed < _SEED_LIMIT.
+        caps = SimulatedAnnealingBackend().capabilities
+        assert caps.seed_min == 0
+        assert caps.seed_max == _SEED_LIMIT - 1 == 2**31 - 1

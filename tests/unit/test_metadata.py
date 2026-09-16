@@ -15,6 +15,7 @@ All tokens in this file are synthetic test values, never real credentials.
 import json
 import urllib.parse
 
+import numpy as np
 import pytest
 
 import annealbridge.solvers.metadata as metadata_module
@@ -46,6 +47,33 @@ FAKE_SHAPED_TOKEN = "FK-" + "a" * 24
 FAKE_ENV_VALUE = "fake-secret-key-987654"
 
 UNDECLARED_ENV = "SOME_OTHER_API_KEY"
+
+# Numbers that are not finite: JSON has no spelling for them, so pydantic
+# would serialize each as ``null`` and the metadata would no longer
+# validate against its own ``float`` fields (or the MCP output schema).
+NON_FINITE_VALUES = [
+    float("nan"),
+    float("inf"),
+    float("-inf"),
+    np.float64("nan"),
+    np.float64("inf"),
+    np.float64("-inf"),
+    # Not ``float`` subclasses: must still be recognised as non-finite.
+    np.float32("nan"),
+    np.float16("inf"),
+]
+NON_FINITE_IDS = [
+    "nan", "inf", "-inf", "np_nan", "np_inf", "np_-inf", "np32_nan", "np16_inf"
+]
+# An int no float can represent: ``float()`` raises OverflowError on it.
+INT_TOO_LARGE_FOR_A_FLOAT = 10**400
+
+
+def assert_json_round_trip(metadata: SolverExecutionMetadata) -> None:
+    """``metadata`` survives JSON and carries no ``null`` timing value."""
+    dumped = metadata.model_dump_json()
+    assert None not in json.loads(dumped)["timing_us"].values()
+    assert SolverExecutionMetadata.model_validate_json(dumped) == metadata
 
 
 @pytest.fixture
@@ -171,6 +199,21 @@ class TestSanitizeSamplesetInfo:
 
         assert sanitize_sampleset_info(info, backend="fujitsu_da").timing_us == {}
 
+    @pytest.mark.parametrize("value", NON_FINITE_VALUES, ids=NON_FINITE_IDS)
+    def test_non_finite_timing_values_are_dropped(self, value) -> None:
+        """A NaN / ±inf in either the nested ``timing`` dict or the top level
+        is dropped like a non-number; the finite keys next to it survive."""
+        info = {
+            "timing": {"qpu_access_time": value, "qpu_sampling_time": 100.5},
+            "run_time": value,
+            "charge_time": 7,
+        }
+
+        metadata = sanitize_sampleset_info(info, backend="dwave_qpu")
+
+        assert metadata.timing_us == {"qpu_sampling_time": 100.5, "charge_time": 7.0}
+        assert_json_round_trip(metadata)
+
     def test_vendor_side_fields_are_forwarded(self) -> None:
         info = {"timing": {"qpu_access_time": 7}}
 
@@ -230,6 +273,63 @@ class TestRemoteMetadata:
 
         assert metadata.timing_us == {"total_elapsed_time": 12.0}
         assert all(type(v) is float for v in metadata.timing_us.values())
+
+    @pytest.mark.parametrize("value", NON_FINITE_VALUES, ids=NON_FINITE_IDS)
+    def test_non_finite_timing_values_are_dropped(self, value) -> None:
+        """Better dropped than published: a NaN / ±inf would serialize as
+        ``null`` and break the ``number`` type of ``timing_us``."""
+        metadata = remote_metadata(
+            "fujitsu_da", {"solve_time": value, "total_elapsed_time": 12}
+        )
+
+        assert metadata.timing_us == {"total_elapsed_time": 12.0}
+        assert_json_round_trip(metadata)
+
+    def test_an_int_too_large_for_a_float_is_dropped(self) -> None:
+        """No float spells it, so it is dropped like a non-finite value
+        instead of failing the whole run with an OverflowError."""
+        metadata = remote_metadata(
+            "fujitsu_da",
+            {"solve_time": INT_TOO_LARGE_FOR_A_FLOAT, "total_elapsed_time": 12},
+        )
+
+        assert metadata.timing_us == {"total_elapsed_time": 12.0}
+        assert_json_round_trip(metadata)
+
+        sanitized = sanitize_sampleset_info(
+            {"timing": {"qpu_access_time": INT_TOO_LARGE_FOR_A_FLOAT, "run_time": 5}},
+            backend="dwave_qpu",
+        )
+
+        assert sanitized.timing_us == {"run_time": 5.0}
+
+    @pytest.mark.parametrize("value", NON_FINITE_VALUES, ids=NON_FINITE_IDS)
+    def test_non_finite_vendor_side_floats_are_not_reported(self, value) -> None:
+        metadata = remote_metadata(
+            "some_backend",
+            {},
+            effective_time_limit_seconds=value,
+            average_chain_break_fraction=value,
+        )
+
+        assert metadata.effective_time_limit_seconds is None
+        assert metadata.average_chain_break_fraction is None
+        assert_json_round_trip(metadata)
+
+    @pytest.mark.parametrize(
+        "value", [0.0, 0.25, 10, np.float64(0.5)], ids=["zero", "float", "int", "np"]
+    )
+    def test_finite_vendor_side_floats_are_kept(self, value) -> None:
+        metadata = remote_metadata(
+            "some_backend",
+            {},
+            effective_time_limit_seconds=value,
+            average_chain_break_fraction=value,
+        )
+
+        assert metadata.effective_time_limit_seconds == float(value)
+        assert metadata.average_chain_break_fraction == float(value)
+        assert_json_round_trip(metadata)
 
     def test_result_is_remote_and_never_aliases_the_input(self) -> None:
         timing = {"solve_time": 1.0}

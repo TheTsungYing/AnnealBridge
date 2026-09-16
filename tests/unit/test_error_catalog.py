@@ -392,3 +392,10 @@ class TestGuidanceTextCarriesNoConfigValues:
         assert RECOMMENDED_ACTIONS["NO_COMPILER_FOR_MODEL_TYPE"].startswith(
             "The server has no compiler for the model types this backend accepts"
         )
+
+    def test_invalid_solver_preference_explains_the_seed_range_rule(self):
+        """A seed outside the backend's declared range is reported under this
+        code too; the guidance names the rule without quoting the range."""
+        action = RECOMMENDED_ACTIONS["INVALID_SOLVER_PREFERENCE"]
+        assert "seed" in action
+        assert not re.search(r"\d", action)

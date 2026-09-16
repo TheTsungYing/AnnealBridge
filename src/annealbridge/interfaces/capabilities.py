@@ -3,6 +3,9 @@
 Pure request/response formatting: capability flags come from each backend's
 ``SolverCapabilities``, availability from ``is_available()`` (no network I/O),
 and limits from the ``ExecutionPolicy``. No optimization logic lives here.
+Availability is asked through the same guard a solve uses
+(``availability_refusal``), so one backend whose check raises or reports an
+unknown category is only listed as unavailable itself.
 Lives outside the ``mcp`` subpackage so the CLI ``capabilities`` command can
 use the same source without the ``[mcp]`` extra installed.
 """
@@ -15,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from annealbridge.models import Constraint, OptimizationProblem, Variable
 from annealbridge.orchestration import ExecutionPolicy
-from annealbridge.orchestration.limits import policy_gate_errors
+from annealbridge.orchestration.limits import availability_refusal, policy_gate_errors
 from annealbridge.solvers import SolverRegistry
 
 
@@ -68,6 +71,20 @@ class BackendCapability(BaseModel):
     )
     supports_seed: bool = Field(
         description="Whether solver.seed has any effect on this backend."
+    )
+    seed_min: int | None = Field(
+        description=(
+            "The smallest solver.seed this backend accepts, inclusive. A seed "
+            "outside seed_min..seed_max is refused with "
+            "INVALID_SOLVER_PREFERENCE before anything runs. Null when the "
+            "backend declares no seed range."
+        )
+    )
+    seed_max: int | None = Field(
+        description=(
+            "The largest solver.seed this backend accepts, inclusive. Null "
+            "when the backend declares no seed range."
+        )
     )
     returns_multiple_samples: bool = Field(
         description=(
@@ -154,7 +171,10 @@ def build_capabilities(
     for name in registry.names():
         backend = registry.get(name)
         caps = backend.capabilities
-        status = backend.is_available()
+        # Guarded as in a solve: a check that raises or reports an unknown
+        # category marks only this backend unavailable, with a redacted
+        # reason, instead of failing the whole view.
+        refusal = availability_refusal(backend)
         # The very policy gates a solve runs before its availability check,
         # judged by the registry key: a remote backend the policy refuses to
         # call is not "enabled", since reporting it as enabled would steer
@@ -165,13 +185,15 @@ def build_capabilities(
                 # The registry key, not caps.name: it is what a request
                 # names and what ``enabled`` was just judged by.
                 name=name,
-                available=status.available,
+                available=refusal is None,
                 enabled=enabled,
-                unavailable_reason=status.detail if not status.available else None,
+                unavailable_reason=None if refusal is None else refusal[2],
                 remote=caps.remote,
                 heuristic=caps.heuristic,
                 exhaustive=caps.exhaustive,
                 supports_seed=caps.supports_seed,
+                seed_min=caps.seed_min,
+                seed_max=caps.seed_max,
                 returns_multiple_samples=caps.returns_multiple_samples,
                 limits=policy.limits_for(caps),
                 description=caps.description,

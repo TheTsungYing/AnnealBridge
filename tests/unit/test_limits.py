@@ -33,6 +33,8 @@ from tests.fakes.declared_backend import (
 )
 
 FAKE_KEY = "fake-key-ABC123"
+# Masked by the ``token=`` fallback pattern of ``redact``, no registration needed.
+FAKE_TOKEN = "FAKE-TOKEN-0123456789"
 
 QPU_LIMITS = [
     ParameterLimit(preference="num_reads", limit="reads", error_code="QPU_READS_LIMIT"),
@@ -601,6 +603,127 @@ class TestAvailabilityCheckFailures:
         assert status == "backend_unavailable"
         assert [error.code for error in errors] == ["BACKEND_UNAVAILABLE"]
         assert "weird" in errors[0].message
+
+    def test_the_exception_message_wording_is_unchanged(self):
+        # 2026-09-15: the guard moved into ``availability_refusal``; the
+        # refusal ``gate_errors`` reports must stay word for word the same.
+        backend = SpyBackend(
+            make_capabilities(),
+            raise_on_available=RuntimeError(f"vendor blew up token={FAKE_TOKEN}"),
+        )
+
+        result = gate_errors("fake_remote", backend, ExecutionPolicy(allow_remote=True))
+
+        assert result is not None
+        status, name, errors = result
+        assert (status, name) == ("backend_unavailable", backend.capabilities.name)
+        assert [error.code for error in errors] == ["BACKEND_UNAVAILABLE"]
+        assert errors[0].message == (
+            f"Backend '{backend.capabilities.name}' availability check failed: "
+            f"unexpected RuntimeError: vendor blew up token=***"
+        )
+
+    def test_the_unknown_category_message_wording_is_unchanged(self):
+        backend = SpyBackend(
+            make_capabilities(),
+            AvailabilityStatus.model_construct(
+                category="weird", detail=None, error_code=None
+            ),
+        )
+
+        result = gate_errors("fake_remote", backend, ExecutionPolicy(allow_remote=True))
+
+        assert result is not None
+        status, name, errors = result
+        assert (status, name) == ("backend_unavailable", backend.capabilities.name)
+        assert [error.code for error in errors] == ["BACKEND_UNAVAILABLE"]
+        assert errors[0].message == (
+            f"Backend '{backend.capabilities.name}' is unavailable: no reason "
+            f"reported (unknown availability category 'weird')"
+        )
+
+
+class TestAvailabilityRefusal:
+    """2026-09-15: ``availability_refusal`` is the guarded availability check
+    ``gate_errors`` and the capabilities view share. Its status and error are
+    exactly what ``gate_errors`` reports; its reason is what the view shows."""
+
+    @staticmethod
+    def refusal_and_gate(backend):
+        from annealbridge.orchestration.limits import availability_refusal
+
+        refusal = availability_refusal(backend)
+        gate = gate_errors("fake_remote", backend, ExecutionPolicy(allow_remote=True))
+        return refusal, gate
+
+    def test_an_available_backend_is_not_refused(self):
+        backend = SpyBackend(make_capabilities())
+
+        refusal, gate = self.refusal_and_gate(backend)
+
+        assert refusal is None
+        assert gate is None
+        assert backend.availability_calls == 2
+
+    @pytest.mark.parametrize("detail", [None, "fake sdk not installed"], ids=["no-detail", "detail"])
+    def test_a_known_category_reports_the_detail_as_is(self, detail):
+        backend = SpyBackend(
+            make_capabilities(), AvailabilityStatus(category="not_installed", detail=detail)
+        )
+
+        refusal, gate = self.refusal_and_gate(backend)
+
+        assert refusal is not None
+        status, error, reason = refusal
+        assert gate == (status, backend.capabilities.name, [error])
+        assert reason == detail
+
+    def test_an_exception_reason_is_redacted(self):
+        backend = SpyBackend(
+            make_capabilities(),
+            raise_on_available=RuntimeError(f"vendor blew up token={FAKE_TOKEN}"),
+        )
+
+        refusal, gate = self.refusal_and_gate(backend)
+
+        assert refusal is not None
+        status, error, reason = refusal
+        assert gate == (status, backend.capabilities.name, [error])
+        assert reason == "availability check failed: unexpected RuntimeError: vendor blew up token=***"
+
+    def test_an_unknown_category_reason_names_the_category(self):
+        backend = SpyBackend(
+            make_capabilities(),
+            AvailabilityStatus.model_construct(
+                category="weird", detail="scheduled maintenance", error_code=None
+            ),
+        )
+
+        refusal, gate = self.refusal_and_gate(backend)
+
+        assert refusal is not None
+        status, error, reason = refusal
+        assert gate == (status, backend.capabilities.name, [error])
+        assert reason == "scheduled maintenance (unknown availability category 'weird')"
+
+    def test_an_unknown_category_detail_is_redacted(self):
+        # Like an exception's text, a status outside the known categories
+        # never passed through the backend's own wrapping.
+        backend = SpyBackend(
+            make_capabilities(),
+            AvailabilityStatus.model_construct(
+                category="weird", detail=f"vendor said token={FAKE_TOKEN}", error_code=None
+            ),
+        )
+
+        refusal, gate = self.refusal_and_gate(backend)
+
+        assert refusal is not None
+        status, error, reason = refusal
+        assert gate == (status, backend.capabilities.name, [error])
+        assert reason == "vendor said token=*** (unknown availability category 'weird')"
+        assert FAKE_TOKEN not in error.message
+        assert error.message.endswith(reason)
 
 
 class TestNonNumericPreferencePaths:

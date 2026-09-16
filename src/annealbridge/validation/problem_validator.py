@@ -333,15 +333,17 @@ def validate_problem_full(
 ) -> ProblemValidationResult:
     """Validate a problem and add the §20 advisory layer (3a §9).
 
-    Reuses :func:`validate_problem` unchanged for errors. Warnings and
+    Reuses :func:`validate_problem` unchanged for errors, then adds the one
+    backend-dependent error: a ``solver.seed`` outside the range
+    ``capabilities`` declares (see :func:`_check_seed_range`). Warnings and
     estimates are only produced when there are no errors: an erroneous
     problem must be fixed first anyway, and the no-error gate is exactly
     what makes the pure slack arithmetic well-defined.
 
     ``capabilities`` is the declaration of the backend the problem names,
     supplied by the caller (the validator knows no registry). When it is
-    None only backend-independent checks run: no backend-fit and no
-    ignored-parameter warnings.
+    None only backend-independent checks run: no seed-range error, no
+    backend-fit and no ignored-parameter warnings.
 
     ``max_compiled_variables`` is the caller-supplied policy ceiling for an
     exhaustive backend (validation must not read policy itself, §4); it is
@@ -354,6 +356,8 @@ def validate_problem_full(
     (§9.4).
     """
     errors, duplicate_warnings = _collect(problem)
+    if capabilities is not None:
+        _check_seed_range(problem, capabilities, errors)
     if errors:
         return ProblemValidationResult(valid=False, errors=errors)
 
@@ -1230,6 +1234,36 @@ def _check_solver_preferences(
                     ),
                 )
             )
+
+
+def _check_seed_range(
+    problem: OptimizationProblem, caps: SolverCapabilities, errors: list[SolveError]
+) -> None:
+    """A ``solver.seed`` outside the range the backend declares.
+
+    The range is the backend's own limit, read from ``seed_min`` /
+    ``seed_max`` on its declaration, never from its name; refused rather
+    than left for the backend to reject mid-solve. A backend that declares
+    no range is not checked, and one that ignores seeds is not checked
+    either: it gets the SEED_IGNORED warning for any value instead.
+    """
+    seed = problem.solver.seed
+    if seed is None or not caps.supports_seed:
+        return
+    if caps.seed_min is None or caps.seed_max is None:
+        return
+    if caps.seed_min <= seed <= caps.seed_max:
+        return
+    errors.append(
+        _error(
+            code="INVALID_SOLVER_PREFERENCE",
+            path="solver.seed",
+            message=(
+                f"solver.seed must be an integer between {caps.seed_min} and "
+                f"{caps.seed_max} on backend {caps.name}, got {seed}"
+            ),
+        )
+    )
 
 
 def _unknown_variable(variable: str, path: str) -> SolveError:

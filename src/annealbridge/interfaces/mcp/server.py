@@ -13,6 +13,7 @@ import logging
 import sys
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from annealbridge.config import (
     SettingsError,
@@ -125,9 +126,23 @@ _state: AppState | None = None
 
 
 def get_state() -> AppState:
+    """The process-wide state, built from the environment on first use.
+
+    ``main()`` builds it before serving, so this lazy path is only taken
+    when the server is used without ``main()`` (``mcp dev``, an embedding
+    host, a test). It runs inside a tool call, where ending the process is
+    not an option: invalid settings are raised as a ``ToolError`` carrying
+    the same operator-formatted message ``main()`` prints (it never echoes a
+    value), so the client reads the reason instead of a generic crash and
+    the server logs one line instead of a traceback. The state stays unset,
+    so the next call tries again.
+    """
     global _state
     if _state is None:
-        _state = build_state()
+        try:
+            _state = build_state()
+        except SettingsError as exc:
+            raise ToolError(str(exc)) from None
     return _state
 
 
@@ -185,8 +200,10 @@ def main() -> None:
     Host and port obey the same rule whether they come from the environment
     or from an override. Tool registration happens at import time via the
     tools module; this function only parses arguments and runs the transport.
-    Invalid ``ANNEALBRIDGE_*`` settings are reported on stderr and end the
-    process with exit code 2 instead of a traceback.
+    Invalid ``ANNEALBRIDGE_*`` settings — refused when read, or when the
+    service is wired from them — are reported on stderr and end the process
+    with exit code 2 instead of a traceback. Logs go to stderr only, in the
+    ``%(asctime)s %(levelname)s %(name)s: %(message)s`` format.
 
     ``--version`` is answered first, before the settings are read: it prints
     ``annealbridge <version>`` and exits 0 even when those settings are
@@ -204,6 +221,21 @@ def main() -> None:
     version_parser = argparse.ArgumentParser(prog="annealbridge-mcp", add_help=False)
     _add_version_argument(version_parser)
     version_parser.parse_known_args()
+    # Logging is configured before the settings are read, so even the
+    # unknown-variable WARNING they may log comes out in this format.
+    # ``force=True`` is required: constructing ``MCPServer`` at import time
+    # already ran the SDK's own ``basicConfig`` (a rich handler), and a plain
+    # ``basicConfig`` does nothing once the root logger has a handler. The
+    # replaced handler carried no filter — redaction happens before a message
+    # is logged, in the code that logs it — so nothing is lost with it. The
+    # one handler writes to stderr: under stdio, stdout is the protocol
+    # channel and must carry nothing else.
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
     try:
         settings = load_settings()
     except SettingsError as exc:
@@ -242,14 +274,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        stream=sys.stderr,
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
     # The settings were validated above; wire the state from them now so
-    # the first tool call cannot hit a configuration error.
-    reset_state(build_state(settings))
+    # the first tool call cannot hit a configuration error. Wiring can still
+    # refuse them (a backend declaring a limit the policy has no value for),
+    # and that ends the process the same way as an invalid setting.
+    try:
+        state = build_state(settings)
+    except SettingsError as exc:
+        exit_on_settings_error(exc)
+    reset_state(state)
     # Ensure the tools are registered on `mcp` before serving.
     import annealbridge.interfaces.mcp.tools  # noqa: F401
 

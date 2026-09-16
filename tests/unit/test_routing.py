@@ -329,6 +329,38 @@ class TestPreferenceLimits:
         assert [b.code for b in exact.blocking] == ["BACKEND_DISABLED_BY_POLICY"]
 
 
+class TestBackendDependentValidationErrors:
+    """A validation error only one backend's declaration raises (a seed
+    outside its ``seed_min``..``seed_max``) blocks that backend and no other;
+    the problem itself stays valid for the ranking."""
+
+    def test_out_of_range_seed_blocks_simulated_annealing_only(self, registry):
+        result = recommend(knapsack(seed=-1), registry, ExecutionPolicy(), compilers())
+
+        assert result.valid is True
+        assert result.errors == []
+        sa = by_name(result, "simulated_annealing")
+        assert sa.usable is False
+        assert ("INVALID_SOLVER_PREFERENCE", "solver.seed") in [
+            (b.code, b.path) for b in sa.blocking
+        ]
+        assert sa.reasons[0] == "R_UNUSABLE"
+        exact = by_name(result, "exact")
+        assert exact.usable is True
+        assert "SEED_IGNORED" in [w.code for w in exact.warnings]
+
+    def test_service_recommend_blocks_it_the_same_way(self, registry):
+        result = OptimizationService(registry=registry).recommend(knapsack(seed=-1))
+
+        assert result.valid is True
+        sa = by_name(result, "simulated_annealing")
+        assert sa.usable is False
+        assert ("INVALID_SOLVER_PREFERENCE", "solver.seed") in [
+            (b.code, b.path) for b in sa.blocking
+        ]
+        assert by_name(result, "exact").usable is True
+
+
 class TestExhaustiveLimit:
     def test_over_limit_is_blocking(self, registry):
         # 30 plain variables > the default ceiling of 24 compiled variables.

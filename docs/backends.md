@@ -68,6 +68,14 @@ configured. See [CLI](cli.md#capabilities).
 - Honours `num_reads`, `num_sweeps` and `seed`. A fixed seed gives
   reproducible sampling; the seed is passed to the sampler only and global
   random state is never touched.
+- `seed` must lie between `0` and `2147483647` inclusive (`0 <= seed <
+  2^31`, the sampler's own rule), declared as `seed_min` / `seed_max` and
+  reported by the capabilities view. A seed outside it is refused before
+  anything runs: `validate` and `solve` report `INVALID_SOLVER_PREFERENCE`
+  at `solver.seed` ("solver.seed must be an integer between 0 and 2147483647
+  on backend simulated_annealing, got -1"), so `solve` returns
+  `invalid_problem`, and `recommend` lists the same error in this backend's
+  `blocking`.
 - Reads are sampled in shards of 25, up to `ANNEALBRIDGE_SA_WORKERS` of
   them concurrently (see [Configuration](configuration.md)). The shard
   layout and each shard's seed — derived from the request seed through
@@ -292,7 +300,9 @@ server's own configuration is wrong, not the problem the agent sent.
 
 `metadata.solver_id` is `fujitsuDA3/v4`, and the vendor's `solve_time` /
 `total_elapsed_time` are the only timing fields kept (converted to
-microseconds).
+microseconds). A value that does not parse, or is not finite once converted
+(`"NaN"`, `"inf"`, an integer too large for a float, or a millisecond count
+that overflows), is dropped on its own; the other field is kept.
 
 ## How the compiler path is chosen
 
@@ -436,6 +446,16 @@ system dispatches on — never the backend's name:
 - `remote`, `heuristic`, `exhaustive`, `supports_seed`, `supports_num_reads`,
   `supports_num_sweeps`, `supports_time_limit`, `returns_multiple_samples`,
   `requires_embedding` — drive warnings, routing and the capabilities view.
+- `seed_min` / `seed_max` — the inclusive range of `solver.seed` the backend
+  itself accepts. Unlike `parameter_limits` this is the backend's own rule,
+  not a policy ceiling: it takes no value from policy and no
+  `ANNEALBRIDGE_*` setting changes it. Declare both or neither, only with
+  `supports_seed=True`, and with `seed_min <= seed_max`; any other
+  declaration fails when `SolverCapabilities` is constructed. With a range
+  declared, validation refuses a seed outside it with
+  `INVALID_SOLVER_PREFERENCE` at `solver.seed`, so `validate`, `solve` and
+  `recommend` agree before the backend is called, and the capabilities view
+  reports the range.
 - `supported_model_types` — the compiler path, in preference order (see
   [above](#how-the-compiler-path-is-chosen)).
 - `parameter_limits` — each entry maps a dotted preference path (e.g.

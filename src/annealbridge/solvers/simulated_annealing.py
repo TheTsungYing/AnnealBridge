@@ -66,6 +66,11 @@ _CAPABILITIES = SolverCapabilities(
     supported_model_types=["bqm"],
     returns_multiple_samples=True,
     supports_num_sweeps=True,
+    # The sampler's rule (see ``_SEED_LIMIT``), declared so validation
+    # refuses an out-of-range seed before anything runs. The check in
+    # ``_sample_sharded`` stays as the last line for a direct caller.
+    seed_min=0,
+    seed_max=_SEED_LIMIT - 1,
     description=(
         "Local heuristic simulated-annealing sampler; scales to larger "
         "problems but does not prove optimality or infeasibility."

@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `annealbridge-mcp` still reports the missing extra and exits `2`.
   Documented in the new *Global options* section of `docs/cli.md` and the
   option table of `docs/mcp.md`.
+- Each backend entry of `get_optimization_capabilities` gains `seed_min` and
+  `seed_max`: the inclusive range of `solver.seed` the backend accepts, or
+  `null` when it declares none. A backend declares them on
+  `SolverCapabilities` — both together, only with `supports_seed=True` and
+  with `seed_min <= seed_max`, or the declaration fails to construct. They
+  are the backend's own rule, not a policy limit. `simulated_annealing`
+  declares `0`–`2147483647`. Documented in the *BackendCapability* table of
+  `docs/output-format.md`, the `get_optimization_capabilities` section of
+  `docs/mcp.md` and *Declare `SolverCapabilities`* in `docs/backends.md`.
 
 ### Changed
 
@@ -107,6 +116,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   core-only `annealbridge-mcp` still exits 2 with the install hint; one unused
   import was removed from a test and a shared test fixture was renamed. There
   is no formatter.
+- A `solver.seed` outside the range the selected backend declares is now
+  refused during validation: `validate` and `solve` report
+  `INVALID_SOLVER_PREFERENCE` at `solver.seed` ("solver.seed must be an
+  integer between 0 and 2147483647 on backend simulated_annealing, got -1"),
+  so `validate` returns `valid: false` and `solve` returns `invalid_problem`
+  without calling the backend. Previously `validate` reported the problem
+  valid and `solve` returned `solver_error` with a sampling error — on a
+  request of at most 25 reads the sampler's own message, which states the
+  range as `0` to `2^32 - 1`. Only `simulated_annealing`
+  declares a range; a backend that does not support seeding still raises
+  only `SEED_IGNORED` for any seed, the problem schema accepts the same
+  values (only the `seed` field description now mentions the range), and
+  `version: "1.0"` and `"1.1"` documents are checked by the same rule — a
+  seed the sampler rejected before is now refused earlier, and no seed it
+  accepted is refused. Documented in
+  `docs/problem-format.md`, `docs/backends.md`, `docs/errors.md` and
+  `docs/mcp.md`.
+- `recommend()` lists a validation error that only one backend's declaration
+  raises — today a seed outside its range — in that backend's `blocking`: the
+  entry is `usable: false` with `R_UNUSABLE` and
+  `estimated_compiled_variables: null`, while the problem stays `valid` and
+  the other backends are unaffected. Previously that backend was reported
+  usable although a solve on it failed. Documented in the
+  *BackendRecommendation* table of `docs/output-format.md`.
+- The `INVALID_SOLVER_PREFERENCE` recommended action adds that a seed must
+  lie within the seed range the selected backend declares in its
+  capabilities. Documented in `docs/errors.md`.
+
+### Fixed
+
+- `get_optimization_capabilities` and `annealbridge capabilities` no longer
+  fail as a whole when one backend's availability check raises: that backend
+  is listed with `available: false` and the redacted `unavailable_reason`
+  "availability check failed: unexpected <ExceptionClass>: <message>", and
+  the other backends are listed as usual. Previously the MCP tool returned a
+  generic tool error and the CLI command exited `1`. A backend reporting an
+  availability category outside the known set is listed the same way, its
+  redacted detail ("no reason reported" when it gave none) followed by
+  "(unknown availability category '<category>')"; `solve` and `recommend`
+  now redact that detail in their message too. The view now asks through the same
+  guard `solve` and `recommend` use, whose results and messages are
+  unchanged. Documented in `docs/output-format.md`, `docs/mcp.md` and
+  `docs/cli.md`.
+- `annealbridge-mcp` now also exits `2` with one `Error: ...` line on stderr,
+  instead of exit `1` with a traceback, when every setting is valid but the
+  service refuses to be wired from them — for example a registered backend
+  declaring a limit key the policy has no value for. When the server is used
+  without its entry point (`mcp dev`, an embedding host), the service is
+  built on the first tool call; a settings error there now reaches the client
+  as `Error executing tool <name>: <settings message>`, naming the variable
+  but never its value, and the server logs it at `INFO` without a traceback.
+  Previously the
+  client got only `Error executing tool <name>` and the server logged the
+  error with a traceback. Documented in `docs/mcp.md`.
+- The MCP server's own log format now takes effect. Started through
+  `annealbridge-mcp` or `python -m annealbridge.interfaces.mcp.server`, every
+  record is one stderr line, `<asctime> <LEVEL> <logger name>: <message>`,
+  the unknown-`ANNEALBRIDGE_*`-variable `WARNING` included. Previously the
+  rich handler the MCP SDK installs at import left the server's logging setup
+  without effect, so records came out in rich format, wrapped at 80 columns.
+  stdout still carries only the stdio protocol, and uses that bypass the
+  entry point (`mcp dev`, an embedding host, an in-memory `Client(mcp)`) keep
+  the SDK's handler. Documented in `docs/mcp.md`.
+- `metadata.timing_us` drops a whitelisted key whose value is NaN or
+  ±infinity, or an integer too large for a float — including a Fujitsu DA
+  millisecond string `"NaN"` or `"inf"`, or one that overflows when converted
+  to microseconds — and keeps the
+  others; `effective_time_limit_seconds` and `average_chain_break_fraction`
+  are `null` (not reported) when not finite. Previously such values were
+  serialised as `null` inside `timing_us`, against its `number` type, so an
+  MCP client validating the tool's output schema rejected the result.
+  Documented in the *Timing whitelist* paragraph of `docs/output-format.md`
+  and the Fujitsu DA section of `docs/backends.md`.
 
 ### Performance
 

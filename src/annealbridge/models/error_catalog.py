@@ -181,8 +181,9 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
     "INVALID_SOLVER_PREFERENCE": (
         "A solver preference is outside its allowed range: every numeric "
         "preference must be a finite number greater than zero (a retry "
-        "count may also be zero); correct the value, or omit it to use the "
-        "default."
+        "count may also be zero), and a seed must lie within the seed range "
+        "the selected backend declares in its capabilities; correct the "
+        "value, or omit it to use the default."
     ),
     "TRIVIALLY_INFEASIBLE": (
         "A hard constraint cannot be satisfied by any assignment of the "
