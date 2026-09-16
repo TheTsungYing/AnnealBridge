@@ -132,7 +132,10 @@ the README, and a release that drops it breaks the next registry publish.
 
 `server.json` pins a concrete version in two places — the server version and
 the package version — and both must equal the `pyproject.toml` version of the
-release being published, so they move together with every version bump.
+release being published. The release workflow checks all three against the tag
+before it builds anything, then publishes to the registry over GitHub OIDC
+once the new version is visible on PyPI, so the two stay in step without a
+stored credential.
 
 ## Tools
 

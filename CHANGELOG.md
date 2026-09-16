@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The release workflow publishes to the MCP Registry as well as to PyPI. A new
+  `publish-registry` job runs after `publish-pypi`, authenticates with GitHub
+  OIDC (no stored credential) and publishes `server.json`. It first polls
+  PyPI for the exact version being released and the
+  `mcp-name: io.github.TheTsungYing/annealbridge` marker, because the registry
+  proves ownership by reading that line out of the description PyPI renders
+  from `README.md` and the JSON API lags an upload by a few seconds. The
+  existing tag check now also refuses a `server.json` whose two version fields
+  disagree with the tag, before anything irreversible happens. Recorded in the
+  *Releasing* section of `CONTRIBUTING.md` and the *MCP Registry* section of
+  `docs/mcp.md`.
+
 ## [0.2.1] - 2026-09-16
 
 Published to the [MCP Registry](https://registry.modelcontextprotocol.io) as

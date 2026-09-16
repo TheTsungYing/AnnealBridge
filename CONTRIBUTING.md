@@ -99,16 +99,29 @@ by policy, and consumes no vendor quota.
 
 ## Releasing
 
-Releases are published to PyPI by the *Release* workflow
-(`.github/workflows/release.yml`) through PyPI Trusted Publishing; no API
-token is stored in the repository or its secrets. To cut a release:
+Releases are published to PyPI and to the MCP Registry by the *Release*
+workflow (`.github/workflows/release.yml`), through PyPI Trusted Publishing
+and GitHub OIDC respectively; no API token is stored in the repository or its
+secrets. To cut a release:
 
-1. Set the new version in `pyproject.toml` and turn the `[Unreleased]`
-   section of `CHANGELOG.md` into a dated `[X.Y.Z]` section.
+1. Set the new version in `pyproject.toml`, in both version fields of
+   `server.json`, and turn the `[Unreleased]` section of `CHANGELOG.md` into a
+   dated `[X.Y.Z]` section.
 2. Commit, then tag that commit `vX.Y.Z` and push the tag. The workflow
-   refuses a tag that does not match the version in `pyproject.toml`.
+   refuses a tag that does not match the version in `pyproject.toml`, and a
+   `server.json` whose versions do not match it either — both before it builds
+   anything.
 3. Approve the `pypi` environment run on GitHub if the environment requires a
    reviewer, then check <https://pypi.org/project/annealbridge/>.
+4. The registry job then waits for that version to become visible on PyPI and
+   publishes `server.json`. It needs no approval; if it fails, PyPI is
+   published and only the registry is behind, which
+   `mcp-publisher publish` fixes by hand from a checkout.
+
+The registry proves ownership by finding an
+`mcp-name: io.github.TheTsungYing/annealbridge` line in the description PyPI
+renders from `README.md`. That HTML comment must survive every edit to the
+README, or the registry job fails.
 
 A version number can be uploaded to PyPI only once. To rehearse without
 spending one, run the workflow by hand from the Actions tab: a manual run

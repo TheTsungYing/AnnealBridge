@@ -36,6 +36,9 @@ jobs:
 
       # A tag that disagrees with pyproject.toml would publish a version
       # nobody meant to release; refuse it before building anything.
+      # server.json carries the same version twice for the MCP Registry, and a
+      # stale copy there would leave the registry pointing at the wrong
+      # release. All three are checked here, before anything irreversible.
       - name: Check that the tag matches the package version
         if: github.ref_type == 'tag'
         run: |
@@ -44,6 +47,20 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match pyproject.toml version $version" >&2
             exit 1
           fi
+          python - "$version" <<'CHECK'
+          import json, sys
+
+          expected = sys.argv[1]
+          server = json.load(open("server.json", encoding="utf-8"))
+          found = {"server.json version": server["version"]}
+          for package in server["packages"]:
+              found[f"package {package['identifier']}"] = package["version"]
+          wrong = {where: got for where, got in found.items() if got != expected}
+          if wrong:
+              for where, got in wrong.items():
+                  print(f"{where} is {got}, expected {expected}", file=sys.stderr)
+              sys.exit(1)
+          CHECK
 
       - name: Install build tools
         run: python -m pip install --upgrade build twine
@@ -103,3 +120,49 @@ jobs:
         with:
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true
+
+  publish-registry:
+    name: Publish to MCP Registry
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      # OIDC: the registry trusts this repository's token to publish under the
+      # io.github.TheTsungYing namespace, so no credential is stored anywhere.
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The registry proves ownership of a PyPI package by reading the
+      # `mcp-name:` line out of the description PyPI renders from README.md,
+      # so the release must be visible there first. PyPI's JSON API lags the
+      # upload by a few seconds, so poll for the exact version rather than
+      # sleeping for a guessed interval. Failing here leaves PyPI published
+      # and the registry one version behind, which `mcp-publisher publish`
+      # fixes by hand; it never publishes a version that is not on PyPI.
+      - name: Wait for the release to appear on PyPI
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          marker="mcp-name: io.github.TheTsungYing/annealbridge"
+          for attempt in $(seq 1 30); do
+            if curl -fsSL "https://pypi.org/pypi/annealbridge/$version/json" | grep -qF "$marker"; then
+              echo "annealbridge $version is on PyPI and carries the ownership marker"
+              exit 0
+            fi
+            echo "attempt $attempt: not visible yet"
+            sleep 10
+          done
+          echo "annealbridge $version never appeared on PyPI with the marker" >&2
+          exit 1
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to the MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        run: ./mcp-publisher publish
