@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `tests/unit/test_registry_entry.py` pins what the MCP Registry entry depends
+  on but nothing else would notice going missing: the
+  `mcp-name: io.github.TheTsungYing/annealbridge` comment in `README.md` —
+  present *and* followed by a boundary, since a name glued to a trailing
+  character fails to match just as silently as a deleted line — the same name
+  in `server.json`, its PyPI identifier being this distribution, and both of
+  its version fields equalling `pyproject.toml`. The release workflow checks
+  the versions too, but only once a release is under way; these run on every
+  `pytest`, and the README marker had no check at all — dropping it let PyPI
+  publish and failed only the registry job, after the version number was spent.
+
 ### Changed
 
 - The release workflow publishes to the MCP Registry as well as to PyPI. A new
