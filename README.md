@@ -79,8 +79,18 @@ and on Windows the wheel PyPI serves is the CPU-only build, so a CUDA run needs
 ## Use it from an AI agent (MCP)
 
 With [uv](https://docs.astral.sh/uv/) installed, add the server to
-`claude_desktop_config.json` (or your host's equivalent) and restart the host;
-`uvx` fetches the package into its own cached environment the first time.
+`claude_desktop_config.json` (or your host's equivalent) and restart the
+host. The first run fetches the package into `uvx`'s own cached environment;
+that download — numpy, dimod, dwave-samplers and the rest — can take tens of
+seconds, long enough for a host's start-up timeout to show the server as
+disconnected. Warm the cache once in a terminal first:
+
+```bash
+uvx --from "annealbridge[mcp]" annealbridge-mcp --version
+```
+
+It resolves the environment and prints the version; from then on the host
+starts from that cache.
 
 ```json
 {
@@ -105,24 +115,35 @@ Optimizing is then an ordinary chat:
 > and weighs 5, C is worth 7 and weighs 4, D is worth 6 and weighs 3. Which
 > ones should I take?
 
-Behind the reply, the agent calls three tools in order:
-
-1. `get_optimization_capabilities` — allowed variable types and operators,
-   usable backends and their limits.
-2. `validate_optimization_problem` — its draft JSON comes back with every
-   error at once, or clean. Nothing is solved yet and nothing is spent.
-3. `solve_optimization` — ranked solutions, each re-validated against the
-   original constraints, with `optimality_proven: true` on the exhaustive
-   `exact` backend.
+Behind the reply, the agent writes the request as problem JSON and calls
+`solve_optimization`. Every solution comes back re-validated against the
+original constraints, with `optimality_proven: true` on the exhaustive
+`exact` backend; a document the server rejects comes back as
+`invalid_problem` with every error and a fix for each, which the agent
+applies before sending it again. Before solving on a remote backend, or on
+a large problem, it calls `validate_optimization_problem` first, so a mistake
+costs nothing; it calls `get_optimization_capabilities` when it needs the
+backend list or the full schema.
 
 > **Agent:** Take A and C: value 17 at exactly 10 kg. The runners-up are A
 > and D (16, at 9 kg) and B and C (15, at 9 kg). This is the proven optimum.
 
-The wording is the agent's; the numbers are the tool result. A fourth tool,
+The wording is the agent's; the numbers are the tool result. Another tool,
 `recommend_backend`, ranks the backends for a problem and is advisory only;
 when you did not name a backend and more than one local backend fits, the
 server instructions tell the agent to show the top entries and ask which to
 run rather than to decide for you.
+
+**What it is not for.** AnnealBridge does not handle continuous
+(real-valued) variables, non-linear objectives or non-linear constraints.
+Only `exact` proves that an answer is optimal or that no feasible one
+exists, and by default it takes at most 24 compiled variables (slack bits
+included); the other local backends (`simulated_annealing`, `tabu`,
+`simulated_bifurcation`) are heuristics whose best answer may not be the
+optimum. See the
+[Backends](#backends) table below and
+[docs/limitations.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/limitations.md).
+
 Any stdio-capable MCP host works the same way, a streamable-http transport
 exists, and `pipx` or a pip-installed server behind an absolute path work in
 place of `uvx`. `uvx` reuses the environment it resolved on its first run, so

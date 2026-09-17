@@ -194,6 +194,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disagree with the tag, before anything irreversible happens. Recorded in the
   *Releasing* section of `CONTRIBUTING.md` and the *MCP Registry* section of
   `docs/mcp.md`.
+- The MCP server instructions and tool descriptions now say which tool is worth
+  a call in a given situation instead of prescribing the same four steps every
+  time. On a local backend an agent may call `solve_optimization` directly —
+  an invalid document comes back as `invalid_problem` carrying the same errors
+  and `recommended_action` `validate_optimization_problem` would have given, so
+  nothing is lost by finding out that way — while a remote backend or a large
+  problem is still validated first, before quota is spent, and
+  `get_optimization_capabilities` is for when the backend list with its limits
+  or the full schema is actually needed rather than for every problem. On a
+  host that asks the user to approve every tool call, a simple problem now
+  costs one or two approvals instead of four. The instructions and the
+  `solve_optimization` description also open with the everyday requests this
+  server answers — which items to take within a budget or capacity, how to
+  assign people or jobs to seats, shifts or machines, in which order to visit a
+  handful of places, how to split things into groups or pick a subset meeting
+  several requirements at once — so an agent recognizes them when the user
+  never says "optimization". The **choosing a backend** rules (a named backend
+  is used as given; otherwise `recommend_backend`, and more than one usable
+  local backend means asking the user) and the four rules a first document
+  breaks are unchanged, and the instructions still name no configuration value
+  and no limit. Both READMEs gained a *what this is not for* section and the
+  `--version` warm-up command in their MCP sections; `docs/mcp.md` matches, in
+  its *Server instructions* and *Typical agent workflow* sections.
 
 ## [0.2.1] - 2026-09-16
 

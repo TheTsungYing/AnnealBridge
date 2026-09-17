@@ -4,8 +4,8 @@
 
 This page covers the `annealbridge-mcp` server: how to install it, the four
 tools it exposes, how to configure Claude Desktop and other MCP hosts, the
-streamable-http transport, the MCP Inspector, and the order an agent should
-call the tools in.
+streamable-http transport, the MCP Inspector, and when an agent should call
+each tool.
 
 The server is a thin adapter. Each tool fetches the wired-up service, calls
 into the core, and returns the core's model — the same code path the
@@ -31,6 +31,19 @@ configurations below use.
 ```bash
 uvx --from "annealbridge[mcp]" annealbridge-mcp
 ```
+
+The first `uvx` start has to resolve and download the dependency tree — numpy,
+dimod, dwave-samplers and the rest — which can take tens of seconds. MCP hosts
+put a timeout on starting a server, so that first start can be reported as
+disconnected and look like a broken install. Run it once in a terminal before
+pointing a host at it:
+
+```bash
+uvx --from "annealbridge[mcp]" annealbridge-mcp --version
+```
+
+That builds the environment and prints the version; every later start the host
+makes reuses the cache and is quick.
 
 `pipx install "annealbridge[mcp]"` is the equivalent that puts
 `annealbridge-mcp` on the `PATH` permanently.
@@ -162,14 +175,24 @@ every other client of the server.
 
 At initialize the server hands the host a short instructions text alongside
 its name and version (the installed package version). It carries what the
-per-tool descriptions cannot: the recommended call order, a **choosing a
-backend** section, the rules a first document most often breaks (schema
-version `1.1` for integer variables, integer coefficients on inequalities,
-unknown fields being rejected), and one complete minimal problem, so an agent
-learns the document shape before its first call rather than from its first
-error. The field descriptions in `problem_json_schema` serve the same purpose
-one level down. Neither names a configuration value or a limit; those come
-from `get_optimization_capabilities`.
+per-tool descriptions cannot: the everyday requests the server is for — which
+items to take within a budget or capacity, how to assign people or jobs to
+seats, shifts or machines, in which order to visit a handful of places, how to
+split things into groups or pick a subset meeting several requirements at
+once — so an agent reaches for it when the user never says "optimization";
+when each tool is worth a call — on a local backend the agent may go straight
+to `solve_optimization`, since an invalid document comes back as
+`invalid_problem` carrying the same errors and recommended actions
+`validate_optimization_problem` would give, while a remote backend or a large
+problem is validated first and `get_optimization_capabilities` is for when the
+backend list with its limits or the full schema is actually needed; a
+**choosing a backend** section; the rules a first document most often breaks
+(schema version `1.1` for integer variables, integer coefficients on
+inequalities, unknown fields being rejected); and one complete minimal problem,
+so an agent learns the document shape before its first call rather than from
+its first error. The field descriptions in `problem_json_schema` serve the same
+purpose one level down. Neither names a configuration value or a limit; those
+come from `get_optimization_capabilities`.
 
 The backend section is the one piece of guidance that is about the agent's
 own behaviour rather than the document: a backend the user named is used as
@@ -200,8 +223,10 @@ Describes what this server accepts and which backends are usable right now.
   `unavailable_reason`, its flags, the `seed_min` / `seed_max` range it
   accepts for `solver.seed` (`null` when it declares none) and its resource
   limits.
-- **When to call:** before formulating a problem. It performs no solving and
-  no network requests.
+- **When to call:** when the agent needs the list of backends with their
+  limits, or the full problem schema. Not before every problem — a small
+  binary problem on a local backend can follow the example in the server
+  instructions. It performs no solving and no network requests.
 
 `schema_version` is the newest accepted version and `schema_versions` lists
 them all, newest last; `supported_variable_types` lists `binary` and
@@ -231,9 +256,12 @@ Checks a problem without solving it.
   with a `recommended_action`), advisory warnings, the estimated compiled
   variable count, the objective scale, and the model type the chosen backend
   would compile to.
-- **When to call:** before `solve_optimization`, especially when the target is
-  a remote backend — problems get fixed before quota is spent. Nothing is
-  compiled or solved and no network requests are made.
+- **When to call:** before `solve_optimization` when the target is a remote
+  backend or the problem is large (many variables, wide integer ranges) —
+  problems get fixed before quota is spent. On a local backend the agent may
+  solve directly: an `invalid_problem` result carries the same errors and
+  recommended actions. Nothing is compiled or solved and no network requests
+  are made.
 
 Validation collects **all** errors in one pass, so one round trip is enough to
 fix a problem. That pass includes the one check that depends on the named
@@ -356,7 +384,9 @@ Things worth knowing before calling it:
 
 Add the server to `claude_desktop_config.json`. With uv installed this is the
 whole configuration: `uvx` fetches the package the first time the host starts
-the server and reuses its cache afterwards. Configuration goes through `env`:
+the server and reuses its cache afterwards — run the `--version` warm-up from
+[Installation](#installation) once first, so that fetch does not happen inside
+the host's start-up timeout. Configuration goes through `env`:
 
 ```json
 {
@@ -458,19 +488,23 @@ way to see what an agent will see.
 
 ## Typical agent workflow
 
-The four tools are designed to be called in this order. Each step is cheap and
-narrows what the next one has to guess.
+Each of the four tools has its moment rather than a fixed place in a queue.
+The full sequence below is what a careful run looks like; the fast path after
+it is what a simple problem takes.
 
-1. **`get_optimization_capabilities`** — once, before formulating anything.
-   It tells the agent which variable types and operators it may use, which
-   schema version to declare, which backends are `available` *and* `enabled`
-   on this server, and what limits they enforce. Formulating against a backend
-   that is switched off wastes a whole round trip.
-2. **`validate_optimization_problem`** — after writing the problem document,
-   before spending anything. It returns *all* semantic errors at once, each
-   with a recommended action, plus the estimated compiled size. This is where
-   a malformed constraint or an integer bound that explodes into hundreds of
-   encoding bits gets caught, at zero cost.
+1. **`get_optimization_capabilities`** — when the agent needs the list of
+   backends with their limits, or the full schema. It tells it which variable
+   types and operators it may use, which schema version to declare, which
+   backends are `available` *and* `enabled` on this server, and what limits
+   they enforce. It is worth the round trip when the document goes beyond the
+   shape the server instructions already show, or when a backend's
+   availability or limits matter before formulating — a large problem aimed at
+   a backend that is switched off wastes the whole formulation.
+2. **`validate_optimization_problem`** — before spending anything on a remote
+   backend, and whenever the problem is large. It returns *all* semantic
+   errors at once, each with a recommended action, plus the estimated compiled
+   size. This is where a malformed constraint or an integer bound that
+   explodes into hundreds of encoding bits gets caught, at zero cost.
 3. **`recommend_backend`** — whenever the user did not name a backend. It
    ranks every backend for this specific problem with deterministic reason
    codes and the blocking errors that make one unusable, so the agent picks on
@@ -480,14 +514,24 @@ narrows what the next one has to guess.
    not ask for an answer without being consulted, the server instructions tell
    the agent to show the top entries with their reasons and ask which to run
    instead of deciding alone.
-4. **`solve_optimization`** — last, with a problem already known to be valid
-   and a backend already known to be usable. Its result carries the ranked
-   solutions and, on failure, a structured error with a recommended action.
-   Its `warnings` are the same ones step 2 gave for that backend, so an agent
-   that skipped step 2 still sees them.
+4. **`solve_optimization`** — last, whether or not the steps above were taken.
+   Its result carries the ranked solutions and, on failure, a structured error
+   with a recommended action. Its `warnings` are the same ones step 2 gives for
+   that backend, so an agent that skipped step 2 still sees them.
+
+The fast path is shorter. For a small binary problem on a local backend, the
+agent writes the document and calls `solve_optimization` directly — with
+`recommend_backend` first when the user named no backend, and, when more than
+one local backend is usable, still asking which to run as the server
+instructions say. An invalid document does not cost a solve: it comes back as
+`invalid_problem` with the same errors and `recommended_action`
+`validate_optimization_problem` would have given, and the corrected document
+is sent again. On a host that asks the user to approve every tool call, that
+turns a simple problem from four prompts into one or two.
 
 Steps 1–3 perform no solving, no network requests and consume no vendor quota,
-so an agent can iterate freely; only step 4 costs anything. If step 4 returns
-`infeasible` on a remote backend, the usual next move is to re-read the
-per-attempt data in the result rather than to blindly raise
-`penalty_multiplier` — the server manages penalties itself.
+so an agent can iterate freely, and a local solve is free as well — only a
+step 4 on a remote backend spends anything. If step 4 returns `infeasible` on
+a remote backend, the usual next move is to re-read the per-attempt data in
+the result rather than to blindly raise `penalty_multiplier` — the server
+manages penalties itself.

@@ -30,11 +30,13 @@ async def get_optimization_capabilities() -> OptimizationCapabilities:
     """Describe what this optimization server accepts and which solver backends
     are usable right now.
 
-    Call this before formulating a problem to learn the supported problem
-    schema (variable types, constraint operators, objective terms and the full
-    JSON schema) and, per backend, whether it is installed/configured
-    (available), whether server policy permits it (enabled), and its resource
-    limits. This performs no solving and no network requests.
+    Call this when you need the supported problem schema (variable types,
+    constraint operators, objective terms and the full JSON schema) or, per
+    backend, whether it is installed/configured (available), whether server
+    policy permits it (enabled), and its resource limits. It is not required
+    before every problem: for a small binary problem on a local backend the
+    example in the server instructions already shows the document shape. This
+    performs no solving and no network requests.
 
     supported_variable_types lists the variable types a problem may declare —
     "binary" and "integer" — and schema_versions lists every problem schema
@@ -55,10 +57,14 @@ async def validate_optimization_problem(
     Returns semantic errors (each with a recommended_action), advisory
     warnings, and an estimate of the compiled variable count including slack
     bits. Call this before solve_optimization when planning to use a remote
-    backend, so problems can be fixed before spending quota. Nothing is
-    compiled or solved and no network requests are made. solve_optimization
-    reports the same warnings for the same backend, so skipping this call
-    never hides them; calling it first only saves the solve.
+    backend, so problems can be fixed before spending quota, or when the
+    problem is large (many variables, wide integer ranges). On a local backend
+    solve_optimization can be called directly: an invalid document returns
+    status invalid_problem with the same errors and recommended_action.
+    Nothing is compiled or solved and no network requests are made.
+    solve_optimization reports the same warnings for the same backend, so
+    skipping this call never hides them; calling it first only saves the
+    solve.
 
     A field the schema does not declare is a tool error naming its path,
     never ignored: check the problem_json_schema from
@@ -111,6 +117,13 @@ async def solve_optimization(problem: OptimizationProblem) -> SolveResult:
     """Solve a structured binary or bounded-integer combinatorial optimization
     problem.
 
+    Use this when the user asks which items to take within a budget, weight or
+    capacity, how to assign people or jobs to seats, shifts or machines, in
+    which order to visit a handful of places, or how to split things into
+    groups or pick a subset that meets several requirements at once — anything
+    expressible as yes/no or bounded-count decisions with a linear or quadratic
+    score and linear rules, even when the user never says "optimization".
+
     Call this only after translating the user's request into explicit binary or
     bounded-integer variables, an objective (linear/quadratic, minimize or
     maximize), and hard or soft linear constraints. Do not pass natural-language
@@ -128,9 +141,12 @@ async def solve_optimization(problem: OptimizationProblem) -> SolveResult:
 
     Leave solver.penalty_multiplier at its default unless a previous result was
     infeasible on a remote backend; hard constraint penalties are managed by the
-    server. Use get_optimization_capabilities to see which backends are enabled;
-    call validate_optimization_problem first when planning to use a remote backend.
-    Use recommend_backend to compare backends; the choice remains yours.
+    server. Call validate_optimization_problem first when planning to use a
+    remote backend or when the problem is large; on a local backend an invalid
+    document comes back as status invalid_problem with the same errors and
+    recommended_action, so solving directly spends nothing. Use
+    get_optimization_capabilities when you need the backend list or the full
+    schema. Use recommend_backend to compare backends; the choice remains yours.
 
     Returns ranked feasible solutions with per-constraint evaluations, or a
     structured error with a recommended_action. When the status is infeasible,

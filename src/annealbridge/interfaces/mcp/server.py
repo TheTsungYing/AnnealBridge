@@ -68,9 +68,11 @@ EXAMPLE_PROBLEM: dict = {
 
 # Server-level guidance the host shows the agent once, at initialize. It
 # complements the per-tool descriptions (which say *when* to call a tool)
-# with what only the whole server can say: the call order, how to turn a
-# recommendation into the one backend the request carries — including when
-# to put that choice to the user instead of deciding alone — the rules a
+# with what only the whole server can say: the everyday requests the server
+# is for, when each tool is worth a call — a local backend can be solved
+# directly, a remote one or a large problem is validated first — how to turn
+# a recommendation into the one backend the request carries, including when
+# to put that choice to the user instead of deciding alone, the rules a
 # first document most often breaks, and one complete example. Like every
 # recommended_action it names no configuration values and no limits — those
 # come from get_optimization_capabilities, and the reason codes it points at
@@ -78,22 +80,36 @@ EXAMPLE_PROBLEM: dict = {
 SERVER_INSTRUCTIONS = (
     """AnnealBridge solves combinatorial optimization problems that you write
 as a structured JSON document (binary or bounded-integer variables, a linear
-or quadratic objective, hard and soft linear constraints). Every result is
-re-validated against the original document; nothing is ever silently
-substituted, clamped or dropped.
+or quadratic objective, hard and soft linear constraints). Use it when the
+user asks, in whatever words, which items to take within a budget, weight
+or capacity; how to assign people or jobs to seats, shifts or machines; in
+which order to visit a handful of places; or how to split things into
+groups or pick a subset that meets several requirements at once - anything
+that can be written as yes/no or bounded-count decisions with a linear or
+quadratic score and linear rules, even when the user never says
+"optimization". Every result is re-validated against the original
+document; nothing is ever silently substituted, clamped or dropped.
 
-Call order:
-1. get_optimization_capabilities - once, first. It returns the problem JSON
-   schema (problem_json_schema), the accepted schema versions and, per
-   backend, whether it is available and enabled and which limits apply.
-2. validate_optimization_problem - after writing the document, before
-   spending anything. It returns every semantic error at once, each with a
-   recommended_action, plus advisory warnings and the compiled size estimate.
-3. recommend_backend - whenever the user did not name a backend. Advisory
-   only; you still write the backend into solver.backend.
-4. solve_optimization - last. Its warnings are the same ones validate gives
-   for that backend, followed by any raised during the run: read them before
-   trusting an answer that looks weaker than expected.
+When to call each tool:
+- get_optimization_capabilities - when you need to know which backends are
+  available and enabled and which limits apply, or the full problem JSON
+  schema (problem_json_schema) and the accepted schema versions. For a
+  small binary problem on a local backend the example below already shows
+  the whole document shape.
+- validate_optimization_problem - before solving on a remote backend, or
+  when the problem is large (many variables, wide integer ranges): it
+  returns every semantic error at once, each with a recommended_action,
+  plus advisory warnings and the compiled size estimate, before anything
+  is spent. On a local backend you may solve directly: an invalid document
+  comes back as status "invalid_problem" carrying the same errors and
+  recommended_action, so fix the document and solve again.
+- recommend_backend - whenever the user did not name a backend. Advisory
+  only; you still write the backend into solver.backend.
+- solve_optimization - last. Its warnings are the same ones validate gives
+  for that backend, followed by any raised during the run: read them before
+  trusting an answer that looks weaker than expected.
+Local backends are free and make no network request; remote ones spend
+vendor quota and need credentials, which is why they get the extra call.
 
 Choosing solver.backend:
 - If the user named a backend, use it; it is never substituted.

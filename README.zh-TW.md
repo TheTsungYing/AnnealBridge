@@ -76,7 +76,15 @@ pip install "annealbridge[gpu]"       # + PyTorch，讓 simulated_bifurcation �
 
 裝好 [uv](https://docs.astral.sh/uv/) 之後，把 server 加進
 `claude_desktop_config.json`（或你的 host 對應的設定檔），然後重新啟動
-host；第一次啟動時 `uvx` 會把套件抓進它自己的快取環境。
+host。第一次啟動時 `uvx` 會把套件抓進它自己的快取環境；這次下載包含 numpy、
+dimod、dwave-samplers 等，可能要數十秒，久到 host 的啟動逾時會把 server 顯示
+成 disconnected。建議先在終端機跑一次：
+
+```bash
+uvx --from "annealbridge[mcp]" annealbridge-mcp --version
+```
+
+它會把環境準備好並印出版本；之後 host 啟動就只會用這份快取。
 
 ```json
 {
@@ -100,22 +108,30 @@ claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
 > **你：** 我最多能背 10 公斤。物品 A 價值 10、重 6，B 價值 8、重 5，C 價值
 > 7、重 4，D 價值 6、重 3。我該帶哪些？
 
-在回覆背後，agent 依序呼叫三個工具：
-
-1. `get_optimization_capabilities`：可以用哪些變數型別與運算子、哪些
-   backend 可用、上限是多少。
-2. `validate_optimization_problem`：它草擬的 JSON 一次拿回所有錯誤，或者
-   確認沒問題。此時還沒求解，也沒花任何費用。
-3. `solve_optimization`：排名過的解，每一個都對照原始限制式重新驗證過；在
-   窮舉的 `exact` backend 上會帶著 `optimality_proven: true`。
+在回覆背後，agent 把這個要求寫成問題 JSON，然後呼叫 `solve_optimization`。
+拿回來的每個解都對照原始限制式重新驗證過；在窮舉的 `exact` backend 上會帶著
+`optimality_proven: true`。JSON 不合法時結果會是 `invalid_problem`，帶著每一
+個錯誤與各自的修正建議，agent 改好之後再送一次。要用遠端 backend，或問題很
+大的時候，agent 會先呼叫 `validate_optimization_problem`，這樣寫錯不會花到任
+何費用；需要 backend 清單或完整 schema 時才呼叫
+`get_optimization_capabilities`。
 
 > **Agent：** 帶 A 和 C：價值 17，剛好 10 公斤。次佳是 A 加 D（16，9 公斤）
 > 與 B 加 C（15，9 公斤）。這是已證明的最佳解。
 
-措辭是 agent 的，數字來自工具結果。第四個工具 `recommend_backend` 會針對
+措辭是 agent 的，數字來自工具結果。另一個工具 `recommend_backend` 會針對
 問題把 backend 排名，僅供參考；若你沒有指名 backend 而且有多個本機 backend
 可用，server instructions 會要求 agent 先列出排在前面的選項並請你決定，而不
-是自行選定。任何支援 stdio 的 MCP host 用法都相同，另外
+是自行選定。
+
+**它不適合什麼。** AnnealBridge 不處理連續（實數）變數、非線性目標函式或非
+線性限制式。只有 `exact` 能證明一個答案是最佳解、或證明不存在可行解，而且它
+編譯後的變數（含 slack bits）預設上限 24 個；其他本機 backend
+（`simulated_annealing`、`tabu`、`simulated_bifurcation`）都是啟發式，找到的
+最好答案未必是最佳解。見下方的
+[求解器 backend](#求解器-backend) 表與 [docs/limitations.md](docs/limitations.md)。
+
+任何支援 stdio 的 MCP host 用法都相同，另外
 也有 streamable-http transport；`pipx` 或用 pip 安裝後以絕對路徑指定的
 server 都可以取代 `uvx`。`uvx` 會沿用第一次解析出來的環境，因此既有安裝要先
 `uv cache clean annealbridge` 再重啟 host 才會換到新版；見
