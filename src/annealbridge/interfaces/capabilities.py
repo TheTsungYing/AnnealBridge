@@ -27,7 +27,7 @@ class BackendCapability(BaseModel):
 
     ``name`` is the *registry key*: the value to put in ``solver.backend``
     and the one ``enabled_backends`` is matched against (2026-09-09 review
-    F-22). ``solver.backend`` is a closed schema that accepts only the six
+    F-22). ``solver.backend`` is a closed schema that accepts only the seven
     built-in names, so a registry key must equal the backend's own
     ``capabilities.name``: a backend registered under any other key has no
     name a request could ask for.

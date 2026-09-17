@@ -55,9 +55,12 @@ def exit_on_settings_error(exc: SettingsError) -> NoReturn:
 
 def build_state(settings: ServerSettings | None = None) -> AppState:
     settings = settings if settings is not None else load_settings()
-    # ``sa_workers`` is the one setting that is not policy: it tunes a
-    # backend's speed, so it goes to the registry, not the service.
-    registry = SolverRegistry.default(sa_workers=settings.sa_workers)
+    # The worker counts are the settings that are not policy: they tune a
+    # backend's speed, so they go to the registry, not the service.
+    registry = SolverRegistry.default(
+        sa_workers=settings.sa_workers,
+        tabu_workers=settings.tabu_workers,
+    )
     return build_state_from_policy(settings.to_policy(), registry)
 
 

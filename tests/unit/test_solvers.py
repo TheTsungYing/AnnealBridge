@@ -2,10 +2,11 @@
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import dimod
 import pytest
-from dwave.samplers import SimulatedAnnealingSampler
+from dwave.samplers import SimulatedAnnealingSampler, TabuSampler
 
 from annealbridge.compiler import BQMCompiler
 from annealbridge.exceptions import SolverExecutionError
@@ -21,15 +22,17 @@ from annealbridge.solvers import (
     SimulatedAnnealingBackend,
     SolverCapabilities,
     SolverRegistry,
+    TabuBackend,
 )
 from annealbridge.solvers.base import BackendAliases, log_solved, record_column
-from annealbridge.solvers.simulated_annealing import (
-    _SEED_LIMIT,
+from annealbridge.solvers.sharding import (
     READS_PER_SHARD,
     default_workers,
     shard_seeds,
     shard_sizes,
 )
+from annealbridge.solvers.simulated_annealing import _SEED_LIMIT
+from annealbridge.solvers.tabu import _SEED_LIMIT as _TABU_SEED_LIMIT
 
 # Knapsack (spec §30): capacity 10, items A(w6,v10) B(w5,v8) C(w4,v7) D(w3,v6).
 # {A, C} has weight 6 + 4 = 10 (feasible) and value 10 + 7 = 17; every other
@@ -479,6 +482,359 @@ class TestSimulatedAnnealingSharding:
             backend.solve(compiled, SolverPreferences(num_reads=60, num_sweeps=10, seed=1))
 
 
+class TestTabuBackend:
+    def test_properties(self):
+        backend = TabuBackend()
+        assert backend.name == "tabu"
+        assert backend.is_exhaustive is False
+
+    def test_capabilities(self):
+        capabilities = TabuBackend().capabilities
+        assert isinstance(capabilities, SolverCapabilities)
+        assert capabilities.name == "tabu"
+        assert capabilities.remote is False
+        assert capabilities.heuristic is True
+        assert capabilities.exhaustive is False
+        assert capabilities.supports_seed is True
+        assert capabilities.supports_num_reads is True
+        assert capabilities.supports_time_limit is False
+        assert capabilities.supported_model_types == ["bqm"]
+        assert capabilities.returns_multiple_samples is True
+        assert capabilities.description.strip()
+        # Tabu search takes no sweeps at all, unlike the annealer.
+        assert capabilities.supports_num_sweeps is False
+        assert capabilities.requires_embedding is False
+        # The sampler's own seed range (0 .. 2**32 - 1), wider than the
+        # simulated annealer's, declared so validation refuses an
+        # out-of-range seed before anything runs.
+        assert capabilities.seed_min == 0
+        assert capabilities.seed_max == 2**32 - 1
+        # Reads are the one caller-controlled parameter this backend takes,
+        # limited under the local key.
+        assert capabilities.parameter_limits == [
+            ParameterLimit(
+                preference="num_reads",
+                limit="local_reads",
+                error_code="LOCAL_READS_LIMIT",
+            ),
+        ]
+
+    def test_is_available(self):
+        status = TabuBackend().is_available()
+        assert isinstance(status, AvailabilityStatus)
+        assert status.available is True
+        assert status == AvailabilityStatus(category="available")
+
+    def test_properties_alias_capabilities(self):
+        backend = TabuBackend()
+        assert backend.name == backend.capabilities.name
+        assert backend.is_exhaustive == backend.capabilities.exhaustive
+
+    def test_resolve_time_limit_is_none(self, compile_knapsack):
+        compiled = compile_knapsack()
+        assert TabuBackend().resolve_time_limit(compiled, SolverPreferences()) is None
+
+    def test_same_seed_is_reproducible(self, compile_knapsack):
+        # 60 reads is the sharded path (> READS_PER_SHARD): the promise holds
+        # there too, because the search is bounded by a count and not by a
+        # wall clock.
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=60, seed=42)
+        backend = TabuBackend()
+
+        first = backend.solve(compiled, preferences)
+        second = backend.solve(compiled, preferences)
+
+        assert first.variables == second.variables
+        assert first.samples.tolist() == second.samples.tolist()
+        assert first.energies.tolist() == second.energies.tolist()
+
+    def test_returns_all_reads(self, compile_knapsack):
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=20, seed=7)
+        result = TabuBackend().solve(compiled, preferences)
+
+        assert result.backend == "tabu"
+        assert result.num_samples == preferences.num_reads
+        assert result.samples.shape == (preferences.num_reads, compiled.num_variables)
+        assert len(result.energies) == preferences.num_reads
+        assert result.num_samples > 0
+
+    def test_none_seed_still_solves(self, compile_knapsack):
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=5, seed=None)
+        result = TabuBackend().solve(compiled, preferences)
+
+        assert result.num_samples == preferences.num_reads
+
+    def test_reports_local_execution_metadata(self, compile_knapsack):
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=20, seed=7)
+        result = TabuBackend().solve(compiled, preferences)
+
+        assert result.metadata is not None
+        assert result.metadata.backend == "tabu"
+        assert result.metadata.remote is False
+        # A local run has no vendor facts: no timing, no solver id, no quota.
+        assert result.metadata.timing_us == {}
+        assert result.metadata.solver_id is None
+        assert result.metadata.effective_time_limit_seconds is None
+        assert result.metadata.average_chain_break_fraction is None
+        assert result.metadata.embedding_max_chain_length is None
+        assert result.metadata.sampler_reported_feasible is None
+        # The reads asked of the sampler, whatever the shard layout was.
+        assert result.metadata.num_reads_requested == preferences.num_reads
+        # The service stamps the model type; the backend does not know it.
+        assert result.metadata.model_type is None
+
+    def test_metadata_read_count_is_independent_of_sharding(self, compile_knapsack):
+        # More than one shard: the count reported is the request, not a shard.
+        compiled = compile_knapsack()
+        num_reads = READS_PER_SHARD * 2 + 3
+        preferences = SolverPreferences(num_reads=num_reads, seed=3)
+        result = TabuBackend(workers=2).solve(compiled, preferences)
+
+        assert result.metadata is not None
+        assert result.metadata.num_reads_requested == num_reads
+
+    @pytest.mark.parametrize("seed", [11, None], ids=["seeded", "unseeded"])
+    def test_exactly_the_declared_parameters_reach_the_sampler(
+        self, compile_knapsack, monkeypatch, seed
+    ):
+        # ``TabuSampler.sample`` ends in ``**kwargs``, so an unknown name
+        # would be swallowed in silence: the backend must submit the
+        # caller's ``num_reads`` / ``seed`` plus its own fixed search bound,
+        # and nothing else. ``num_sweeps`` is non-default here and must not
+        # reach the sampler; ``timeout`` must be off and ``num_restarts``
+        # zero, which is what makes a seeded run reproducible.
+        compiled = compile_knapsack()
+        backend = TabuBackend()
+        original = backend._sampler.sample
+        seen: list[dict] = []
+
+        def recording(model, **kwargs):
+            seen.append(kwargs)
+            return original(model, **kwargs)
+
+        monkeypatch.setattr(backend._sampler, "sample", recording)
+        backend.solve(compiled, SolverPreferences(num_reads=10, num_sweeps=7, seed=seed))
+
+        expected = {"num_reads", "timeout", "num_restarts"}
+        if seed is not None:
+            expected.add("seed")
+        assert seen
+        for kwargs in seen:
+            assert set(kwargs) == expected
+            assert "num_sweeps" not in kwargs
+            assert kwargs["timeout"] is None
+            assert kwargs["num_restarts"] == 0
+
+    @pytest.mark.parametrize("seed", [-1, 2**32])
+    @pytest.mark.parametrize("num_reads", [10, 60])
+    def test_out_of_range_seed_is_a_solver_error_for_any_read_count(
+        self, compile_knapsack, seed, num_reads
+    ):
+        # The sampler accepts 0 <= seed <= 2**32 - 1. One shard lets the
+        # sampler reject it; several shards check the same rule before
+        # deriving shard seeds, so the status is the same either way.
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=num_reads, seed=seed)
+
+        with pytest.raises(SolverExecutionError, match="between 0 and"):
+            TabuBackend(workers=2).solve(compiled, preferences)
+
+    @pytest.mark.parametrize("seed", [-1, 2**32])
+    def test_out_of_range_seed_fails_the_same_way_on_both_paths(
+        self, compile_knapsack, seed
+    ):
+        # One shard (10 reads) lets the sampler reject the seed; several
+        # shards (60 reads) reject it before deriving shard seeds. Here the
+        # two messages must be *identical*, not merely alike: the sharded
+        # path raises the vendor's own wording verbatim, so a caller cannot
+        # tell from the error which path ran. (The annealer's twin can only
+        # compare the frame, because that vendor message quotes the offending
+        # value.)
+        compiled = compile_knapsack()
+        errors = []
+        for num_reads in (10, 60):
+            preferences = SolverPreferences(num_reads=num_reads, seed=seed)
+            with pytest.raises(SolverExecutionError) as exc_info:
+                TabuBackend(workers=2).solve(compiled, preferences)
+            errors.append(exc_info.value)
+
+        single_shard, sharded = errors
+        assert type(single_shard) is type(sharded) is SolverExecutionError
+        assert str(single_shard) == str(sharded)
+        assert type(single_shard.__cause__) is type(sharded.__cause__) is ValueError
+        assert str(single_shard.__cause__) == str(sharded.__cause__)
+        assert str(single_shard) == (
+            "Tabu search solver failed: Seed must be between 0 and 2**32 - 1"
+        )
+
+    @pytest.mark.parametrize("num_reads", [10, 60])
+    def test_largest_accepted_seed_solves_on_both_paths(self, compile_knapsack, num_reads):
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=num_reads, seed=2**32 - 1)
+
+        result = TabuBackend(workers=2).solve(compiled, preferences)
+
+        assert result.num_samples == num_reads
+
+    def test_vendor_sampler_accepts_the_largest_seed_the_shard_check_allows(self):
+        """Pin dwave-samplers' tabu seed rule, which the sharded path copies.
+
+        It is not the simulated annealer's rule: ``TabuSampler`` accepts up
+        to ``2**32 - 1`` where the annealer stops at ``2**31``. If an upgrade
+        changes the range, this test (and its rejecting twin) turns red and
+        the copied limit has to be revisited.
+        """
+        bqm = dimod.BinaryQuadraticModel({"a": 1.0}, {}, 0.0, dimod.BINARY)
+
+        sampleset = TabuSampler().sample(bqm, num_reads=1, seed=_TABU_SEED_LIMIT - 1)
+
+        assert len(sampleset) == 1
+
+    @pytest.mark.parametrize(
+        "seed", [_TABU_SEED_LIMIT, -1], ids=["seed_limit", "negative"]
+    )
+    def test_vendor_sampler_rejects_the_seeds_the_shard_check_rejects(self, seed):
+        """The rejecting half of the pinned vendor rule (see the accepting twin)."""
+        bqm = dimod.BinaryQuadraticModel({"a": 1.0}, {}, 0.0, dimod.BINARY)
+
+        with pytest.raises(ValueError):
+            TabuSampler().sample(bqm, num_reads=1, seed=seed)
+
+    def test_workers_below_one_is_rejected(self):
+        with pytest.raises(ValueError, match="workers must be >= 1"):
+            TabuBackend(workers=0)
+        with pytest.raises(ValueError, match="workers must be >= 1"):
+            TabuBackend(workers=-2)
+
+    def test_workers_default_is_detected_and_explicit_is_kept(self):
+        assert TabuBackend().workers >= 1
+        assert TabuBackend(workers=3).workers == 3
+
+    def test_result_is_identical_for_any_worker_count(self, compile_knapsack):
+        # Same contract as the annealer: the shard layout and shard seeds are
+        # a function of (num_reads, seed) only, and the search is bounded by
+        # a count rather than a wall clock, so workers change wall time and
+        # nothing else. 200 reads is 8 shards, so 4 and 8 workers both run
+        # every shard concurrently.
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=200, seed=42)
+
+        results = [
+            TabuBackend(workers=workers).solve(compiled, preferences)
+            for workers in (1, 4, 8)
+        ]
+
+        for other in results[1:]:
+            assert other.variables == results[0].variables
+            assert other.samples.tolist() == results[0].samples.tolist()
+            assert other.energies.tolist() == results[0].energies.tolist()
+
+    def test_sharded_run_returns_every_read_in_shard_order(self, compile_knapsack):
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=60, seed=42)
+
+        result = TabuBackend(workers=2).solve(compiled, preferences)
+
+        assert result.num_samples == 60
+        assert result.samples.shape == (60, compiled.num_variables)
+        # Each shard is the plain sampler call under its derived seed, with
+        # this backend's fixed search bound, and the rows are concatenated in
+        # shard order.
+        sampler = TabuSampler()
+        expected = []
+        sizes = shard_sizes(60)
+        for size, seed in zip(sizes, shard_seeds(42, len(sizes))):
+            sampleset = sampler.sample(
+                compiled.model, num_reads=size, seed=seed, timeout=None, num_restarts=0
+            )
+            expected.extend(sampleset.record.sample.tolist())
+        assert result.samples.tolist() == expected
+
+    def test_single_shard_passes_the_seed_straight_through(
+        self, compile_knapsack, monkeypatch
+    ):
+        # At most READS_PER_SHARD reads is one shard: no seed derivation at
+        # all, the user's seed reaches the sampler unchanged, so the result is
+        # exactly what a plain sampler call gives.
+        compiled = compile_knapsack()
+        backend = TabuBackend(workers=4)
+        original = backend._sampler.sample
+        seen: list[dict] = []
+
+        def recording(model, **kwargs):
+            seen.append(kwargs)
+            return original(model, **kwargs)
+
+        monkeypatch.setattr(backend._sampler, "sample", recording)
+        result = backend.solve(
+            compiled, SolverPreferences(num_reads=READS_PER_SHARD, seed=42)
+        )
+
+        assert [kwargs["num_reads"] for kwargs in seen] == [READS_PER_SHARD]
+        assert seen[0]["seed"] == 42
+        direct = TabuSampler().sample(
+            compiled.model,
+            num_reads=READS_PER_SHARD,
+            seed=42,
+            timeout=None,
+            num_restarts=0,
+        )
+        assert result.samples.tolist() == direct.record.sample.tolist()
+        assert result.energies.tolist() == direct.record.energy.tolist()
+
+    def test_vendor_sampler_is_deterministic_under_concurrency_without_a_timeout(self):
+        """Pin the vendor behaviour the worker-count promise rests on.
+
+        With ``timeout=None`` and ``num_restarts=0`` a seeded read is a
+        fixed amount of work, so the same call gives the same sample set
+        whether it runs alone or alongside three others. The vendor's own
+        default (``timeout=20``, a 20 ms wall clock per read) does *not*:
+        concurrency changes how much search fits in the budget, which is
+        why the backend submits both parameters explicitly. If an upgrade
+        makes the untimed search non-deterministic, this turns red before
+        the reproducibility tests above do.
+        """
+        bqm = dimod.BinaryQuadraticModel(
+            {f"x{i}": float(i % 3) - 1.0 for i in range(12)},
+            {(f"x{i}", f"x{j}"): float((i * j) % 5) - 2.0 for i in range(12) for j in range(i + 1, 12)},
+            0.0,
+            dimod.BINARY,
+        )
+        sampler = TabuSampler()
+
+        def sample(_: int) -> dimod.SampleSet:
+            return sampler.sample(bqm, num_reads=5, seed=99, timeout=None, num_restarts=0)
+
+        serial = [sample(index) for index in range(4)]
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            concurrent = list(executor.map(sample, range(4)))
+
+        expected = serial[0].record.sample.tolist()
+        expected_energies = serial[0].record.energy.tolist()
+        for sampleset in serial + concurrent:
+            assert sampleset.record.sample.tolist() == expected
+            assert sampleset.record.energy.tolist() == expected_energies
+
+    def test_failed_shard_fails_the_solve(self, compile_knapsack, monkeypatch):
+        compiled = compile_knapsack()
+        backend = TabuBackend(workers=2)
+        original = backend._sample
+
+        def failing(model, num_reads, seed):
+            if num_reads == 10:  # the remainder shard
+                raise RuntimeError("shard exploded")
+            return original(model, num_reads, seed)
+
+        monkeypatch.setattr(backend, "_sample", failing)
+
+        with pytest.raises(SolverExecutionError, match="shard exploded"):
+            backend.solve(compiled, SolverPreferences(num_reads=60, seed=1))
+
+
 class TestBackendAliases:
     """2026-09-09 review F-26c: ``name``, ``is_exhaustive`` and the "no time
     limit" ``resolve_time_limit`` come from one mixin instead of twelve
@@ -494,7 +850,7 @@ class TestBackendAliases:
     def test_every_built_in_backend_derives_its_aliases_from_the_declaration(self):
         backends = self.built_in_backends()
 
-        assert len(backends) == 6
+        assert len(backends) == 7
         for backend in backends:
             assert isinstance(backend, BackendAliases), backend
             assert backend.name == backend.capabilities.name

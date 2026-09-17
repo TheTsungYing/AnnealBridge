@@ -37,8 +37,9 @@ credentials: all three have to be true before a remote backend runs. See
   `ANNEALBRIDGE_MAX_SWEEPS`, `ANNEALBRIDGE_MAX_LOCAL_RETRIES` and
   `ANNEALBRIDGE_MAX_TOP_K` keep a single request from holding one of the
   concurrency slots (four by default) for a very long time. These are rejected
-  rather than clamped as well. `ANNEALBRIDGE_SA_WORKERS` is the CPU budget of
-  one local annealing solve (threads per solve); it never changes a result.
+  rather than clamped as well. `ANNEALBRIDGE_SA_WORKERS` and
+  `ANNEALBRIDGE_TABU_WORKERS` are the CPU budget of one local solve on their
+  respective backend (threads per solve); they never change a result.
 - **The penalty ladder cannot run away.** A hard penalty that would have to
   double past the floating-point range stops with a structured
   `PENALTY_OVERFLOW` error instead of a solver error, and no backend is ever

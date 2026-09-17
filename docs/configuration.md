@@ -22,13 +22,14 @@ request, and no setting can be changed by a problem JSON.
 | `ANNEALBRIDGE_MAX_QPU_READS` | int ≥ 1 | `1000` | Upper bound on `num_reads` for `dwave_qpu` (`QPU_READS_LIMIT`) |
 | `ANNEALBRIDGE_MAX_QPU_ANNEALING_TIME_US` | float > 0 | `2000.0` | Upper bound on `dwave_qpu.annealing_time_us`, in microseconds (`QPU_ANNEALING_TIME_LIMIT`) |
 | `ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS` | int ≥ 1 | `300` | Upper bound on the effective remote time limit; shared by `leap_hybrid_bqm`, `leap_hybrid_cqm` and `fujitsu_da` (`REMOTE_TIME_LIMIT`) |
-| `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES` | int ≥ 1 | `4` | Concurrent solves allowed (`CONCURRENCY_LIMIT`, retryable). Multiplied by `ANNEALBRIDGE_SA_WORKERS` it bounds how many sampling threads can run at once, so tune the two together under a container CPU quota — see [Recommended production settings](#recommended-production-settings) |
-| `ANNEALBRIDGE_MAX_LOCAL_READS` | int ≥ 1 | `100000` | Upper bound on `num_reads` for `simulated_annealing` (`LOCAL_READS_LIMIT`) |
-| `ANNEALBRIDGE_MAX_SWEEPS` | int ≥ 1 | `100000` | Upper bound on `num_sweeps` for `simulated_annealing` (`SWEEPS_LIMIT`) |
-| `ANNEALBRIDGE_MAX_LOCAL_RETRIES` | int ≥ 0 | `10` | Upper bound on `max_retries` for local backends (`RETRY_LIMIT`) |
+| `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES` | int ≥ 1 | `4` | Concurrent solves allowed (`CONCURRENCY_LIMIT`, retryable). Multiplied by the larger of `ANNEALBRIDGE_SA_WORKERS` and `ANNEALBRIDGE_TABU_WORKERS` it bounds how many sampling threads can run at once (concurrent solves may use different local backends), so tune them together under a container CPU quota — see [Recommended production settings](#recommended-production-settings) |
+| `ANNEALBRIDGE_MAX_LOCAL_READS` | int ≥ 1 | `100000` | Upper bound on `num_reads` for `simulated_annealing` and `tabu` (`LOCAL_READS_LIMIT`) |
+| `ANNEALBRIDGE_MAX_SWEEPS` | int ≥ 1 | `100000` | Upper bound on `num_sweeps` for `simulated_annealing`, the only backend that takes sweeps (`SWEEPS_LIMIT`) |
+| `ANNEALBRIDGE_MAX_LOCAL_RETRIES` | int ≥ 0 | `10` | Upper bound on `max_retries` for the local backends (`RETRY_LIMIT`) |
 | `ANNEALBRIDGE_MAX_REMOTE_RETRIES` | int ≥ 0 | `3` | Upper bound on `max_retries` for remote backends, enforced even when remote retries are enabled (`RETRY_LIMIT`) |
 | `ANNEALBRIDGE_MAX_TOP_K` | int ≥ 1 | `1000` | Upper bound on `top_k` (`TOP_K_LIMIT`) |
 | `ANNEALBRIDGE_SA_WORKERS` | int ≥ 1 | unset (auto-detect) | Threads the `simulated_annealing` backend samples with. Changes wall time only, never a result: the same seed gives the same answer for any value. Unset uses the CPUs available to the process; a container CPU quota is not detected, so set it there. Its product with `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES` is the ceiling on simultaneous sampling threads, so tune the two together — see [Recommended production settings](#recommended-production-settings) |
+| `ANNEALBRIDGE_TABU_WORKERS` | int ≥ 1 | unset (auto-detect) | The same setting for the `tabu` backend: threads it samples with, wall time only, never a result. The two backends have their own variable because they are tuned independently; whichever one a solve uses, its product with `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES` is the ceiling on simultaneous sampling threads |
 | `ANNEALBRIDGE_ENABLED_BACKENDS` | comma-separated names | unset | Registry names allowed to run. Unset or empty means every registered backend |
 | `ANNEALBRIDGE_LIMITS` | JSON object | `{}` | Generic policy limits for backends that declare custom limit keys. Not needed by the built-in backends |
 | `ANNEALBRIDGE_HTTP_HOST` | non-empty str, no whitespace | `127.0.0.1` | Default bind host for the MCP streamable-http transport. An empty or blank value is a configuration error, never a request to bind every interface |
@@ -55,7 +56,7 @@ against under the current environment — the same values an agent reads from
 
 A comma-separated allow-list of **registry names** — the same names that
 appear in `solver.backend`, in `annealbridge capabilities`, and in
-`get_optimization_capabilities`. Only the six built-in names are accepted
+`get_optimization_capabilities`. Only the seven built-in names are accepted
 there: `solver.backend` is a closed schema, so a backend must be registered
 under its own `capabilities.name` for any request to name it:
 
@@ -86,7 +87,7 @@ export ANNEALBRIDGE_LIMITS='{"iterations": 100000}'
 - Every value must be a finite number greater than 0. A non-finite or
   non-positive value would either reject every solve or defeat the
   `value > limit` comparison, so it is rejected here.
-- The six built-in backends need none of this: they use the dedicated
+- The seven built-in backends need none of this: they use the dedicated
   variables above. (`fujitsu_da` shares
   `ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS` with the hybrid solvers and declares
   no limit key of its own.)
@@ -200,10 +201,11 @@ of the host configuration.
   `ANNEALBRIDGE_MAX_LOCAL_READS`, `ANNEALBRIDGE_MAX_SWEEPS` and
   `ANNEALBRIDGE_MAX_TOP_K` together bound how long one request can hold a
   concurrency slot; `ANNEALBRIDGE_EXACT_MAX_VARIABLES` bounds how much memory
-  an exhaustive solve may ask for. `ANNEALBRIDGE_SA_WORKERS` is the CPU
-  budget of one local annealing solve: up to
-  `SA_WORKERS × MAX_CONCURRENT_SOLVES` threads can be sampling at once, so on
-  a shared host keep that product near the core count (it only affects
-  speed, never results).
+  an exhaustive solve may ask for. `ANNEALBRIDGE_SA_WORKERS` and
+  `ANNEALBRIDGE_TABU_WORKERS` are the CPU budget of one local solve on their
+  respective backend: up to `max(SA_WORKERS, TABU_WORKERS) ×
+  MAX_CONCURRENT_SOLVES` threads can be sampling at once (concurrent solves
+  may use different local backends), so on a shared host keep that product
+  near the core count (it only affects speed, never results).
 - **Watch the startup log for the unknown-variable `WARNING`.** It is the only
   signal that a setting you thought you configured is still at its default.

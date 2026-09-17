@@ -2,7 +2,7 @@
 
 # Solver backends
 
-This page describes the six solver backends AnnealBridge ships with: what each
+This page describes the seven solver backends AnnealBridge ships with: what each
 one runs on, which compiler path it takes, which solver preferences it honours
 and which it ignores, and what it needs before it can be used. It also covers
 the setup steps for the D-Wave and Fujitsu backends, how the compiler path is
@@ -18,6 +18,7 @@ For the environment variables named here, see
 | --- | --- | --- | --- | --- |
 | `exact` | local | bqm | none (core install) | none |
 | `simulated_annealing` | local | bqm | none (core install) | none |
+| `tabu` | local | bqm | none (core install) | none |
 | `dwave_qpu` | remote | bqm | `[dwave]` | D-Wave Leap, via Ocean |
 | `leap_hybrid_bqm` | remote | bqm | `[dwave]` | D-Wave Leap, via Ocean |
 | `leap_hybrid_cqm` | remote | cqm | `[dwave]` | D-Wave Leap, via Ocean |
@@ -77,7 +78,10 @@ configured. See [CLI](cli.md#capabilities).
   `invalid_problem`, and `recommend` lists the same error in this backend's
   `blocking`.
 - Reads are sampled in shards of 25, up to `ANNEALBRIDGE_SA_WORKERS` of
-  them concurrently (see [Configuration](configuration.md)). The shard
+  them concurrently (see [Configuration](configuration.md)). The shard split,
+  the derived shard seeds and the merge are shared code, used by
+  [`tabu`](#tabu) on the same terms, so both local samplers carry the same
+  reproducibility contract. The shard
   layout and each shard's seed — derived from the request seed through
   `numpy.random.SeedSequence` — depend on `num_reads` and `seed` alone, so
   **the result is a function of `(problem, num_reads, num_sweeps, seed)` and
@@ -106,6 +110,70 @@ configured. See [CLI](cli.md#capabilities).
   `ANNEALBRIDGE_MAX_LOCAL_RETRIES`).
 - Being heuristic, an `infeasible` result only means "not found under this
   configuration": it carries `infeasibility_proven: false`.
+- Reports `metadata` with `remote: false`, `model_type: "bqm"` and
+  `num_reads_requested` set to the reads asked of the sampler — the whole
+  request, not a shard. A local run has no vendor side, so `timing_us` is
+  empty and the vendor fields are `null`.
+
+## `tabu`
+
+- Local heuristic sampler: `dwave.samplers.TabuSampler`, a multistart tabu
+  search. It is part of the core install — no extra, no credential — and is
+  generally the stronger of the two local heuristics on dense QUBOs, where
+  simulated annealing has to spend sweeps on moves tabu search rules out.
+- Honours `num_reads` and `seed`. It has no notion of sweeps, so a non-default
+  `num_sweeps` raises `PARAMETER_IGNORED` rather than being passed along and
+  quietly ignored by the sampler.
+- `seed` must lie between `0` and `4294967295` inclusive (`0 <= seed < 2^32`,
+  the sampler's own rule, and **not** the simulated annealer's narrower
+  range). It is declared as `seed_min` / `seed_max` and reported by the
+  capabilities view; a seed outside it is refused before anything runs, with
+  `INVALID_SOLVER_PREFERENCE` at `solver.seed` ("solver.seed must be an
+  integer between 0 and 4294967295 on backend tabu, got -1"), so `solve`
+  returns `invalid_problem` and `recommend` lists the same error in this
+  backend's `blocking`.
+- **Each read is one plain tabu search from one random starting point.** The
+  backend always submits `timeout=None` and `num_restarts=0` instead of the
+  vendor defaults; neither is reachable from a solver preference, which is why
+  the backend declares no time limit: a wall-clock budget is not a dial on
+  search quality here. The reasons:
+  - The vendor default `timeout=20` is a 20 ms wall-clock budget **per read**,
+    which makes the answer a function of the machine's speed and of whatever
+    else is running on it. At 2000 variables the first search is still cut off
+    at 20 ms and returns a worse best energy than the untimed search. Turning
+    it off is what lets this backend return the same answer for the same seed
+    on any machine.
+  - With the wall clock gone, `num_restarts=0` is what bounds the work
+    instead: the cost of a read is a *count* of variable updates
+    (the sampler's `coefficient_z_first`), predictable in the problem size.
+    Restarts are not traded away for quality — measured on dense ±1 SK
+    instances at 300 and 600 variables, spending a fixed time budget on more
+    restarts scored no better than spending it on more reads. Diversification
+    is therefore left to `num_reads`, which the caller controls and policy
+    caps.
+- Measured single-threaded cost per read (`dwave-samplers` 1.8.0, Intel Core
+  i5-12500): about 4 ms at 30 variables, 12 ms at 200, 88 ms at 800 and 330 ms
+  at 2000. Multiply by `num_reads` to size a request.
+- Reads are sampled in shards of 25, up to `ANNEALBRIDGE_TABU_WORKERS` of them
+  concurrently — the same sharding the simulated annealer uses (see
+  [Configuration](configuration.md)). Because the shard layout and each
+  shard's seed depend on `num_reads` and `seed` alone, and the search itself
+  is bounded by a count rather than a wall clock, **the result is a function
+  of `(problem, num_reads, seed)` and is identical for any worker count or
+  machine**; the worker count only changes wall time. A request of at most 25
+  reads is a single sampler call with the seed passed straight through.
+- `num_reads` is bounded by `ANNEALBRIDGE_MAX_LOCAL_READS`
+  (`LOCAL_READS_LIMIT`). There is no sweeps ceiling and no time-limit ceiling,
+  because the backend takes neither parameter. An over-limit value is
+  rejected, never clamped.
+- If no feasible solution is found, the service retries with a doubled
+  hard-constraint penalty, up to `max_retries` times (bounded by
+  `ANNEALBRIDGE_MAX_LOCAL_RETRIES`), exactly as on the other local heuristic.
+- Being heuristic, it proves neither optimality nor infeasibility: an
+  `infeasible` result carries `infeasibility_proven: false` and only means
+  "not found under this configuration".
+- There is **no `solver.tabu` option block**. Tenure and the rest of the
+  search parameters stay at the sampler's own defaults.
 - Reports `metadata` with `remote: false`, `model_type: "bqm"` and
   `num_reads_requested` set to the reads asked of the sampler — the whole
   request, not a shard. A local run has no vendor side, so `timing_us` is
@@ -317,7 +385,7 @@ If none of the declared model types has a compiler, the result is
 `configuration_error` / `NO_COMPILER_FOR_MODEL_TYPE`. (`validate` reports the
 same code as a warning and leaves `model_type` unset, since it does not solve.)
 
-`exact`, `simulated_annealing`, `dwave_qpu`, `leap_hybrid_bqm` and
+`exact`, `simulated_annealing`, `tabu`, `dwave_qpu`, `leap_hybrid_bqm` and
 `fujitsu_da` all declare `bqm`; `leap_hybrid_cqm` declares `cqm`. On the BQM
 path hard constraints become penalty terms, inequalities get binary slack
 variables, and integer variables are binary-encoded; on the CQM path
@@ -486,7 +554,7 @@ system dispatches on — never the backend's name:
 
 **3. Register it.** `SolverRegistry` maps a registry key to a backend
 instance. The key is the name a request puts in `solver.backend` and the one
-`ANNEALBRIDGE_ENABLED_BACKENDS` is matched against; the six built-in backends
-register under their own `capabilities.name`.
+`ANNEALBRIDGE_ENABLED_BACKENDS` is matched against; the seven built-in
+backends register under their own `capabilities.name`.
 
 Contributions are welcome — see [CONTRIBUTING](../CONTRIBUTING.md).

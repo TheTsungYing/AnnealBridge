@@ -479,7 +479,7 @@ class TestConfigSecretCache:
 class TestResolveOceanConfigCache:
     """The Ocean config *parse* is memoised on the same credential fingerprint.
 
-    ``build_capabilities()`` asks all six backends for ``is_available()``,
+    ``build_capabilities()`` asks all seven backends for ``is_available()``,
     and the three D-Wave ones each reach ``_resolve_ocean_config()``, so one
     capabilities query used to parse the INI three times. The resolution is
     now cached in a single slot keyed by ``(DWAVE_API_TOKEN,

@@ -106,3 +106,26 @@ class TestKnapsackSimulatedAnnealing:
         best = result.solutions[0]
         assert best.objective_value == pytest.approx(KNAPSACK_OPTIMUM_VALUE)
         assert best.variables == KNAPSACK_OPTIMUM_SELECTION
+
+
+class TestKnapsackTabu:
+    def test_tabu_with_fixed_seed_finds_the_optimum(self, load_problem):
+        # The other local heuristic on the same problem: a tabu search from
+        # 100 random starts reaches the optimum of this 8-variable model.
+        result = OptimizationService().solve(
+            load_problem(backend="tabu", seed=1234, num_reads=100)
+        )
+
+        assert result.status == "success"
+        assert result.backend == "tabu"
+        assert result.objective_direction == "maximize"
+
+        best = result.solutions[0]
+        assert best.objective_value == pytest.approx(KNAPSACK_OPTIMUM_VALUE)
+        assert best.variables == KNAPSACK_OPTIMUM_SELECTION
+        for solution in result.solutions:
+            assert solution.hard_constraints_satisfied is True
+            assert solution.sample_count >= 1
+        assert sum(s.sample_count for s in result.solutions) <= (
+            result.attempts[0].samples_received
+        )

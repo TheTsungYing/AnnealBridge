@@ -52,9 +52,11 @@ variables.
 
 ## Backends
 
-- **`simulated_annealing`** is heuristic. It does not guarantee a global
-  optimum, and an `infeasible` result from it only means "not found under this
-  configuration" (`infeasibility_proven: false`).
+- **`simulated_annealing` and `tabu`** are heuristic. Neither guarantees a
+  global optimum, and an `infeasible` result from either only means "not found
+  under this configuration" (`infeasibility_proven: false`). `tabu` also takes
+  no `num_sweeps` and no time limit: the only dial on its search effort is
+  `num_reads`.
 - **`exact`** is a testing and debugging backend, and a ground-truth benchmark
   for the annealer. The state space doubles with every variable, so it is
   limited to small problems.

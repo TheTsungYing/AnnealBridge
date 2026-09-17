@@ -50,7 +50,7 @@ No backend is invoked and no quota is spent. Fix the document and resubmit.
 | `NON_INTEGER_INEQUALITY` | A `<=` / `>=` constraint has non-integer coefficients or `rhs`, but slack encoding needs integers. | Scale coefficients and rhs by a common multiplier, or restate it as an equality. |
 | `HARD_CONSTRAINT_HAS_WEIGHT` | A hard constraint carries a `weight`, but the server decides the hard penalty. | Remove the weight, or make the constraint soft if it is only a preference. |
 | `SOFT_CONSTRAINT_MISSING_WEIGHT` | A soft constraint has no positive `weight`, so its violation cost is undefined. | Supply a positive weight in objective units, or make the constraint hard. |
-| `INVALID_SOLVER_PREFERENCE` | A solver preference is outside its allowed range. | Correct the value, or omit it to use the default. Every numeric preference must be finite and `> 0`; a retry count may also be `0`. A `solver.seed` must lie within the `seed_min`–`seed_max` range the selected backend declares in its capabilities (currently only `simulated_annealing`, `0`–`2147483647`); a backend that does not support seeding raises the `SEED_IGNORED` warning for any seed instead. |
+| `INVALID_SOLVER_PREFERENCE` | A solver preference is outside its allowed range. | Correct the value, or omit it to use the default. Every numeric preference must be finite and `> 0`; a retry count may also be `0`. A `solver.seed` must lie within the `seed_min`–`seed_max` range the selected backend declares in its capabilities — each sampler has its own rule, so the range differs per backend (`simulated_annealing`: `0`–`2147483647`; `tabu`: `0`–`4294967295`); a backend that does not support seeding raises the `SEED_IGNORED` warning for any seed instead. |
 | `TRIVIALLY_INFEASIBLE` | A hard constraint cannot be satisfied by any assignment within the variables' bounds. | Correct the rhs, operator or coefficients, or make the constraint soft. |
 | `INTEGER_BOUNDS_MISSING` | An integer variable is missing `lower_bound` or `upper_bound`. | Add both bounds, or make the variable binary. |
 | `INTEGER_BOUNDS_INVALID` | `upper_bound` is not greater than `lower_bound`. | Equal bounds are a constant — fold it into the objective and constraints instead. |
@@ -68,7 +68,7 @@ There is never a silent fallback to another backend.
 | --- | --- | --- |
 | `UNKNOWN_BACKEND` | The backend name is not registered. | Use one of the backends listed by the capabilities tool. |
 | `BACKEND_NOT_INSTALLED` | The backend's optional dependency is missing. | Install the corresponding extra (e.g. `dwave-system`), or choose a local backend. |
-| `REMOTE_DISABLED` | Remote solving is off by server policy. | Ask the operator to enable remote backends, or use `simulated_annealing` / `exact`. |
+| `REMOTE_DISABLED` | Remote solving is off by server policy. | Ask the operator to enable remote backends, or use `simulated_annealing`, `tabu` or `exact`. |
 | `REMOTE_CREDENTIALS_MISSING` | The remote solver's credentials are not configured on the server. | Ask the operator to configure them, or use a local backend. |
 | `BACKEND_DISABLED_BY_POLICY` | The backend is not in the server's enabled-backends list. | Choose an enabled backend, or ask the operator to enable it. |
 | `BACKEND_UNAVAILABLE` | The backend reported itself unavailable with no more specific reason. | See the message, or choose another backend. |
@@ -81,7 +81,7 @@ happens before any vendor call, so no quota is consumed. The ceilings come from
 
 | Code | What it means | Recommended action (summary) |
 | --- | --- | --- |
-| `EXACT_VARIABLE_LIMIT` | The compiled problem has more variables than the exhaustive backend's limit; `solve` and `recommend` report it in the same wording. | Reduce the problem size, or use `simulated_annealing`. |
+| `EXACT_VARIABLE_LIMIT` | The compiled problem has more variables than the exhaustive backend's limit; `solve` and `recommend` report it in the same wording. | Reduce the problem size, or use `simulated_annealing` or `tabu`. |
 | `QPU_READS_LIMIT` | `num_reads` exceeds the server's QPU limit. | Lower `num_reads`. |
 | `QPU_ANNEALING_TIME_LIMIT` | `annealing_time_us` exceeds the server's limit. | Lower it, or omit it to use the QPU default. |
 | `REMOTE_TIME_LIMIT` | `time_limit_seconds` exceeds the server's limit for remote solving. | Lower it, or omit it to use the backend's default. |
@@ -107,10 +107,10 @@ The problem is fine; the operator has to act.
 | Code | What it means | Recommended action (summary) |
 | --- | --- | --- |
 | `SOLVER_ERROR` | The solver failed during execution, with no more specific mapping. | Check the message, adjust the problem or solver options, or try another backend. |
-| `EMBEDDING_FAILED` | Minor-embedding onto the QPU topology failed. | Reduce variables/constraints, or use `leap_hybrid_bqm` or `simulated_annealing`. |
+| `EMBEDDING_FAILED` | Minor-embedding onto the QPU topology failed. | Reduce variables/constraints, or use `leap_hybrid_bqm`, `simulated_annealing` or `tabu`. |
 | `REMOTE_AUTH_FAILED` | The vendor rejected the configured credentials (HTTP 401/403). | Verify the remote solver's credentials on the server, or use a local backend. |
 | `REMOTE_TIMEOUT` | The remote solve timed out. **Retryable.** | Retry later, reduce the problem size, or use a local backend. |
-| `REMOTE_SOLVER_ERROR` | The vendor reported an error (the fallback for HTTP 400 / 413 / 5xx). **Retryable.** | Retry later, or use a local backend such as `simulated_annealing`. |
+| `REMOTE_SOLVER_ERROR` | The vendor reported an error (the fallback for HTTP 400 / 413 / 5xx). **Retryable.** | Retry later, or use a local backend such as `simulated_annealing` or `tabu`. |
 | `REMOTE_QUOTA_EXCEEDED` | The vendor's usage quota for this billing period is exhausted. | Wait for the next period, or use a local backend. |
 | `REMOTE_BUSY` | The vendor has too many pending jobs for this account (HTTP 429). **Retryable.** | Retry later, or delete finished job results on the vendor portal. |
 

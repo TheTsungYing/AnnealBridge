@@ -30,7 +30,7 @@ optimization logic lives in either of them.
   │                                                                       │
   │     penalty is applied on the bqm path only.                          │
   │     integers are binary-encoded on the bqm path, native on cqm.       │
-  │     solvers: exact, simulated_annealing, dwave_qpu,                   │
+  │     solvers: exact, simulated_annealing, tabu, dwave_qpu,             │
   │              leap_hybrid_bqm, leap_hybrid_cqm, fujitsu_da             │
   │                                                                       │
   │     pydantic + dimod + dwave-samplers only.                           │
@@ -61,7 +61,7 @@ when any of them is broken. The full list of rules:
 | Core imports | Any file in `models/`, `validation/`, `compiler/`, `penalty/`, `solvers/` or `orchestration/` that imports `mcp`, `dwave.cloud`, `annealbridge.config` or `annealbridge.interfaces` |
 | Validation depends downward only | `validation/` importing `penalty`, `compiler`, `solvers`, `orchestration`, `config` or `interfaces` |
 | Compiler never imports penalty | `compiler/` importing `annealbridge.penalty` |
-| Orchestration knows no concrete backend | `orchestration/` importing `solvers.exact`, `solvers.simulated_annealing`, `solvers.dwave_qpu`, `solvers.leap_hybrid_bqm`, `solvers.leap_hybrid_cqm` or `solvers.fujitsu_da` |
+| Orchestration knows no concrete backend | `orchestration/` importing `solvers.exact`, `solvers.simulated_annealing`, `solvers.tabu`, `solvers.dwave_qpu`, `solvers.leap_hybrid_bqm`, `solvers.leap_hybrid_cqm` or `solvers.fujitsu_da` |
 | Concrete compilers have one importer | `BQMCompiler` / `CQMCompiler` (in any import form) imported by an orchestration file other than `orchestration/optimizer.py`, which is where the default compiler list is assembled |
 | No third-party HTTP client | `requests`, `httpx` or `aiohttp` imported anywhere in the package, at module level or inside a function |
 | No backend-name constants | A string constant whose *whole* value is a shipped backend name, appearing in `orchestration/`, `validation/`, `interfaces/capabilities.py`, `interfaces/mcp/tools.py` or `interfaces/cli/main.py` |
@@ -85,7 +85,7 @@ option blocks), `models/error_catalog.py`, each backend's own module,
 `solvers/registry.py`, the docs and the tests.
 
 The "fifth backend" rule is the strongest of the set. A test-only backend is
-registered alongside the six shipped ones, and the suite proves that the
+registered alongside the seven shipped ones, and the suite proves that the
 service, the validator, the capabilities view, the policy limits, the
 recommendation ranking and the credential redaction all handle it from its
 declaration alone — then asserts that `orchestration/optimizer.py`,
@@ -104,7 +104,7 @@ Everything lives under `src/annealbridge/`.
 | `validation/` | Problem validation, per-candidate solution validation, bounds-aware size estimates, backend recommendation, numeric tolerances |
 | `penalty/` | The penalty strategy: objective scale, penalty scale, initial penalty and the doubling ladder |
 | `compiler/` | The BQM compiler (slack and integer encoding), the CQM compiler, and the `decode` step that folds encoding bits back into integer values |
-| `solvers/` | The six solver backends, the registry, the `SolverBackend` protocol, and metadata sanitisation / redaction |
+| `solvers/` | The seven solver backends, the registry, the `SolverBackend` protocol, the read sharding the two local samplers share (`solvers/sharding.py` — not a backend), and metadata sanitisation / redaction |
 | `orchestration/` | `OptimizationService`, `ExecutionPolicy`, model-type routing, candidate arrays |
 | `config/` | `ServerSettings` (the `ANNEALBRIDGE_*` environment) — importable by the interfaces only |
 | `interfaces/` | `capabilities.py` and `composition.py` shared by both adapters, plus `cli/` and `mcp/` |

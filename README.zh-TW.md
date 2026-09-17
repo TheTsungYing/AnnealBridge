@@ -218,12 +218,13 @@ agent 永遠不必寫 QUBO 矩陣、penalty 權重、slack 變數或整數編碼
 
 ## 求解器 backend
 
-六個 backend 藏在同一套協定之後。
+七個 backend 藏在同一套協定之後。
 
 | Backend | 類型 | 路徑 | 說明 |
 | --- | --- | --- | --- |
 | `exact` | 本地 | BQM | 窮舉所有變數組合；編譯後變數預設上限 24 個（可設定） |
 | `simulated_annealing` | 本地 | BQM | 啟發式；支援 `num_reads`、`num_sweeps`、`seed` |
+| `tabu` | 本地 | BQM | 啟發式多起點 tabu search，對稠密 QUBO 尤其強；支援 `num_reads`、`seed` |
 | `dwave_qpu` | 遠端 | BQM | 透過 `EmbeddingComposite` 使用 D-Wave 量子退火機 |
 | `leap_hybrid_bqm` | 遠端 | BQM | D-Wave Leap hybrid BQM solver |
 | `leap_hybrid_cqm` | 遠端 | CQM | D-Wave Leap hybrid CQM solver；原生限制式 |
@@ -269,7 +270,7 @@ agent 永遠不必寫 QUBO 矩陣、penalty 權重、slack 變數或整數編碼
 | [docs/errors.md](docs/errors.md) | 錯誤碼清單、warning code、reason code、exit code |
 | [docs/cli.md](docs/cli.md) | `annealbridge` 命令列 |
 | [docs/mcp.md](docs/mcp.md) | MCP server、工具、host 設定、Inspector |
-| [docs/backends.md](docs/backends.md) | 六個 backend、D-Wave 與 Fujitsu 設定、如何新增 backend |
+| [docs/backends.md](docs/backends.md) | 七個 backend、D-Wave 與 Fujitsu 設定、如何新增 backend |
 | [docs/configuration.md](docs/configuration.md) | 每一個 `ANNEALBRIDGE_*` 變數與廠商憑證 |
 | [docs/architecture.md](docs/architecture.md) | 分層、套件結構、設計原則 |
 | [docs/security.md](docs/security.md) | 預設值、上限、憑證遮蔽、有哪些資料會送到廠商端 |
@@ -292,7 +293,7 @@ live 測試要自己指定才會跑（`pytest -m remote`）。不用 checkout �
 架構規則、設計原則與 pull request 檢查清單都在
 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-版本 0.2.1：問題契約（`1.0` / `1.1`）、六個 backend、CLI 與 MCP 工具都已
+版本 0.2.1：問題契約（`1.0` / `1.1`）、七個 backend、CLI 與 MCP 工具都已
 完成並有測試涵蓋。目前刻意不支援的項目列在
 [docs/limitations.md](docs/limitations.md)；變更紀錄見
 [CHANGELOG.md](CHANGELOG.md)。

@@ -1,11 +1,8 @@
 """Simulated annealing solver backend (spec §21)."""
 
 import logging
-import os
-from concurrent.futures import ThreadPoolExecutor
 
 import dimod
-import numpy as np
 from dwave.samplers import SimulatedAnnealingSampler
 
 from annealbridge.exceptions import SolverExecutionError
@@ -24,20 +21,17 @@ from annealbridge.solvers.base import (
     result_from_sampleset,
 )
 
-logger = logging.getLogger(__name__)
+# The shard layout, the derived shard seeds and the bounded fan-out are
+# shared with the other local sampler backends; ``READS_PER_SHARD`` and the
+# reproducibility contract it carries live there.
+from annealbridge.solvers.sharding import (
+    default_workers,
+    run_shards,
+    shard_seeds,
+    shard_sizes,
+)
 
-# Reads are sampled in fixed-size shards so several can run at once. The
-# shard size is part of the reproducibility contract: the shard layout and
-# every shard's seed depend on ``num_reads`` and ``seed`` alone, never on
-# the machine, so the merged sample set is the same whatever the worker
-# count. Changing this constant changes every seeded result with more than
-# one shard. 25 is still the measured balance between the extra cost on one
-# core and the parallel speed-up on eight. That extra cost is a fixed cost
-# per sampler call, independent of reads and sweeps: every shard re-runs the
-# sampler's default beta-range estimate (about 15 ms at 300 variables /
-# 13.6k interactions, 110 ms at 800 / 96k). With workers=1 and 400 reads
-# (16 shards) it measured +9–18 % at 1000 sweeps and +52–73 % at 200.
-READS_PER_SHARD = 25
+logger = logging.getLogger(__name__)
 
 # ``SimulatedAnnealingSampler`` accepts ``0 <= seed < 2**31``; this copies
 # that rule on purpose. The sharded path derives every shard seed through
@@ -88,51 +82,6 @@ _CAPABILITIES = SolverCapabilities(
         ),
     ],
 )
-
-
-def default_workers() -> int:
-    """CPUs available to this process, never below 1.
-
-    ``os.process_cpu_count`` (3.13+) and ``sched_getaffinity`` (Linux)
-    honour the affinity mask; ``os.cpu_count`` is the portable fallback.
-    None of them sees a container CPU quota, which is what
-    ``ANNEALBRIDGE_SA_WORKERS`` is for.
-    """
-    process_cpu_count = getattr(os, "process_cpu_count", None)
-    if process_cpu_count is not None:
-        count = process_cpu_count()
-    elif hasattr(os, "sched_getaffinity"):
-        count = len(os.sched_getaffinity(0))
-    else:
-        count = os.cpu_count()
-    return max(1, count or 1)
-
-
-def shard_sizes(num_reads: int) -> list[int]:
-    """Split ``num_reads`` into ``READS_PER_SHARD``-sized shards, remainder last.
-
-    Empty for ``num_reads <= 0``; the caller then makes the plain single
-    call so the sampler reports the invalid count exactly as before.
-    """
-    if num_reads <= 0:
-        return []
-    full, rest = divmod(num_reads, READS_PER_SHARD)
-    return [READS_PER_SHARD] * full + ([rest] if rest else [])
-
-
-def shard_seeds(seed: int | None, count: int) -> list[int | None]:
-    """One sampler seed per shard, derived from the user's seed.
-
-    ``numpy.random.SeedSequence`` spreads one seed into independent streams
-    deterministically and platform-independently; masking to 31 bits keeps
-    every derived value inside the sampler's accepted range. Distinct user
-    seeds never share a shard seed by construction (as ``seed + k`` would).
-    ``None`` stays ``None``: each shard then draws its own random seed.
-    """
-    if seed is None:
-        return [None] * count
-    states = np.random.SeedSequence(seed).generate_state(count, dtype=np.uint32)
-    return [int(value & 0x7FFF_FFFF) for value in states]
 
 
 class SimulatedAnnealingBackend(BackendAliases):
@@ -260,21 +209,8 @@ class SimulatedAnnealingBackend(BackendAliases):
             )
         seeds = shard_seeds(seed, len(sizes))
         sweeps = preferences.num_sweeps
-
-        def run(shard: int) -> dimod.SampleSet:
-            return self._sample(model, sizes[shard], sweeps, seeds[shard])
-
-        if self._workers == 1:
-            samplesets = [run(shard) for shard in range(len(sizes))]
-        else:
-            executor = ThreadPoolExecutor(max_workers=min(self._workers, len(sizes)))
-            try:
-                # ``map`` yields in shard order, so the merged row order is
-                # the same as a sequential run.
-                samplesets = list(executor.map(run, range(len(sizes))))
-            except BaseException:
-                # A failed shard fails the solve; do not wait for the rest.
-                executor.shutdown(wait=False, cancel_futures=True)
-                raise
-            executor.shutdown(wait=True)
-        return dimod.concatenate(samplesets)
+        return run_shards(
+            lambda shard: self._sample(model, sizes[shard], sweeps, seeds[shard]),
+            len(sizes),
+            self._workers,
+        )

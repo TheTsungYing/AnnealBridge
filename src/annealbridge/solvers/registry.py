@@ -8,6 +8,7 @@ from annealbridge.solvers.leap_hybrid_bqm import LeapHybridBQMBackend
 from annealbridge.solvers.leap_hybrid_cqm import LeapHybridCQMBackend
 from annealbridge.solvers.metadata import declare_credentials
 from annealbridge.solvers.simulated_annealing import SimulatedAnnealingBackend
+from annealbridge.solvers.tabu import TabuBackend
 
 
 class SolverRegistry:
@@ -41,17 +42,25 @@ class SolverRegistry:
         return list(self._backends)
 
     @classmethod
-    def default(cls, *, sa_workers: int | None = None) -> "SolverRegistry":
+    def default(
+        cls,
+        *,
+        sa_workers: int | None = None,
+        tabu_workers: int | None = None,
+    ) -> "SolverRegistry":
         """Build the default registry.
 
         Registration order is fixed (3a §17.7, 3b §20.9): ``exact``,
-        ``simulated_annealing``, ``dwave_qpu``, ``leap_hybrid_bqm``,
-        ``leap_hybrid_cqm``, ``fujitsu_da``. The capabilities list, the CLI
-        table and the routing tie-break all follow it.
+        ``simulated_annealing``, ``tabu``, ``dwave_qpu``,
+        ``leap_hybrid_bqm``, ``leap_hybrid_cqm``, ``fujitsu_da``. The
+        capabilities list, the CLI table and the routing tie-break all
+        follow it.
 
-        ``sa_workers`` is handed to :class:`SimulatedAnnealingBackend`
-        (``None``: detect the CPUs available to the process). It only
-        changes how fast that backend samples, never what it returns.
+        ``sa_workers`` and ``tabu_workers`` are handed to
+        :class:`SimulatedAnnealingBackend` and :class:`TabuBackend`
+        respectively (``None``: detect the CPUs available to the process).
+        They only change how fast that backend samples, never what it
+        returns.
 
         Registering the remote backends never imports any D-Wave cloud
         package: each D-Wave backend lazy-imports ``dwave.system`` inside
@@ -61,6 +70,7 @@ class SolverRegistry:
         backends = (
             ExactSolverBackend(),
             SimulatedAnnealingBackend(workers=sa_workers),
+            TabuBackend(workers=tabu_workers),
             DWaveQPUBackend(),
             LeapHybridBQMBackend(),
             LeapHybridCQMBackend(),

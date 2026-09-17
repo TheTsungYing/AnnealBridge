@@ -184,6 +184,7 @@ def test_compiler_does_not_import_penalty() -> None:
 CONCRETE_BACKEND_MODULES = [
     "annealbridge.solvers.exact",
     "annealbridge.solvers.simulated_annealing",
+    "annealbridge.solvers.tabu",
     "annealbridge.solvers.dwave_qpu",
     "annealbridge.solvers.leap_hybrid_bqm",
     "annealbridge.solvers.leap_hybrid_cqm",

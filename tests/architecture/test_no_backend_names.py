@@ -23,6 +23,7 @@ BACKEND_NAMES = frozenset(
     {
         "exact",
         "simulated_annealing",
+        "tabu",
         "dwave_qpu",
         "leap_hybrid_bqm",
         "leap_hybrid_cqm",

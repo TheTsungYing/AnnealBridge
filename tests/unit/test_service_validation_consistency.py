@@ -37,7 +37,7 @@ from tests.fakes.declared_backend import (
 )
 from tests.fakes.local_cqm_backend import FAKE_LOCAL_CQM_NAME, FakeLocalCQMBackend
 
-BACKENDS = ["simulated_annealing", "exact"]
+BACKENDS = ["simulated_annealing", "exact", "tabu"]
 
 
 def duplicate_term_problem() -> OptimizationProblem:

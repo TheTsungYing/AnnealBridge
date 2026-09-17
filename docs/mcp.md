@@ -198,7 +198,7 @@ when the problem carries `"version": "1.1"` at its top level.
 
 Each `backends[].name` is the **registry key** — the value to put in
 `solver.backend`, and the one `ANNEALBRIDGE_ENABLED_BACKENDS` is matched
-against. `solver.backend` is a closed schema that accepts only the six
+against. `solver.backend` is a closed schema that accepts only the seven
 built-in names, so a backend has to be registered under its own
 `capabilities.name` for a request to be able to name it at all. `enabled`
 already accounts for server policy, so a backend reported as not enabled will

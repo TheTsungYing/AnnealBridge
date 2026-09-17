@@ -19,11 +19,11 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
     "BACKEND_NOT_INSTALLED": (
         "The backend's optional dependency is not installed; install the "
         "corresponding extra (e.g. dwave-system) or choose a local backend "
-        "such as simulated_annealing or exact."
+        "such as simulated_annealing, tabu or exact."
     ),
     "REMOTE_DISABLED": (
         "Remote solving is disabled by server policy; ask the operator to "
-        "enable remote backends, or use simulated_annealing or exact."
+        "enable remote backends, or use simulated_annealing, tabu or exact."
     ),
     "REMOTE_CREDENTIALS_MISSING": (
         "The remote solver's credentials are not configured on the server; ask "
@@ -35,7 +35,7 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
     ),
     "EXACT_VARIABLE_LIMIT": (
         "The compiled problem has more variables than the exact solver "
-        "limit; reduce the problem size or use simulated_annealing."
+        "limit; reduce the problem size or use simulated_annealing or tabu."
     ),
     "QPU_READS_LIMIT": (
         "num_reads exceeds the server's QPU limit; lower num_reads. The "
@@ -79,8 +79,8 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
     ),
     "EMBEDDING_FAILED": (
         "Problem too dense or too large for QPU embedding; reduce "
-        "variables/constraints, or use leap_hybrid_bqm or "
-        "simulated_annealing."
+        "variables/constraints, or use leap_hybrid_bqm, simulated_annealing "
+        "or tabu."
     ),
     "REMOTE_AUTH_FAILED": (
         "The remote solver rejected the configured credentials; verify the "
@@ -92,7 +92,7 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
     ),
     "REMOTE_SOLVER_ERROR": (
         "The remote solver reported an error; retry later or use a local "
-        "backend such as simulated_annealing."
+        "backend such as simulated_annealing or tabu."
     ),
     "REMOTE_RETRIES_DISABLED": (
         "Automatic retries are disabled for remote backends to protect "

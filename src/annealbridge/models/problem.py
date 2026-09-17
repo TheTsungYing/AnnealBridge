@@ -130,6 +130,7 @@ class SolverPreferences(InputModel):
     backend: Literal[
         "simulated_annealing",
         "exact",
+        "tabu",
         "dwave_qpu",
         "leap_hybrid_bqm",
         "leap_hybrid_cqm",

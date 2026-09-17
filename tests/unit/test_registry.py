@@ -77,6 +77,7 @@ class TestDefaultRegistry:
         assert registry.names() == [
             "exact",
             "simulated_annealing",
+            "tabu",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
@@ -94,6 +95,12 @@ class TestDefaultRegistry:
 
         assert registry.get("simulated_annealing").workers == 3
         assert SolverRegistry.default().get("simulated_annealing").workers >= 1
+
+    def test_default_forwards_tabu_workers_to_tabu(self):
+        registry = SolverRegistry.default(tabu_workers=3)
+
+        assert registry.get("tabu").workers == 3
+        assert SolverRegistry.default().get("tabu").workers >= 1
 
     def test_default_registry_needs_no_dwave_system(self):
         # 3a §17.7 / §31: the remote backends lazy-import ``dwave.system``

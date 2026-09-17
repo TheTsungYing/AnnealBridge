@@ -56,7 +56,7 @@ fixture with a no-op — it is the one place that needs the real credentials.
 | Directory | What it covers |
 | --- | --- |
 | `tests/unit/` | Models, validators, the bounds-aware size estimates (checked against brute-force enumeration), slack and integer encoding, both compilers including their integer paths, the `decode` step, the penalty strategy, the policy limits, backend routing, candidate arrays over integer rows, and each solver backend |
-| `tests/scenarios/` | The full JSON → validate → compile → solve → re-validate → rank pipeline on the shipped examples, including the integer knapsack down all three paths (exact, simulated annealing, a fake CQM backend) reaching the same optimum |
+| `tests/scenarios/` | The full JSON → validate → compile → solve → re-validate → rank pipeline on the shipped examples, including the integer knapsack down all four paths (exact, simulated annealing, tabu, a fake CQM backend) reaching the same optimum |
 | `tests/mcp/` | The four MCP tools driven through an in-memory MCP client, plus the tool list, the generated schemas, the thread offload and the stdio entry point (a few real subprocess checks; the rest of its argument and settings handling in-process) |
 | `tests/remote_mock/` | The D-Wave backends against mocked samplers (with the contract all three Ocean backends share written once, in `ocean_contract.py`) and the Fujitsu backend against a scripted HTTP transport — request shape, polling, delete / cancel, every error mapping — plus the real `UrllibTransport` against a loopback server and the credential-leak suite |
 | `tests/remote_live/` | Opt-in tests against real vendor hardware (see above) |

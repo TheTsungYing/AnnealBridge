@@ -97,6 +97,11 @@ class ServerSettings(BaseSettings):
     # registry by the composition root, not a policy limit: it never changes
     # a result, so it is not part of ExecutionPolicy (like ``http_*``).
     sa_workers: int | None = Field(default=None, ge=1)
+    # Shards the ``tabu`` backend samples at once; ``None`` detects the CPUs
+    # available to the process. The same kind of speed knob as
+    # ``sa_workers``, per backend because the two samplers are tuned
+    # independently.
+    tabu_workers: int | None = Field(default=None, ge=1)
     # ``NoDecode``: pydantic-settings would otherwise parse a set as JSON;
     # the operator writes ``exact,simulated_annealing`` instead.
     enabled_backends: Annotated[set[str] | None, NoDecode] = None
@@ -141,7 +146,7 @@ class ServerSettings(BaseSettings):
         Copies exactly the fields ``ExecutionPolicy`` declares, by name, so
         a limit added to both models reaches the policy without this method
         having to list it. The settings-only fields (``sa_workers``,
-        ``http_host``, ``http_port``) are left out on purpose rather than
+        ``tabu_workers``, ``http_host``, ``http_port``) are left out on purpose rather than
         passed and silently ignored: they configure the composition root,
         not the policy. That every policy field exists here with the same
         type, default and bounds is pinned by ``tests/unit/test_settings.py``.

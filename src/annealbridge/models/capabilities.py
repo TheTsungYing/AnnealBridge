@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # something a backend plugin may declare freely -- hence a Literal.
 ModelType = Literal["bqm", "cqm"]
 
-# Why a backend cannot run. The first four are the only categories the six
+# Why a backend cannot run. The first four are the only categories the seven
 # built-in backends ever report; ``"unavailable"`` is the generic escape
 # hatch for a third-party backend that just cannot be reached and has no
 # more specific reason to give. ``orchestration/limits.py``'s

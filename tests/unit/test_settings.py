@@ -34,9 +34,9 @@ ENV_SUFFIXES = [
     "MAX_LOCAL_RETRIES",
     "MAX_REMOTE_RETRIES",
     "MAX_TOP_K",
-    # The simulated_annealing backend's worker count: a speed knob, not a
-    # policy limit.
+    # The local samplers' worker counts: speed knobs, not policy limits.
     "SA_WORKERS",
+    "TABU_WORKERS",
     # 2026-09-09 review (F-18): the enabled-backends gate's env entry.
     "ENABLED_BACKENDS",
     "LIMITS",
@@ -220,7 +220,7 @@ class TestPolicyFieldsMirrorExecutionPolicy:
     environment boundary than inside the service.
     """
 
-    SETTINGS_ONLY_FIELDS = {"sa_workers", "http_host", "http_port"}
+    SETTINGS_ONLY_FIELDS = {"sa_workers", "tabu_workers", "http_host", "http_port"}
 
     @pytest.mark.parametrize("name", sorted(ExecutionPolicy.model_fields))
     def test_policy_field_is_declared_identically_in_settings(self, name):
@@ -301,18 +301,19 @@ class TestEnabledBackends:
         assert not hasattr(policy, "http_host")
         assert not hasattr(policy, "http_port")
 
-    def test_sa_workers_defaults_to_auto_and_does_not_leak_into_the_policy(
-        self, clean_env
+    @pytest.mark.parametrize("field", ["sa_workers", "tabu_workers"])
+    def test_worker_count_defaults_to_auto_and_does_not_leak_into_the_policy(
+        self, clean_env, field
     ):
         # A speed knob for one backend, never a limit the service enforces:
         # it reaches the registry through the composition root instead.
-        assert ServerSettings().sa_workers is None
+        assert getattr(ServerSettings(), field) is None
 
-        clean_env.setenv("ANNEALBRIDGE_SA_WORKERS", "2")
+        clean_env.setenv(ENV_PREFIX + field.upper(), "2")
         policy = ServerSettings().to_policy()
 
-        assert "sa_workers" not in ExecutionPolicy.model_fields
-        assert not hasattr(policy, "sa_workers")
+        assert field not in ExecutionPolicy.model_fields
+        assert not hasattr(policy, field)
 
 
 class TestLimitBounds:
@@ -326,6 +327,7 @@ class TestLimitBounds:
         "MAX_REMOTE_TIME_SECONDS",
         "MAX_CONCURRENT_SOLVES",
         "SA_WORKERS",
+        "TABU_WORKERS",
     ]
 
     @pytest.mark.parametrize("suffix", LIMIT_SUFFIXES)

@@ -230,12 +230,13 @@ vendor account.
 
 ## Backends
 
-Six backends sit behind one protocol.
+Seven backends sit behind one protocol.
 
 | Backend | Kind | Path | Notes |
 | --- | --- | --- | --- |
 | `exact` | local | BQM | Enumerates every assignment; 24 compiled variables by default |
 | `simulated_annealing` | local | BQM | Heuristic; honours `num_reads`, `num_sweeps`, `seed` |
+| `tabu` | local | BQM | Heuristic multistart tabu search, strong on dense QUBOs; honours `num_reads`, `seed` |
 | `dwave_qpu` | remote | BQM | D-Wave quantum annealer via `EmbeddingComposite` |
 | `leap_hybrid_bqm` | remote | BQM | D-Wave Leap hybrid BQM solver |
 | `leap_hybrid_cqm` | remote | CQM | D-Wave Leap hybrid CQM solver; native constraints |
@@ -285,7 +286,7 @@ The pages below live under [docs/](https://github.com/TheTsungYing/AnnealBridge/
 | [docs/errors.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/errors.md) | Error catalog, warning codes, reason codes, exit codes |
 | [docs/cli.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/cli.md) | The `annealbridge` command line |
 | [docs/mcp.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/mcp.md) | The MCP server, tools, host configuration, Inspector |
-| [docs/backends.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/backends.md) | The six backends, D-Wave and Fujitsu setup, adding a backend |
+| [docs/backends.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/backends.md) | The seven backends, D-Wave and Fujitsu setup, adding a backend |
 | [docs/configuration.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/configuration.md) | Every `ANNEALBRIDGE_*` variable and the vendor credentials |
 | [docs/architecture.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/architecture.md) | Layers, package layout, design principles |
 | [docs/security.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/security.md) | Defaults, limits, credential redaction, what reaches a vendor |
@@ -308,7 +309,7 @@ development version without a checkout:
 Architecture rules, design principles and the pull-request checklist are in
 [CONTRIBUTING.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/CONTRIBUTING.md).
 
-Version 0.2.1: the problem contract (`1.0` / `1.1`), the six backends, the
+Version 0.2.1: the problem contract (`1.0` / `1.1`), the seven backends, the
 CLI and the MCP tools are complete and covered by tests. What is not
 supported, by design for now, is listed in
 [docs/limitations.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/limitations.md);

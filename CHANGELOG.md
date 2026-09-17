@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A seventh backend, `tabu`, on `dwave.samplers.TabuSampler` — a multistart
+  tabu search and a strong heuristic on dense QUBOs, where simulated annealing
+  spends sweeps on moves tabu search rules out. It is part of the core install:
+  no extra, no credential, no network. It takes the BQM path, honours
+  `num_reads` and `seed`, and, having no notion of sweeps, declares
+  `supports_num_sweeps=False` so a non-default `num_sweeps` raises
+  `PARAMETER_IGNORED` rather than being swallowed by the sampler's `**kwargs`.
+  Its seed range is `0`–`4294967295`, deliberately *not* the simulated
+  annealer's `0`–`2147483647`: the two samplers in `dwave-samplers` disagree, so each
+  backend declares its own rule instead of sharing a constant. It is registered
+  third, after `simulated_annealing`, and bounded by the existing
+  `ANNEALBRIDGE_MAX_LOCAL_READS` and `ANNEALBRIDGE_MAX_LOCAL_RETRIES` — no new
+  limit key.
+- The `tabu` backend fixes `timeout=None` and `num_restarts=0` rather than
+  accepting the vendor defaults, and neither is reachable from a solver
+  preference. The vendor's `timeout=20` is a 20 ms wall clock *per read*, which
+  would make every answer a function of the machine's speed and its current
+  load — at 2000 variables the first search is still being cut off mid-way and
+  returns a worse energy than the untimed one. With the wall clock gone,
+  `num_restarts=0` is what bounds the work instead: one plain search per read,
+  costing a predictable *count* of variable updates (about 4 ms per read at 30
+  variables, 12 ms at 200, 88 ms at 800, 330 ms at 2000, single-threaded).
+  Restarts were not traded away for quality — on dense ±1 SK instances at 300
+  and 600 variables, a fixed time budget spent on more restarts scored no
+  better than the same budget spent on more reads — so diversification is left
+  to `num_reads`, which the caller controls and policy caps. The result is
+  therefore a function of `(problem, num_reads, seed)` alone.
+- `ANNEALBRIDGE_TABU_WORKERS` (int ≥ 1, unset auto-detects the CPUs available
+  to the process) sets how many read shards the `tabu` backend samples at once.
+  It is a separate variable from `ANNEALBRIDGE_SA_WORKERS` because the two
+  samplers are tuned independently, and like it, it changes wall time only —
+  never a result.
 - `tests/unit/test_registry_entry.py` pins what the MCP Registry entry depends
   on but nothing else would notice going missing: the
   `mcp-name: io.github.TheTsungYing/annealbridge` comment in `README.md` —
@@ -22,6 +54,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The read sharding the simulated annealer grew — the fixed 25-read shard
+  layout, the `SeedSequence`-derived per-shard seeds, the bounded fan-out and
+  the in-order merge — moved out of `solvers/simulated_annealing.py` into a
+  shared `solvers/sharding.py`, because `tabu` needs exactly the same rules and
+  the reproducibility contract they carry (layout and seeds depend on
+  `(num_reads, seed)` alone, so the answer is the same at any worker count) is
+  one contract, not two that happen to agree. `simulated_annealing` behaves
+  identically: same shard size, same derived seeds, same results for the same
+  seed.
 - The release workflow publishes to the MCP Registry as well as to PyPI. A new
   `publish-registry` job runs after `publish-pypi`, authenticates with GitHub
   OIDC (no stored credential) and publishes `server.json`. It first polls

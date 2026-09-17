@@ -375,7 +375,7 @@ class TestEveryCredentialBearingBackendDeclaresOnConstruction:
     ``SolverRegistry``, that path would quote vendor response bodies with the
     key unmasked. So every backend that declares credential env vars must
     declare them in its own ``__init__`` as well — generated from
-    ``SolverRegistry.default()`` so a seventh backend is covered the moment
+    ``SolverRegistry.default()`` so a new backend is covered the moment
     it declares a credential, with no edit to this test.
     """
 

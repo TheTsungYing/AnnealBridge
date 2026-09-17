@@ -8,10 +8,11 @@ from annealbridge.models import (
     ParameterLimit,
     SolverCapabilities,
 )
-from annealbridge.solvers import SimulatedAnnealingBackend, SolverRegistry
+from annealbridge.solvers import SimulatedAnnealingBackend, SolverRegistry, TabuBackend
 from annealbridge.solvers import SolverCapabilities as ReexportedCapabilities
 from annealbridge.solvers.base import AvailabilityStatus as ReexportedStatus
 from annealbridge.solvers.simulated_annealing import _SEED_LIMIT
+from annealbridge.solvers.tabu import _SEED_LIMIT as _TABU_SEED_LIMIT
 
 
 def make_capabilities(**overrides) -> SolverCapabilities:
@@ -153,7 +154,10 @@ class TestSeedRange:
         with pytest.raises(ValidationError):
             make_capabilities(supports_seed=True, **overrides)
 
-    def test_only_simulated_annealing_declares_a_range(self):
+    def test_each_seeded_backend_declares_its_own_range(self):
+        # The two seeded backends wrap different vendors' samplers, whose
+        # accepted ranges differ; each declares its own rather than sharing
+        # one constant. Every other shipped backend declares none.
         registry = SolverRegistry.default()
         assert sorted(registry.names()) == [
             "dwave_qpu",
@@ -162,14 +166,23 @@ class TestSeedRange:
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
             "simulated_annealing",
+            "tabu",
         ]
+        declared = {
+            "simulated_annealing": (0, 2**31 - 1),
+            "tabu": (0, 2**32 - 1),
+        }
         for name in registry.names():
             caps = registry.get(name).capabilities
-            expected = (0, 2**31 - 1) if name == "simulated_annealing" else (None, None)
-            assert (caps.seed_min, caps.seed_max) == expected, name
+            assert (caps.seed_min, caps.seed_max) == declared.get(name, (None, None)), name
 
     def test_simulated_annealing_range_matches_its_own_seed_check(self):
         # The backend's internal check accepts 0 <= seed < _SEED_LIMIT.
         caps = SimulatedAnnealingBackend().capabilities
         assert caps.seed_min == 0
         assert caps.seed_max == _SEED_LIMIT - 1 == 2**31 - 1
+
+    def test_tabu_range_matches_its_own_seed_check(self):
+        caps = TabuBackend().capabilities
+        assert caps.seed_min == 0
+        assert caps.seed_max == _TABU_SEED_LIMIT - 1 == 2**32 - 1

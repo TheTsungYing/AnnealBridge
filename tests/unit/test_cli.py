@@ -67,6 +67,7 @@ class TestCapabilities:
         assert set(rows) == {
             "exact",
             "simulated_annealing",
+            "tabu",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
@@ -76,6 +77,7 @@ class TestCapabilities:
         assert [line.split()[0] for line in lines[1:]] == [
             "exact",
             "simulated_annealing",
+            "tabu",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
@@ -85,6 +87,10 @@ class TestCapabilities:
         assert rows["exact"].split()[1:4] == ["yes", "yes", "no"]
         assert "max_variables=24" in rows["exact"]
         assert rows["simulated_annealing"].split()[1:4] == ["yes", "yes", "no"]
+        assert rows["tabu"].split()[1:4] == ["yes", "yes", "no"]
+        # tabu takes no sweeps, so its row carries no sweep ceiling.
+        assert "max_local_reads=100000" in rows["tabu"]
+        assert "max_sweeps" not in rows["tabu"]
         # Remote backends are not enabled while allow_remote is off (default).
         assert rows["dwave_qpu"].split()[2] == "no"
         assert rows["leap_hybrid_bqm"].split()[2] == "no"
@@ -215,6 +221,7 @@ class TestSolveErrors:
         for name in (
             "simulated_annealing",
             "exact",
+            "tabu",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
@@ -372,25 +379,37 @@ class TestRecommend:
         )
         assert lines[2] == ""
         assert lines[3].split() == ["Rank", "Backend", "Usable", "Model", "Reasons"]
-        rows = [line.split() for line in lines[4:10]]
+        rows = [line.split() for line in lines[4:11]]
         assert [row[1] for row in rows] == [
             "exact",
             "simulated_annealing",
+            "tabu",
             "leap_hybrid_cqm",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "fujitsu_da",
         ]
-        assert [row[0] for row in rows] == ["1", "2", "3", "4", "5", "6"]
-        assert [row[2] for row in rows] == ["yes", "yes", "no", "no", "no", "no"]
-        assert [row[3] for row in rows] == ["bqm", "bqm", "cqm", "bqm", "bqm", "bqm"]
+        assert [row[0] for row in rows] == ["1", "2", "3", "4", "5", "6", "7"]
+        assert [row[2] for row in rows] == ["yes", "yes", "yes", "no", "no", "no", "no"]
+        assert [row[3] for row in rows] == [
+            "bqm",
+            "bqm",
+            "bqm",
+            "cqm",
+            "bqm",
+            "bqm",
+            "bqm",
+        ]
         assert lines[4].endswith("R_EXACT_FITS")
         assert lines[5].endswith("R_LOCAL_HEURISTIC")
-        assert "R_UNUSABLE, R_NATIVE_CONSTRAINTS   [REMOTE_DISABLED]" in lines[6]
-        assert "R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]" in lines[7]
-        assert "R_UNUSABLE, R_REMOTE, R_SINGLE_SAMPLE   [REMOTE_DISABLED]" in lines[8]
-        assert "R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]" in lines[9]
-        assert len(lines) == 10
+        # Same tier and same reason as the other local heuristic; registry
+        # order is what puts it third.
+        assert lines[6].endswith("R_LOCAL_HEURISTIC")
+        assert "R_UNUSABLE, R_NATIVE_CONSTRAINTS   [REMOTE_DISABLED]" in lines[7]
+        assert "R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]" in lines[8]
+        assert "R_UNUSABLE, R_REMOTE, R_SINGLE_SAMPLE   [REMOTE_DISABLED]" in lines[9]
+        assert "R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]" in lines[10]
+        assert len(lines) == 11
 
     def test_json_output_is_a_recommendation_result(self):
         from annealbridge.validation import BackendRecommendationResult
@@ -403,7 +422,7 @@ class TestRecommend:
         parsed = BackendRecommendationResult.model_validate_json(result.output)
         assert parsed.valid is True
         assert parsed.recommendations[0].backend == "exact"
-        assert [e.rank for e in parsed.recommendations] == [1, 2, 3, 4, 5, 6]
+        assert [e.rank for e in parsed.recommendations] == [1, 2, 3, 4, 5, 6, 7]
 
     def test_invalid_problem_exits_1_with_errors(self, tmp_path):
         problem = json.loads((EXAMPLES_DIR / "knapsack.json").read_text())

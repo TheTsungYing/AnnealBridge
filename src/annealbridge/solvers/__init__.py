@@ -1,6 +1,6 @@
-"""Solver backends: exact enumeration, simulated annealing and the remote
-D-Wave QPU, Leap hybrid BQM, Leap hybrid CQM and Fujitsu Digital Annealer
-solvers (spec §20–§22, Phase 2 §15–§16, Phase 3a §17, Phase 3b §20)."""
+"""Solver backends: exact enumeration, simulated annealing, tabu search and
+the remote D-Wave QPU, Leap hybrid BQM, Leap hybrid CQM and Fujitsu Digital
+Annealer solvers (spec §20–§22, Phase 2 §15–§16, Phase 3a §17, Phase 3b §20)."""
 
 from annealbridge.solvers.base import (
     AvailabilityStatus,
@@ -23,6 +23,7 @@ from annealbridge.solvers.ocean import (
 )
 from annealbridge.solvers.registry import SolverRegistry
 from annealbridge.solvers.simulated_annealing import SimulatedAnnealingBackend
+from annealbridge.solvers.tabu import TabuBackend
 
 __all__ = [
     "AvailabilityStatus",
@@ -39,6 +40,7 @@ __all__ = [
     "SolverBackend",
     "SolverCapabilities",
     "SolverRegistry",
+    "TabuBackend",
     "assert_samples_within_bounds",
     "redact",
     "sampleset_to_arrays",

@@ -210,15 +210,18 @@ class TestSeedRange:
     """The declared seed range is part of the view, so an agent can choose a
     seed the backend accepts before submitting anything."""
 
-    def test_only_simulated_annealing_declares_a_seed_range(self):
+    def test_each_seeded_backend_declares_its_own_seed_range(self):
         entries = _entries(SolverRegistry.default())
 
-        assert len(entries) == 6
-        sa = entries["simulated_annealing"]
-        assert (sa.seed_min, sa.seed_max) == (0, 2**31 - 1)
+        assert len(entries) == 7
+        # The two seeded backends wrap different samplers and their accepted
+        # ranges differ, so the view carries one range per backend.
+        declared = {
+            "simulated_annealing": (0, 2**31 - 1),
+            "tabu": (0, 2**32 - 1),
+        }
         for name, entry in entries.items():
-            if name != "simulated_annealing":
-                assert (entry.seed_min, entry.seed_max) == (None, None), name
+            assert (entry.seed_min, entry.seed_max) == declared.get(name, (None, None)), name
 
     def test_seed_range_fields_are_described(self):
         for field in ("seed_min", "seed_max"):

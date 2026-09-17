@@ -1,14 +1,14 @@
-"""Bounded-integer knapsack across all three paths (3b spec §26.3).
+"""Bounded-integer knapsack across all four paths (3b spec §26.3).
 
 ``examples/integer_knapsack.json`` is the first shipped ``version 1.1``
 problem: four ``[0, 3]`` integer variables, a hard capacity constraint and
 one soft preference. It goes JSON -> ``OptimizationService`` -> result on
-three independent paths — the exhaustive BQM backend (``exact``), the
-heuristic BQM backend (``simulated_annealing``) and a constraint-model
-backend (``FakeLocalCQMBackend``, 3a §26.1) — and all three must return the
-same business optimum, with the integer values decoded back to plain
-``int`` inside their declared bounds and no binary-expansion variable left
-in sight.
+four independent paths — the exhaustive BQM backend (``exact``), the two
+heuristic BQM backends (``simulated_annealing`` and ``tabu``) and a
+constraint-model backend (``FakeLocalCQMBackend``, 3a §26.1) — and all of
+them must return the same business optimum, with the integer values decoded
+back to plain ``int`` inside their declared bounds and no binary-expansion
+variable left in sight.
 
 Nothing here calls a compiler, a decoder or a validator by hand: the whole
 point is that the *service* pipeline gets the integers right end to end.
@@ -36,15 +36,19 @@ from tests.fakes.local_cqm_backend import FAKE_LOCAL_CQM_NAME, FakeLocalCQMBacke
 INTEGER_KNAPSACK_OPTIMUM_VALUE = 34.0
 INTEGER_KNAPSACK_OPTIMUM_SELECTION = {"item_a": 0, "item_b": 1, "item_c": 1, "item_d": 3}
 
-# The three paths under test: (backend name, solver overrides).
+# The paths under test: (backend name, solver overrides).
 # SA takes 500 reads: the landscape has a strong attractor at value 32
 # ({B, C, D×3} minus one D), and at 100 reads roughly half of all seeds
 # settle there instead of the optimum — as ``test_knapsack.py`` notes for
 # the binary knapsack. 500 reads reach 34 for every seed tried but one.
 SA_OVERRIDES = {"seed": 1234, "num_reads": 500}
+# The tabu sampler takes no sweeps, so the same two preferences are all it
+# accepts; anything else would come back as a PARAMETER_IGNORED warning.
+TABU_OVERRIDES = {"seed": 1234, "num_reads": 500}
 PATHS = [
     ("exact", {}),
     ("simulated_annealing", SA_OVERRIDES),
+    ("tabu", TABU_OVERRIDES),
     (FAKE_LOCAL_CQM_NAME, {}),
 ]
 
@@ -164,6 +168,22 @@ class TestIntegerKnapsackSimulatedAnnealing:
         assert best.hard_constraints_satisfied is True
 
 
+class TestIntegerKnapsackTabu:
+    def test_tabu_with_fixed_seed_finds_the_optimum(self, solve_on):
+        result = solve_on("tabu", **TABU_OVERRIDES)
+
+        assert result.status == "success"
+        assert result.backend == "tabu"
+        # The sweep count it cannot honour is never sent, so nothing is
+        # reported as ignored on this path.
+        assert result.warnings == []
+
+        best = result.solutions[0]
+        assert best.objective_value == pytest.approx(INTEGER_KNAPSACK_OPTIMUM_VALUE)
+        assert best.variables == INTEGER_KNAPSACK_OPTIMUM_SELECTION
+        assert best.hard_constraints_satisfied is True
+
+
 class TestIntegerKnapsackCQM:
     def test_cqm_backend_finds_the_optimum(self, solve_on):
         result = solve_on(FAKE_LOCAL_CQM_NAME)
@@ -180,11 +200,11 @@ class TestIntegerKnapsackCQM:
 
 
 class TestIntegerKnapsackAcrossPaths:
-    def test_three_paths_agree_on_the_first_solution(self, load_problem, solve_on):
+    def test_every_path_agrees_on_the_first_solution(self, load_problem, solve_on):
         results = [solve_on(backend, **overrides) for backend, overrides in PATHS]
 
         firsts = [result.solutions[0].variables for result in results]
-        assert firsts[0] == firsts[1] == firsts[2]
+        assert firsts == [firsts[0]] * len(PATHS)
 
         # Key order is the problem's declared variable order on every path,
         # not the sampler's or the binary expansion's.

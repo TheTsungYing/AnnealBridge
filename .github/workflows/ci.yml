@@ -85,7 +85,7 @@ jobs:
 
       # Phase 3a smoke (spec §30 step 10): validate / recommend are one-line
       # delegations to the service and must work without any extra installed;
-      # recommend lists all six backends and never touches the network.
+      # recommend lists all seven backends and never touches the network.
       - name: CLI validate and recommend work without optional dependencies
         run: |
           annealbridge validate examples/knapsack.json

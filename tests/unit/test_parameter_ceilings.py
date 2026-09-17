@@ -262,6 +262,12 @@ class TestLimitsView:
             "max_local_retries": 10,
             "max_top_k": 1000,
         }
+        # No sweep ceiling: the tabu sampler takes no sweeps to cap.
+        assert limits["tabu"] == {
+            "max_local_reads": 100000,
+            "max_local_retries": 10,
+            "max_top_k": 1000,
+        }
         assert limits["exact"] == {
             "max_variables": 24,
             "max_local_retries": 10,
