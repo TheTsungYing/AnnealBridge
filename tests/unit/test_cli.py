@@ -420,10 +420,12 @@ class TestRecommend:
         ]
         assert lines[4].endswith("R_EXACT_FITS")
         assert lines[5].endswith("R_LOCAL_HEURISTIC")
-        # Same tier and same reason as the other local heuristics; registry
-        # order is what orders the three of them.
+        # Same tier as the other local heuristics; the knapsack has a hard
+        # constraint on the bqm path, so the declared penalty weakness of the
+        # dense-matrix backend (2026-09-17 structure fit) is what puts it
+        # last of the three, with the reason spelled out.
         assert lines[6].endswith("R_LOCAL_HEURISTIC")
-        assert lines[7].endswith("R_LOCAL_HEURISTIC")
+        assert lines[7].endswith("R_LOCAL_HEURISTIC, R_PENALTY_WEAKNESS")
         assert "R_UNUSABLE, R_NATIVE_CONSTRAINTS   [REMOTE_DISABLED]" in lines[8]
         assert "R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]" in lines[9]
         assert "R_UNUSABLE, R_REMOTE, R_SINGLE_SAMPLE   [REMOTE_DISABLED]" in lines[10]

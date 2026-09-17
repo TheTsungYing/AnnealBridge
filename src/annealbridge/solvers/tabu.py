@@ -96,9 +96,17 @@ _CAPABILITIES = SolverCapabilities(
     # ``_sample_sharded`` stays as the last line for a direct caller.
     seed_min=0,
     seed_max=_SEED_LIMIT - 1,
+    # Measured on dense ±1 SK instances (docs/backends.md): the same energy
+    # as the annealer in about a third of the time at 1000 variables. No
+    # weakness was observed on the shipped hard-constrained examples (their
+    # hit rate was not recorded for this backend), so only the strength is
+    # declared.
+    strong_on_large_dense=True,
     description=(
         "Local multistart tabu search on dwave-samplers' TabuSampler, a "
-        "strong dense-QUBO heuristic; honours num_reads and seed."
+        "strong dense-QUBO heuristic; general-purpose on small problems too, "
+        "and the one to prefer over simulated annealing as models grow large "
+        "and dense; honours num_reads and seed."
     ),
     # Reads bound the CPU time one request can hold a concurrency slot for.
     # Declared under the local key (``local_reads`` rather than the QPU

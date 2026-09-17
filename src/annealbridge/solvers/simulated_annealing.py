@@ -66,8 +66,10 @@ _CAPABILITIES = SolverCapabilities(
     seed_min=0,
     seed_max=_SEED_LIMIT - 1,
     description=(
-        "Local heuristic simulated-annealing sampler; scales to larger "
-        "problems but does not prove optimality or infeasibility."
+        "Local heuristic simulated-annealing sampler; the default and the "
+        "safest general-purpose pick, best on small or hard-constrained "
+        "problems; scales to larger problems but does not prove optimality "
+        "or infeasibility."
     ),
     # 2026-09-09 review (F-07): reads and sweeps bound the CPU time one
     # request can hold a concurrency slot for. Declared under their own

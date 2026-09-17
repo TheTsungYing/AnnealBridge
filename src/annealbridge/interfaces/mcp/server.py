@@ -68,10 +68,13 @@ EXAMPLE_PROBLEM: dict = {
 
 # Server-level guidance the host shows the agent once, at initialize. It
 # complements the per-tool descriptions (which say *when* to call a tool)
-# with what only the whole server can say: the call order, the rules a
+# with what only the whole server can say: the call order, how to turn a
+# recommendation into the one backend the request carries — including when
+# to put that choice to the user instead of deciding alone — the rules a
 # first document most often breaks, and one complete example. Like every
 # recommended_action it names no configuration values and no limits — those
-# come from get_optimization_capabilities.
+# come from get_optimization_capabilities, and the reason codes it points at
+# are categorical, so nothing here goes stale when a setting changes.
 SERVER_INSTRUCTIONS = (
     """AnnealBridge solves combinatorial optimization problems that you write
 as a structured JSON document (binary or bounded-integer variables, a linear
@@ -86,11 +89,23 @@ Call order:
 2. validate_optimization_problem - after writing the document, before
    spending anything. It returns every semantic error at once, each with a
    recommended_action, plus advisory warnings and the compiled size estimate.
-3. recommend_backend - when the choice of backend is not obvious. Advisory
+3. recommend_backend - whenever the user did not name a backend. Advisory
    only; you still write the backend into solver.backend.
 4. solve_optimization - last. Its warnings are the same ones validate gives
    for that backend, followed by any raised during the run: read them before
    trusting an answer that looks weaker than expected.
+
+Choosing solver.backend:
+- If the user named a backend, use it; it is never substituted.
+- Otherwise call recommend_backend and read the reasons: an exhaustive
+  backend that fits proves optimality; among local heuristics,
+  R_DENSE_STRENGTH marks one that reaches the same energy faster on this
+  problem's shape and R_PENALTY_WEAKNESS one with a lower hit rate on it.
+  Local backends are free; remote ones spend quota and need credentials.
+- When more than one local backend is usable and the user did not ask for
+  an answer without being consulted, present the top entries with one-line
+  reasons and ask which to run. Otherwise run the first usable entry and
+  say in the answer which backend ran and why.
 
 Rules a first document most often breaks:
 - Only the fields in problem_json_schema exist. A field the schema does not

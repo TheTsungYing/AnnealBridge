@@ -109,6 +109,11 @@ class TestExactSolverBackend:
         assert capabilities.description.strip()
         assert capabilities.supports_num_sweeps is False
         assert capabilities.requires_embedding is False
+        # Structure affinity (2026-09-17): the exhaustive backend makes no
+        # claim either way -- it enumerates, so no problem shape is a
+        # measured strength or weakness of its search.
+        assert capabilities.strong_on_large_dense is False
+        assert capabilities.weak_on_penalty_dominated is False
         assert capabilities.parameter_limits == []
 
     def test_is_available(self):
@@ -201,6 +206,11 @@ class TestSimulatedAnnealingBackend:
         assert capabilities.description.strip()
         assert capabilities.supports_num_sweeps is True
         assert capabilities.requires_embedding is False
+        # Structure affinity (2026-09-17): the annealer is the baseline the
+        # other two local heuristics were measured against, so it declares
+        # neither a strength nor a weakness of its own.
+        assert capabilities.strong_on_large_dense is False
+        assert capabilities.weak_on_penalty_dominated is False
         # 2026-09-09 review (F-02): the two caller-controlled sampling
         # parameters are policy-limited under their own keys and codes.
         assert capabilities.parameter_limits == [
@@ -517,6 +527,11 @@ class TestTabuBackend:
         # Tabu search takes no sweeps at all, unlike the annealer.
         assert capabilities.supports_num_sweeps is False
         assert capabilities.requires_embedding is False
+        # Structure affinity (2026-09-17): measured stronger than the
+        # annealer on large dense models, with no measured weakness on the
+        # penalty-dominated ones.
+        assert capabilities.strong_on_large_dense is True
+        assert capabilities.weak_on_penalty_dominated is False
         # The sampler's own seed range (0 .. 2**32 - 1), wider than the
         # simulated annealer's, declared so validation refuses an
         # out-of-range seed before anything runs.
@@ -905,6 +920,11 @@ class TestSimulatedBifurcationBackend:
         assert capabilities.returns_multiple_samples is True
         assert capabilities.requires_embedding is False
         assert capabilities.description.strip()
+        # Structure affinity (2026-09-17): the only backend declaring both
+        # shapes -- the dense-matrix dynamics are strongest on large dense
+        # models and weakest where hard constraints become penalty terms.
+        assert capabilities.strong_on_large_dense is True
+        assert capabilities.weak_on_penalty_dominated is True
         # The same range as tabu (the two backends added after the annealer
         # agree), declared so validation refuses it before anything runs.
         assert capabilities.seed_min == 0

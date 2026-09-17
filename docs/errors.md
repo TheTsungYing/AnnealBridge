@@ -187,10 +187,16 @@ they never describe a failure.
 | `R_INTEGER_NATIVE` | Integer variables are passed to the model natively, with no binary encoding. |
 | `R_INTEGER_ENCODED` | Integer variables are binary-encoded; the compiled size grows with the range. |
 | `R_INTEGER_BLOWUP` | Binary-encoding the integer variables yields many quadratic interactions on this backend; a backend that takes integers natively ranks ahead of it. |
+| `R_DENSE_STRENGTH` | Declares that on large dense unconstrained models it reaches the same energy as its peers in a fraction of the time, and this problem is one; ranked ahead of the other backends in its tier. |
+| `R_PENALTY_WEAKNESS` | Declares a measured lower hit rate on models whose hard constraints compile to penalties, and this problem has an effective hard constraint on the bqm path; ranked behind the other backends in its tier. |
 
 `R_INTEGER_NATIVE` and `R_INTEGER_ENCODED` are informational and do not change
 the order. Of the integer codes only `R_INTEGER_BLOWUP` does, and only by
-moving that backend behind the others. The ranking never rewrites
+moving that backend behind the others. `R_DENSE_STRENGTH` and
+`R_PENALTY_WEAKNESS` also change the order, but only *within* a tier: they
+reorder backends that already rank together — the local heuristics, in
+practice — and never move one past a fitting `exact` or past a backend of a
+different kind. The ranking never rewrites
 `problem.solver.backend`.
 
 ## CLI exit codes

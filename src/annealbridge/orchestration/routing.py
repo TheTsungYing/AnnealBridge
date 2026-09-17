@@ -35,6 +35,7 @@ from annealbridge.validation import (
     validate_problem,
     validate_problem_full,
 )
+from annealbridge.validation.estimates import is_large_dense, is_penalty_dominated
 
 # Reason codes are a fixed vocabulary (spec §23.4); they are not error codes
 # and live outside the error catalog. A test checks every code emitted by
@@ -81,6 +82,18 @@ REASON_DESCRIPTIONS: dict[str, str] = {
         "interactions on this backend (INTEGER_QUADRATIC_BLOWUP); a backend "
         "that takes integers natively ranks ahead of it."
     ),
+    # 2026-09-17: structure fit, matched against the backend's declaration.
+    "R_DENSE_STRENGTH": (
+        "Declares that on large dense unconstrained models it reaches the same "
+        "energy as its peers in a fraction of the time, and this problem is "
+        "one; ranked ahead of the other backends in its tier."
+    ),
+    "R_PENALTY_WEAKNESS": (
+        "Declares a measured lower hit rate on models whose hard constraints "
+        "compile to penalties, and this problem has an effective hard "
+        "constraint on the bqm path; ranked behind the other backends in its "
+        "tier."
+    ),
 }
 
 
@@ -121,13 +134,47 @@ def _tier(
     return 4
 
 
+def _structure_fit(
+    caps: SolverCapabilities,
+    model_type: ModelType | None,
+    problem: OptimizationProblem,
+    estimated_variables: int | None,
+    reasons: list[str],
+) -> int:
+    """Structure fit (2026-09-17): the sort key element after the tier.
+
+    Matches the backend's declaration against the problem's shape and
+    appends the reason: ``0`` when it declares strength on large dense
+    unconstrained models and the problem is one, ``2`` when it declares
+    weakness on penalty-dominated models and the problem is one, ``1``
+    otherwise. Both shapes are bqm-path shapes (``validation.estimates``),
+    so a declaration on a cqm path never matches; they are exclusive (one
+    requires no effective hard constraint, the other at least one), so a
+    backend declaring both can only match one of them. Without a size
+    estimate nothing matches. Like the tier reasons, the reason is appended
+    whether or not the backend is usable: it describes the fit, and
+    ``R_UNUSABLE`` plus ``blocking`` already say the backend cannot run.
+    """
+    if estimated_variables is None:
+        return 1
+    if caps.strong_on_large_dense and is_large_dense(
+        problem, estimated_variables, model_type
+    ):
+        reasons.append("R_DENSE_STRENGTH")
+        return 0
+    if caps.weak_on_penalty_dominated and is_penalty_dominated(problem, model_type):
+        reasons.append("R_PENALTY_WEAKNESS")
+        return 2
+    return 1
+
+
 def _assess(
     problem: OptimizationProblem,
     backend_name: str,
     registry: SolverRegistry,
     policy: ExecutionPolicy,
     compilers: dict[ModelType, ModelCompiler],
-) -> tuple[tuple[int, int, int], BackendRecommendation]:
+) -> tuple[tuple[int, int, int, int], BackendRecommendation]:
     """Spec §23.3 step 2 for one backend.
 
     Returns its sort key (registry order excluded) and its still-unranked
@@ -202,8 +249,11 @@ def _assess(
             reasons.append("R_INTEGER_NATIVE")
         elif model_type == "bqm":
             reasons.append("R_INTEGER_ENCODED")
+    structure_fit = _structure_fit(
+        caps, model_type, problem, validation.estimated_compiled_variables, reasons
+    )
 
-    key = (0 if usable else 1, 1 if dense or blowup else 0, tier)
+    key = (0 if usable else 1, 1 if dense or blowup else 0, tier, structure_fit)
     entry = BackendRecommendation(
         rank=0,  # assigned after sorting
         backend=backend_name,
@@ -229,8 +279,11 @@ def recommend(
     the same result. Sort key, ascending: usable first, then neither
     DENSE_FOR_QPU nor INTEGER_QUADRATIC_BLOWUP, then capability tier
     (exhaustive that fits → local heuristic → remote with native constraints
-    → other remote), then registry order. ``rank`` counts from 1. Integer
-    variables add a reason (native or binary-encoded) but no tier (3b §17).
+    → other remote), then structure fit (a declared strength the problem's
+    shape matches → neutral → a declared weakness it matches, see
+    :func:`_structure_fit`), then registry order. ``rank`` counts from 1.
+    Integer variables add a reason (native or binary-encoded) but no tier
+    (3b §17).
     """
     errors = validate_problem(problem)
     if errors:

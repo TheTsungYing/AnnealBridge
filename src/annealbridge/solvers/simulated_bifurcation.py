@@ -125,11 +125,22 @@ _CAPABILITIES = SolverCapabilities(
     returns_multiple_samples=True,
     seed_min=0,
     seed_max=_SEED_LIMIT - 1,
+    # Both measured (module docstring, docs/backends.md): the fastest of the
+    # local heuristics to the same energy on a dense 1000-variable SK, and
+    # the lowest hit rate per read on the shipped hard-constrained examples,
+    # where the penalty dominates the objective. The weakness was measured
+    # on small examples but is declared for the shape at any size: a large
+    # constrained model has not been measured, so recommend stays
+    # conservative there. It matches these against the problem's shape and
+    # never names this backend.
+    strong_on_large_dense=True,
+    weak_on_penalty_dominated=True,
     description=(
         "Local simulated bifurcation (Toshiba's bSB/dSB, in numpy; optional "
         "CUDA via PyTorch), a dense-matrix heuristic that updates every "
-        "variable of every read at once; strongest on large dense QUBOs, weak "
-        "on small penalty-dominated ones; honours num_reads (parallel "
+        "variable of every read at once; fastest to the same energy on large "
+        "dense unconstrained QUBOs, weak where hard constraints compile to "
+        "penalties; honours num_reads (parallel "
         "trajectories), num_sweeps (integration steps) and seed."
     ),
     # Reads and steps bound the CPU time (or GPU time) one request can hold

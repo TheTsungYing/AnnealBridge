@@ -1,10 +1,11 @@
 """What the server tells a host at initialize: instructions and version.
 
 The per-tool descriptions say *when* to call each tool; the server-level
-instructions carry what only the whole server can say — the call order, the
-rules a first document most often breaks, and one complete example problem —
-so an agent learns the document shape before its first call instead of from
-its first error.
+instructions carry what only the whole server can say — the call order, how to
+turn a recommendation into the one backend the request carries, the rules a
+first document most often breaks, and one complete example problem — so an
+agent learns the document shape before its first call instead of from its
+first error.
 """
 
 from importlib.metadata import version
@@ -34,6 +35,9 @@ async def test_instructions_reach_the_client():
     assert '"version": "1.1"' in instructions
     assert "integer coefficients" in instructions
     assert "never ignored" in instructions
+    # How a recommendation becomes the one backend the request carries.
+    assert "Choosing solver.backend" in instructions
+    assert "R_DENSE_STRENGTH" in instructions
 
 
 async def test_version_is_the_installed_distribution_version():

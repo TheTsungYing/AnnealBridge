@@ -201,3 +201,49 @@ class TestSeedRange:
         caps = SimulatedBifurcationBackend().capabilities
         assert caps.seed_min == 0
         assert caps.seed_max == _SB_SEED_LIMIT - 1 == 2**32 - 1
+
+
+class TestStructureAffinity:
+    """``strong_on_large_dense`` / ``weak_on_penalty_dominated`` (2026-09-17).
+
+    What a backend claims about the problem *shapes* it was measured on.
+    Both default to "no claim", so a backend written before the fields
+    existed keeps the neutral position, and the two are independent: a
+    backend may be strong on one shape and weak on another, so declaring
+    both is legal rather than contradictory.
+    """
+
+    def test_no_claim_is_the_default(self):
+        caps = make_capabilities()
+        assert caps.strong_on_large_dense is False
+        assert caps.weak_on_penalty_dominated is False
+
+    @pytest.mark.parametrize(
+        ("strong", "weak"),
+        [(False, False), (True, False), (False, True), (True, True)],
+        ids=["neither", "strong-only", "weak-only", "both"],
+    )
+    def test_the_two_flags_are_independent(self, strong, weak):
+        # Not mutually exclusive: the shapes are different problems, and the
+        # dense-matrix backend really does declare both.
+        caps = make_capabilities(
+            strong_on_large_dense=strong, weak_on_penalty_dominated=weak
+        )
+        assert caps.strong_on_large_dense is strong
+        assert caps.weak_on_penalty_dominated is weak
+
+    def test_each_shipped_backend_declares_its_measured_shapes(self):
+        # The affinities are measurements, not guesses: only the two local
+        # heuristics that were benchmarked against the annealer claim
+        # anything, and every remote backend stays neutral.
+        declared = {
+            "tabu": (True, False),
+            "simulated_bifurcation": (True, True),
+        }
+        registry = SolverRegistry.default()
+        for name in registry.names():
+            caps = registry.get(name).capabilities
+            assert (
+                caps.strong_on_large_dense,
+                caps.weak_on_penalty_dominated,
+            ) == declared.get(name, (False, False)), name

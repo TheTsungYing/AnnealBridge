@@ -15,12 +15,19 @@ from pathlib import Path
 import pytest
 
 from annealbridge.compiler import BQMCompiler, CQMCompiler
-from annealbridge.models import AvailabilityStatus, OptimizationProblem
+from annealbridge.models import (
+    AvailabilityStatus,
+    Constraint,
+    LinearTerm,
+    OptimizationProblem,
+    SolverPreferences,
+)
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.orchestration.routing import REASON_DESCRIPTIONS, recommend
 from annealbridge.solvers import SolverRegistry
 from tests.conftest import EXAMPLES_DIR
 from tests.fakes.declared_backend import FAKE_DECLARED_NAME, FakeDeclaredBackend
+from tests.fakes.dense_problem import dense_problem
 
 ALL_REASON_CODES = {
     "R_UNUSABLE",
@@ -36,6 +43,9 @@ ALL_REASON_CODES = {
     "R_INTEGER_NATIVE",
     "R_INTEGER_ENCODED",
     "R_INTEGER_BLOWUP",
+    # 2026-09-17: structure fit.
+    "R_DENSE_STRENGTH",
+    "R_PENALTY_WEAKNESS",
 }
 
 
@@ -194,7 +204,12 @@ class TestDefaultPolicy:
         assert by_name(result, "exact").reasons == ["R_EXACT_FITS"]
         assert by_name(result, "simulated_annealing").reasons == ["R_LOCAL_HEURISTIC"]
         assert by_name(result, "tabu").reasons == ["R_LOCAL_HEURISTIC"]
-        assert by_name(result, "simulated_bifurcation").reasons == ["R_LOCAL_HEURISTIC"]
+        # Knapsack has a hard constraint on the bqm path: the declared
+        # penalty weakness matches (2026-09-17 structure fit).
+        assert by_name(result, "simulated_bifurcation").reasons == [
+            "R_LOCAL_HEURISTIC",
+            "R_PENALTY_WEAKNESS",
+        ]
         assert by_name(result, "leap_hybrid_cqm").reasons == [
             "R_UNUSABLE",
             "R_NATIVE_CONSTRAINTS",
@@ -463,7 +478,16 @@ class TestIntegerReasons:
         for name in self.BQM_BACKENDS:
             entry = by_name(result, name)
             assert entry.model_type == "bqm"
-            assert entry.reasons[-1] == "R_INTEGER_ENCODED"
+            if name == "simulated_bifurcation":
+                # The integer knapsack has a hard capacity constraint, so the
+                # structure-fit reason (2026-09-17) follows the integer one.
+                assert entry.reasons == [
+                    "R_LOCAL_HEURISTIC",
+                    "R_INTEGER_ENCODED",
+                    "R_PENALTY_WEAKNESS",
+                ]
+            else:
+                assert entry.reasons[-1] == "R_INTEGER_ENCODED"
             assert "R_INTEGER_NATIVE" not in entry.reasons
 
     def test_cqm_backend_reports_native(self, registry):
@@ -551,6 +575,158 @@ class TestIntegerReasons:
                 assert not any(r.startswith("R_INTEGER_") for r in entry.reasons)
 
 
+class TestStructureFit:
+    """2026-09-17: the sort key element after the tier, from the backends'
+    ``strong_on_large_dense`` / ``weak_on_penalty_dominated`` declarations
+    matched against the problem's shape."""
+
+    def test_large_dense_unconstrained_promotes_the_declared_strengths(self, registry):
+        result = recommend(dense_problem(500), registry, ExecutionPolicy(), compilers())
+
+        assert [e.backend for e in result.recommendations[:3]] == [
+            "tabu",
+            "simulated_bifurcation",
+            "simulated_annealing",
+        ]
+        assert by_name(result, "tabu").reasons == [
+            "R_LOCAL_HEURISTIC",
+            "R_DENSE_STRENGTH",
+        ]
+        assert by_name(result, "simulated_bifurcation").reasons == [
+            "R_LOCAL_HEURISTIC",
+            "R_DENSE_STRENGTH",
+        ]
+        assert by_name(result, "simulated_annealing").reasons == ["R_LOCAL_HEURISTIC"]
+        # 500 binaries exceed the exhaustive limit: unusable, so it sorts
+        # after every usable entry regardless of structure fit.
+        assert by_name(result, "exact").usable is False
+
+    def test_hard_constraint_demotes_the_declared_weakness(self, registry):
+        result = recommend(knapsack(), registry, ExecutionPolicy(), compilers())
+
+        assert [e.backend for e in result.recommendations[:4]] == [
+            "exact",
+            "simulated_annealing",
+            "tabu",
+            "simulated_bifurcation",
+        ]
+        assert "R_PENALTY_WEAKNESS" in by_name(result, "simulated_bifurcation").reasons
+        for name in ("exact", "simulated_annealing", "tabu"):
+            assert "R_PENALTY_WEAKNESS" not in by_name(result, name).reasons
+        for entry in result.recommendations:
+            assert "R_DENSE_STRENGTH" not in entry.reasons
+
+    def test_large_dense_with_a_hard_constraint_is_penalty_dominated_not_dense(
+        self, registry
+    ):
+        # Conservative by design: the measured strength was on unconstrained
+        # models, so one hard constraint switches the shape entirely.
+        problem = dense_problem(500, hard_constraint=True)
+        result = recommend(problem, registry, ExecutionPolicy(), compilers())
+
+        assert [e.backend for e in result.recommendations[:3]] == [
+            "simulated_annealing",
+            "tabu",
+            "simulated_bifurcation",
+        ]
+        for entry in result.recommendations:
+            assert "R_DENSE_STRENGTH" not in entry.reasons
+        assert "R_PENALTY_WEAKNESS" in by_name(result, "simulated_bifurcation").reasons
+
+    def test_small_unconstrained_problem_keeps_registry_order(self, registry):
+        result = recommend(dense_problem(20), registry, ExecutionPolicy(), compilers())
+
+        assert [e.backend for e in result.recommendations[:4]] == [
+            "exact",
+            "simulated_annealing",
+            "tabu",
+            "simulated_bifurcation",
+        ]
+        for entry in result.recommendations:
+            assert "R_DENSE_STRENGTH" not in entry.reasons
+            assert "R_PENALTY_WEAKNESS" not in entry.reasons
+
+    @pytest.mark.parametrize(
+        ("num_variables", "expected"), [(499, False), (500, True)]
+    )
+    def test_size_threshold_is_inclusive_at_500(self, registry, num_variables, expected):
+        problem = dense_problem(num_variables)
+        result = recommend(problem, registry, ExecutionPolicy(), compilers())
+        assert ("R_DENSE_STRENGTH" in by_name(result, "tabu").reasons) is expected
+
+    def test_sparse_large_problem_is_not_dense(self, registry):
+        # 600 variables, only a linear objective: density 0.
+        result = recommend(make_problem(600), registry, ExecutionPolicy(), compilers())
+        assert [e.backend for e in result.recommendations[:3]] == [
+            "simulated_annealing",
+            "tabu",
+            "simulated_bifurcation",
+        ]
+        for entry in result.recommendations:
+            assert "R_DENSE_STRENGTH" not in entry.reasons
+
+    def test_no_size_estimate_matches_nothing(self, registry):
+        # A backend-specific validation error (a seed outside the range
+        # tabu declares) leaves the estimate None: no structure reason, and
+        # the entry is unusable for the seed, not for its shape.
+        problem = dense_problem(500).model_copy(
+            update={"solver": SolverPreferences.model_construct(backend="tabu", seed=-1)}
+        )
+        result = recommend(problem, registry, ExecutionPolicy(), compilers())
+        entry = by_name(result, "tabu")
+        assert entry.usable is False
+        assert entry.estimated_compiled_variables is None
+        assert "R_DENSE_STRENGTH" not in entry.reasons
+        assert "R_PENALTY_WEAKNESS" not in entry.reasons
+
+    def test_a_redundant_hard_constraint_is_not_a_penalty(self, registry):
+        # ``d0 <= 1`` on a binary compiles to nothing (2026-09-17 review), so
+        # the problem keeps the large dense shape.
+        problem = dense_problem(500).model_copy(
+            update={
+                "constraints": [
+                    Constraint(
+                        id="redundant",
+                        type="hard",
+                        terms=[LinearTerm(variable="d0", coefficient=1)],
+                        operator="<=",
+                        rhs=1,
+                    )
+                ]
+            }
+        )
+        result = recommend(problem, registry, ExecutionPolicy(), compilers())
+        assert [e.backend for e in result.recommendations[:3]] == [
+            "tabu",
+            "simulated_bifurcation",
+            "simulated_annealing",
+        ]
+        assert "R_PENALTY_WEAKNESS" not in by_name(result, "simulated_bifurcation").reasons
+
+    def test_cqm_path_is_never_penalty_dominated(self, monkeypatch, registry):
+        # The declared weakness is about penalties, which the cqm path has
+        # none of: a cqm backend declaring it is never demoted.
+        make_remotes_available(monkeypatch, registry)
+        cqm = registry.get("leap_hybrid_cqm")
+        declared = cqm.capabilities.model_copy(update={"weak_on_penalty_dominated": True})
+        monkeypatch.setattr(type(cqm), "capabilities", property(lambda self: declared))
+        result = recommend(knapsack(), registry, ExecutionPolicy(allow_remote=True), compilers())
+        assert "R_PENALTY_WEAKNESS" not in by_name(result, "leap_hybrid_cqm").reasons
+
+    def test_structure_fit_never_outranks_the_tier(self, monkeypatch, registry):
+        # A remote backend declaring the dense strength still ranks after
+        # every usable local heuristic on a large dense problem.
+        make_remotes_available(monkeypatch, registry)
+        bqm = registry.get("leap_hybrid_bqm")
+        declared = bqm.capabilities.model_copy(update={"strong_on_large_dense": True})
+        monkeypatch.setattr(type(bqm), "capabilities", property(lambda self: declared))
+        problem = dense_problem(500)
+        result = recommend(problem, registry, ExecutionPolicy(allow_remote=True), compilers())
+        entry = by_name(result, "leap_hybrid_bqm")
+        assert "R_DENSE_STRENGTH" in entry.reasons
+        assert entry.rank > by_name(result, "simulated_annealing").rank
+
+
 class TestReasonCatalog:
     def test_every_reason_code_has_a_description(self):
         assert set(REASON_DESCRIPTIONS) == ALL_REASON_CODES
@@ -574,6 +750,9 @@ class TestReasonCatalog:
                 make_integer_blowup_problem(),
                 ExecutionPolicy(allow_remote=True, exact_max_variables=200),
             ),
+            # 2026-09-17: R_DENSE_STRENGTH (R_PENALTY_WEAKNESS comes from
+            # the knapsack scenarios above).
+            (dense_problem(500), ExecutionPolicy()),
         ]
         seen: set[str] = set()
         for problem, policy in scenarios:

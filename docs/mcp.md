@@ -162,14 +162,27 @@ every other client of the server.
 
 At initialize the server hands the host a short instructions text alongside
 its name and version (the installed package version). It carries what the
-per-tool descriptions cannot: the recommended call order, the rules a first
-document most often breaks (schema version `1.1` for integer variables,
-integer coefficients on inequalities, unknown fields being rejected), and one
-complete minimal problem, so an agent learns the document shape before its
-first call rather than from its first error. The field descriptions in
-`problem_json_schema` serve the same purpose one level down. Neither names a
-configuration value or a limit; those come from
-`get_optimization_capabilities`.
+per-tool descriptions cannot: the recommended call order, a **choosing a
+backend** section, the rules a first document most often breaks (schema
+version `1.1` for integer variables, integer coefficients on inequalities,
+unknown fields being rejected), and one complete minimal problem, so an agent
+learns the document shape before its first call rather than from its first
+error. The field descriptions in `problem_json_schema` serve the same purpose
+one level down. Neither names a configuration value or a limit; those come
+from `get_optimization_capabilities`.
+
+The backend section is the one piece of guidance that is about the agent's
+own behaviour rather than the document: a backend the user named is used as
+given and never substituted; otherwise the agent calls `recommend_backend`
+and reads the reason codes — an exhaustive backend that fits proves
+optimality, `R_DENSE_STRENGTH` marks a local heuristic that reaches the same
+energy faster on this problem's shape and `R_PENALTY_WEAKNESS` one with a
+lower hit rate on it, local backends are free while remote ones spend quota.
+When more than one local
+backend is usable and the user did not ask to be left out of the loop, the
+agent is told to present the top entries with one-line reasons and **ask**
+which to run, rather than to pick silently; either way the answer says which
+backend ran and why.
 
 A `problem` argument carrying a field the schema does not declare — at any
 level — is refused as a tool error naming the path, never dropped. See
@@ -255,6 +268,49 @@ the backend compiles to cqm and takes integers as they are,
 `R_INTEGER_BLOWUP` when that encoding also raises an
 `INTEGER_QUADRATIC_BLOWUP` warning — a backend carrying that code is ranked
 after the ones without it.
+
+Two further reason codes order the **local heuristics among themselves**, from
+a structural preference each backend declares and that was measured, not
+guessed. Both are matched only on the **bqm path**: a backend that compiles to
+cqm never carries either, whatever it declares.
+
+`R_DENSE_STRENGTH` says the backend declares that on a large dense model with
+no effective hard constraint it reaches the same energy as its peers in a
+fraction of the time, and that this problem is one: at least 500 estimated
+compiled variables (slack and integer encoding bits included), a density of at
+least `0.5`, and no effective hard constraint anywhere in the document.
+Density is the number of distinct variable pairs the model will couple divided
+by `m(m−1)/2` for the `m` declared variables, counting a pair once however
+many objective terms or constraints — hard or soft — contribute it.
+
+`R_PENALTY_WEAKNESS` says the backend declares a lower hit rate on models
+whose hard constraints compile to penalties, and that this problem is one: the
+bqm path with at least one *effective* hard constraint, each of which becomes
+a penalty term that dwarfs the objective. A hard constraint is effective when
+it has a non-zero coefficient and is not redundant over the declared bounds —
+an `x <= 1` on a binary variable compiles to no penalty and so does not count.
+
+The codes sort *within* a tier — a `structure_fit` key applied after the
+existing exhaustive / local / remote tiers and before registry order — so they
+reorder peers and never make an unusable backend usable, never move a local
+backend ahead of a fitting `exact`, and never touch the remote backends. In
+practice, within the local heuristic tier (a fitting `exact` still ranks
+first): a large dense problem with no effective hard constraint ranks `tabu`,
+`simulated_bifurcation`, `simulated_annealing`; a problem with an effective
+hard constraint (the shipped knapsack example) ranks `simulated_annealing`,
+`tabu`, `simulated_bifurcation`; a small unconstrained one matches neither
+shape and keeps registry order, `simulated_annealing`, `tabu`,
+`simulated_bifurcation`.
+
+The rule is conservative, and an agent should know where. A large dense
+problem that carries one effective hard constraint is ranked
+`simulated_annealing`, `tabu`, `simulated_bifurcation` even at a size where
+simulated bifurcation might finish far sooner, because the speed advantage was
+measured only on unconstrained instances. Faced with that combination, tell
+the user the ranking is playing safe, or ask which trade they want, instead of
+presenting the top entry as the only option. See
+[Backends](backends.md#how-recommend-orders-the-local-heuristics) for the
+measurements the thresholds come from.
 
 ### `solve_optimization`
 
@@ -415,11 +471,15 @@ narrows what the next one has to guess.
    with a recommended action, plus the estimated compiled size. This is where
    a malformed constraint or an integer bound that explodes into hundreds of
    encoding bits gets caught, at zero cost.
-3. **`recommend_backend`** — when the choice of backend is not obvious. It
+3. **`recommend_backend`** — whenever the user did not name a backend. It
    ranks every backend for this specific problem with deterministic reason
    codes and the blocking errors that make one unusable, so the agent picks on
    evidence rather than on a name. It is advisory: the agent still writes the
-   backend it wants into `solver.backend`.
+   backend it wants into `solver.backend`, and a backend the user *did* name
+   is used as given. When several local backends are usable and the user did
+   not ask for an answer without being consulted, the server instructions tell
+   the agent to show the top entries with their reasons and ask which to run
+   instead of deciding alone.
 4. **`solve_optimization`** — last, with a problem already known to be valid
    and a backend already known to be usable. Its result carries the ranked
    solutions and, on failure, a structured error with a recommended action.

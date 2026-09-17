@@ -90,6 +90,18 @@ async def recommend_backend(problem: OptimizationProblem) -> BackendRecommendati
     it compiles to bqm and must binary-encode them, and R_INTEGER_BLOWUP when that
     encoding also raises an INTEGER_QUADRATIC_BLOWUP warning — a backend carrying
     that code is ranked after the ones without it.
+
+    The entries are ordered best first, so the first usable entry is the default
+    choice when the user named no backend. Among backends of the same kind, two
+    reason codes come from a backend's declared, measured structural preference:
+    R_DENSE_STRENGTH when it declares that it reaches the same energy as its
+    peers in a fraction of the time on large dense unconstrained models and this
+    problem is one, R_PENALTY_WEAKNESS when it declares a lower hit rate on
+    models whose hard constraints compile to penalties and this problem has an
+    effective hard constraint. Both shapes are bqm-path shapes, so a backend that
+    compiles to cqm is never matched. A backend carrying the first is ranked
+    ahead of its neighbours, one carrying the second behind them; neither changes
+    which backends are usable.
     """
     return await anyio.to_thread.run_sync(get_state().service.recommend, problem)
 
@@ -130,7 +142,8 @@ async def solve_optimization(problem: OptimizationProblem) -> SolveResult:
     parameter, a wide integer range, a negligible soft weight, ...) followed
     by any raised during the run; read them before trusting a weaker answer
     than expected. A field the schema does not declare is a tool error naming
-    its path, never ignored.
+    its path, never ignored. If the user did not name a backend, say in the
+    answer which backend ran and why.
     """
     state = get_state()
     return await anyio.to_thread.run_sync(state.service.solve, problem)

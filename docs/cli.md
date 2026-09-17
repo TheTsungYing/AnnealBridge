@@ -208,7 +208,7 @@ Rank  Backend                Usable  Model  Reasons
 1     exact                  yes     bqm    R_EXACT_FITS
 2     simulated_annealing    yes     bqm    R_LOCAL_HEURISTIC
 3     tabu                   yes     bqm    R_LOCAL_HEURISTIC
-4     simulated_bifurcation  yes     bqm    R_LOCAL_HEURISTIC
+4     simulated_bifurcation  yes     bqm    R_LOCAL_HEURISTIC, R_PENALTY_WEAKNESS
 5     leap_hybrid_cqm        no      cqm    R_UNUSABLE, R_NATIVE_CONSTRAINTS   [REMOTE_DISABLED]
 6     dwave_qpu              no      bqm    R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]
 7     leap_hybrid_bqm        no      bqm    R_UNUSABLE, R_REMOTE, R_SINGLE_SAMPLE   [REMOTE_DISABLED]
@@ -224,6 +224,15 @@ For a problem with integer variables the reasons also carry
 `R_INTEGER_BLOWUP` (a bqm backend whose encoding triggers the
 `INTEGER_QUADRATIC_BLOWUP` warning). Only the last one changes the order, and
 only by moving that backend behind the others.
+
+Two further codes reflect a structural preference a backend declares for
+itself: `R_DENSE_STRENGTH` on a large dense problem with no effective hard
+constraint, and `R_PENALTY_WEAKNESS` on a bqm-path problem that has one — as
+the knapsack above does, which is why `simulated_bifurcation` falls to the
+back of the local heuristics. Both reorder backends only *inside* the tier
+they already share, so neither moves a heuristic past a fitting `exact` or
+touches the remote backends. See
+[Backends](backends.md#how-recommend-orders-the-local-heuristics).
 
 ## `capabilities`
 

@@ -49,6 +49,7 @@ from tests.fakes.declared_backend import (
     FAKE_LIMIT_KEY,
     FakeDeclaredBackend,
 )
+from tests.fakes.dense_problem import dense_problem
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src" / "annealbridge"
@@ -280,6 +281,30 @@ class TestRecommendFollowsTheDeclaration:
         assert entry.usable is False
         assert [b.code for b in entry.blocking] == [FAKE_LIMIT_ERROR_CODE]
         assert entry.reasons == ["R_UNUSABLE", "R_REMOTE"]
+        assert fake.solve_calls == 0
+
+    def test_declared_structure_strength_is_matched_without_a_name(
+        self, monkeypatch, service, fake
+    ):
+        """2026-09-17: ``strong_on_large_dense`` is read from the declaration
+        alone; on a large dense unconstrained problem the fake earns
+        R_DENSE_STRENGTH, on the knapsack it does not."""
+        declared = fake.capabilities.model_copy(update={"strong_on_large_dense": True})
+        monkeypatch.setattr(type(fake), "capabilities", property(lambda self: declared))
+        dense = dense_problem(500)
+
+        (entry,) = [
+            e
+            for e in service.recommend(dense).recommendations
+            if e.backend == FAKE_DECLARED_NAME
+        ]
+        assert entry.reasons == ["R_REMOTE", "R_DENSE_STRENGTH"]
+        (entry,) = [
+            e
+            for e in service.recommend(make_knapsack()).recommendations
+            if e.backend == FAKE_DECLARED_NAME
+        ]
+        assert entry.reasons == ["R_REMOTE"]
         assert fake.solve_calls == 0
 
     def test_every_default_backend_is_still_ranked(self, service, registry):

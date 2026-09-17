@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `recommend` orders the local heuristics by problem shape instead of by
+  registry position, from two new `SolverCapabilities` declarations that are
+  `False` unless a backend opts in: `strong_on_large_dense` (declared by
+  `tabu` and `simulated_bifurcation`) and `weak_on_penalty_dominated`
+  (declared by `simulated_bifurcation` alone). The first says the backend
+  reaches the same energy as its peers in a fraction of the time on large
+  dense unconstrained models; the second says it has a measured lower hit rate
+  once hard constraints compile to penalties. A new `structure_fit` sort key,
+  applied after the existing tiers and before registry order, scores a backend
+  `0` when it declares the strength and the problem is large, dense and free
+  of effective hard constraints, with the reason code `R_DENSE_STRENGTH`; `2`
+  when it declares the weakness and the problem has at least one effective
+  hard constraint, each of which becomes a penalty far above the objective,
+  with `R_PENALTY_WEAKNESS`; and `1` otherwise. Both shapes are matched **only
+  on the bqm path**, so a backend that compiles to cqm is never matched
+  whatever it declares. Large means at least 500 estimated compiled variables,
+  slack and integer encoding bits included; dense means the distinct variable
+  pairs the model will couple — from the objective's quadratic terms and from
+  the variable clique of every effective constraint, hard or soft, each pair
+  counted once — reach at least half of `m(m−1)/2` for the `m` declared
+  variables; and a hard constraint is effective when it has a non-zero
+  coefficient and is not redundant over the declared bounds, since a redundant
+  inequality such as `x <= 1` on a binary variable compiles to no penalty.
+  Within the local heuristic tier a large dense problem with no effective hard
+  constraint therefore ranks `tabu`, `simulated_bifurcation`,
+  `simulated_annealing`; one with an effective hard constraint, such as the
+  shipped knapsack, ranks `simulated_annealing`, `tabu`,
+  `simulated_bifurcation`; a small unconstrained one matches neither shape and
+  keeps registry order — and an `exact` the problem fits still ranks first
+  overall in every case. Like every other dispatch in the service this reads a
+  declaration, never a name, so `exact` and the remote backends are untouched,
+  nothing becomes usable or unusable, and there is still no cost estimation,
+  no benchmark and no history. The thresholds are calibrated on the
+  measurements already recorded here and repeated in `docs/backends.md`, which
+  gains a `Best for` column, a **When to choose it** paragraph per local
+  heuristic, a section on this ordering — including what the conservative rule
+  gives up on a large dense problem that does carry a hard constraint — and
+  the two new fields in its "Adding a backend" checklist; `docs/mcp.md` and
+  both READMEs describe the same thing from the agent's side.
 - An eighth backend, `simulated_bifurcation`, implemented here on `numpy`:
   the classical-mechanics heuristic of Goto et al., "High-performance
   combinatorial optimization based on classical mechanics", *Science Advances*
@@ -115,6 +154,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `structure_fit` key described under *Added* changes what `recommend`
+  prints for problems that already existed: the shipped
+  `examples/knapsack.json` now lists `simulated_bifurcation` last among the
+  local heuristics and carries one extra reason code,
+  `R_LOCAL_HEURISTIC, R_PENALTY_WEAKNESS`, where it previously carried
+  `R_LOCAL_HEURISTIC` alone. No backend became usable or unusable, and
+  `solve` is unaffected — `solver.backend` is still used exactly as given.
+- The MCP server instructions now tell an agent how to turn a recommendation
+  into the one backend a request carries, which was the one step the four tool
+  descriptions left to guesswork. A backend the user named is used as given
+  and never substituted; otherwise `recommend_backend` is called — the step is
+  no longer described as being for when "the choice is not obvious" — and its
+  reason codes are read, `R_DENSE_STRENGTH` and `R_PENALTY_WEAKNESS`
+  included. When more than one local backend is usable and the user did not
+  ask for an answer without being consulted, the agent presents the top
+  entries with one-line reasons and **asks** which to run instead of deciding
+  silently; either way the answer names the backend that ran and why. The
+  `recommend_backend` and `solve_optimization` descriptions carry the matching
+  sentences, and the instructions still name no configuration value and no
+  limit — the reason codes they point at are categorical.
 - The read sharding the simulated annealer grew — the fixed 25-read shard
   layout, the `SeedSequence`-derived per-shard seeds, the bounded fan-out and
   the in-order merge — moved out of `solvers/simulated_annealing.py` into a

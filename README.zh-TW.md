@@ -113,7 +113,9 @@ claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
 > 與 B 加 C（15，9 公斤）。這是已證明的最佳解。
 
 措辭是 agent 的，數字來自工具結果。第四個工具 `recommend_backend` 會針對
-問題把 backend 排名，僅供參考。任何支援 stdio 的 MCP host 用法都相同，另外
+問題把 backend 排名，僅供參考；若你沒有指名 backend 而且有多個本機 backend
+可用，server instructions 會要求 agent 先列出排在前面的選項並請你決定，而不
+是自行選定。任何支援 stdio 的 MCP host 用法都相同，另外
 也有 streamable-http transport；`pipx` 或用 pip 安裝後以絕對路徑指定的
 server 都可以取代 `uvx`。`uvx` 會沿用第一次解析出來的環境，因此既有安裝要先
 `uv cache clean annealbridge` 再重啟 host 才會換到新版；見
@@ -228,9 +230,9 @@ agent 永遠不必寫 QUBO 矩陣、penalty 權重、slack 變數或整數編碼
 | Backend | 類型 | 路徑 | 說明 |
 | --- | --- | --- | --- |
 | `exact` | 本地 | BQM | 窮舉所有變數組合；編譯後變數預設上限 24 個（可設定） |
-| `simulated_annealing` | 本地 | BQM | 啟發式；支援 `num_reads`、`num_sweeps`、`seed` |
-| `tabu` | 本地 | BQM | 啟發式多起點 tabu search，對稠密 QUBO 尤其強；支援 `num_reads`、`seed` |
-| `simulated_bifurcation` | 本地 | BQM | 啟發式稠密矩陣動力學（Goto et al. 2021），在大型稠密 QUBO 上最快，對小型 penalty 主導的問題較弱；支援 `num_reads`、`num_sweeps`、`seed`；可用 `[gpu]` 走 CUDA |
+| `simulated_annealing` | 本地 | BQM | 啟發式；通用首選，三者中在小型或含硬限制的問題上最強；支援 `num_reads`、`num_sweeps`、`seed` |
+| `tabu` | 本地 | BQM | 啟發式多起點 tabu search，對稠密 QUBO 尤其強；稠密問題一旦夠大就優先選它；支援 `num_reads`、`seed` |
+| `simulated_bifurcation` | 本地 | BQM | 啟發式稠密矩陣動力學（Goto et al. 2021），大型稠密且無限制的 QUBO 首選，對硬限制會編成 penalty 的問題較弱；支援 `num_reads`、`num_sweeps`、`seed`；可用 `[gpu]` 走 CUDA |
 | `dwave_qpu` | 遠端 | BQM | 透過 `EmbeddingComposite` 使用 D-Wave 量子退火機 |
 | `leap_hybrid_bqm` | 遠端 | BQM | D-Wave Leap hybrid BQM solver |
 | `leap_hybrid_cqm` | 遠端 | CQM | D-Wave Leap hybrid CQM solver；原生限制式 |

@@ -119,7 +119,10 @@ Behind the reply, the agent calls three tools in order:
 > and D (16, at 9 kg) and B and C (15, at 9 kg). This is the proven optimum.
 
 The wording is the agent's; the numbers are the tool result. A fourth tool,
-`recommend_backend`, ranks the backends for a problem and is advisory only.
+`recommend_backend`, ranks the backends for a problem and is advisory only;
+when you did not name a backend and more than one local backend fits, the
+server instructions tell the agent to show the top entries and ask which to
+run rather than to decide for you.
 Any stdio-capable MCP host works the same way, a streamable-http transport
 exists, and `pipx` or a pip-installed server behind an absolute path work in
 place of `uvx`. `uvx` reuses the environment it resolved on its first run, so
@@ -241,9 +244,9 @@ Eight backends sit behind one protocol.
 | Backend | Kind | Path | Notes |
 | --- | --- | --- | --- |
 | `exact` | local | BQM | Enumerates every assignment; 24 compiled variables by default |
-| `simulated_annealing` | local | BQM | Heuristic; honours `num_reads`, `num_sweeps`, `seed` |
-| `tabu` | local | BQM | Heuristic multistart tabu search, strong on dense QUBOs; honours `num_reads`, `seed` |
-| `simulated_bifurcation` | local | BQM | Heuristic dense-matrix dynamics (Goto et al. 2021), fastest on large dense QUBOs, weak on small penalty-dominated ones; honours `num_reads`, `num_sweeps`, `seed`; optional CUDA via `[gpu]` |
+| `simulated_annealing` | local | BQM | Heuristic; the general-purpose choice, best of the three on small or hard-constrained problems; honours `num_reads`, `num_sweeps`, `seed` |
+| `tabu` | local | BQM | Heuristic multistart tabu search, strong on dense QUBOs; the first choice once a dense problem is large; honours `num_reads`, `seed` |
+| `simulated_bifurcation` | local | BQM | Heuristic dense-matrix dynamics (Goto et al. 2021), the choice for large dense unconstrained QUBOs, weaker on problems whose hard constraints compile to penalties; honours `num_reads`, `num_sweeps`, `seed`; optional CUDA via `[gpu]` |
 | `dwave_qpu` | remote | BQM | D-Wave quantum annealer via `EmbeddingComposite` |
 | `leap_hybrid_bqm` | remote | BQM | D-Wave Leap hybrid BQM solver |
 | `leap_hybrid_cqm` | remote | CQM | D-Wave Leap hybrid CQM solver; native constraints |

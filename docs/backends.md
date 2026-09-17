@@ -14,16 +14,23 @@ For the environment variables named here, see
 
 ## Overview
 
-| Backend | Kind | Model path | Extra needed | Credential |
-| --- | --- | --- | --- | --- |
-| `exact` | local | bqm | none (core install) | none |
-| `simulated_annealing` | local | bqm | none (core install) | none |
-| `tabu` | local | bqm | none (core install) | none |
-| `simulated_bifurcation` | local | bqm | none (core install); optional `[gpu]` | none |
-| `dwave_qpu` | remote | bqm | `[dwave]` | D-Wave Leap, via Ocean |
-| `leap_hybrid_bqm` | remote | bqm | `[dwave]` | D-Wave Leap, via Ocean |
-| `leap_hybrid_cqm` | remote | cqm | `[dwave]` | D-Wave Leap, via Ocean |
-| `fujitsu_da` | remote | bqm | none (core install) | `FUJITSU_DA_API_KEY` |
+| Backend | Kind | Model path | Extra needed | Credential | Best for |
+| --- | --- | --- | --- | --- | --- |
+| `exact` | local | bqm | none (core install) | none | small problems needing a proof |
+| `simulated_annealing` | local | bqm | none (core install) | none | general purpose, small or hard-constrained |
+| `tabu` | local | bqm | none (core install) | none | dense QUBOs; first choice once they are large |
+| `simulated_bifurcation` | local | bqm | none (core install); optional `[gpu]` | none | large dense unconstrained |
+| `dwave_qpu` | remote | bqm | `[dwave]` | D-Wave Leap, via Ocean | sparse problems small enough to embed |
+| `leap_hybrid_bqm` | remote | bqm | `[dwave]` | D-Wave Leap, via Ocean | large BQMs, when quota is available |
+| `leap_hybrid_cqm` | remote | cqm | `[dwave]` | D-Wave Leap, via Ocean | many hard constraints, kept native |
+| `fujitsu_da` | remote | bqm | none (core install) | `FUJITSU_DA_API_KEY` | large QUBOs on vendor hardware |
+
+**Best for** is a reading guide, not a switch. For the three local heuristics
+it lines up with what `recommend` actually does, because each of them declares
+its structural preference in its capabilities ([below](#how-recommend-orders-the-local-heuristics)).
+The four remote rows are qualitative descriptions only: no declared field
+corresponds to them, and `recommend` does not reorder the remote backends by
+problem shape.
 
 Every remote backend additionally requires `ANNEALBRIDGE_ALLOW_REMOTE=true`.
 Without it a request for a remote backend returns `backend_unavailable` /
@@ -115,6 +122,17 @@ configured. See [CLI](cli.md#capabilities).
   `num_reads_requested` set to the reads asked of the sampler — the whole
   request, not a shard. A local run has no vendor side, so `timing_us` is
   empty and the vendor fields are `null`.
+- **When to choose it.** The general-purpose local backend, and the one a
+  problem gets when it names none. It has the best measured hit rate of the
+  three on a penalty-dominated QUBO — the shape every problem with an
+  effective hard constraint takes on the BQM path, because each such
+  constraint becomes a penalty term orders of magnitude above the objective
+  coefficients: about 7 % of its reads land on the shipped knapsack optimum,
+  against 1–5 % for `simulated_bifurcation`. It declares no structural
+  preference either way, so `recommend` ranks it ahead of the other two on a
+  problem with an effective hard constraint and behind them on a large dense
+  unconstrained one (see
+  [below](#how-recommend-orders-the-local-heuristics)).
 
 ## `tabu`
 
@@ -179,6 +197,19 @@ configured. See [CLI](cli.md#capabilities).
   `num_reads_requested` set to the reads asked of the sampler — the whole
   request, not a shard. A local run has no vendor side, so `timing_us` is
   empty and the vendor fields are `null`.
+- **When to choose it.** Dense QUBOs, and the first of the local heuristics
+  once they are large. It matched the best energy the annealer found on the
+  dense ±1 SK instances measured below in about a third of the wall time
+  (11.6 s against 33 s at 1000 variables) — the difference measured was speed
+  to the same energy, not a better answer. Wherever the annealer would spend
+  sweeps on moves a tabu list rules out, the same advantage is *expected*, but
+  only the SK instances above were measured. It therefore declares
+  `strong_on_large_dense`, which puts it first among the local heuristics when
+  the problem is large, dense and free of effective hard constraints. It
+  declares no weakness: its hit rate on the penalty-dominated knapsack was
+  never recorded, so none has been observed — which is not the same as having
+  been measured and found equal. On every other shape it keeps registry order,
+  behind `simulated_annealing`.
 
 ## `simulated_bifurcation`
 
@@ -278,6 +309,16 @@ configured. See [CLI](cli.md#capabilities).
   `num_reads_requested` set to the reads asked for — the whole request, not a
   batch. A local run has no vendor side, so `timing_us` is empty and the vendor
   fields are `null`.
+- **When to choose it.** Large dense problems with no effective hard
+  constraint, where the single matrix product per step pays off: it reached
+  the same best energy as the other two on the 1000-variable SK instance in
+  3.9 s against 11.6 s and 33 s — the same answer, sooner — and the GPU path
+  keeps that lead as the size grows (see the timings under *Running it on a
+  GPU*). Avoid it on models whose hard constraints compile to penalties, where
+  its hit rate per read is the lowest of the three (1–5 % against about 7 %
+  for the annealer on the shipped knapsack). It declares both preferences —
+  `strong_on_large_dense` and `weak_on_penalty_dominated` — so `recommend`
+  makes that trade for you on both shapes.
 
 ### Running it on a GPU
 
@@ -559,6 +600,103 @@ constraints and integers are native. See
 [Problem format](problem-format.md) for what each path means for a problem, and
 [Architecture](architecture.md) for where the compilers sit.
 
+### How `recommend` orders the local heuristics
+
+`recommend` already separates the backends into tiers — an `exact` that fits
+first, then the local heuristics, then the remote ones. Inside the local
+heuristic tier the three backends used to come out in registry order, which
+said nothing about the problem. A `structure_fit` key now orders them, applied
+after the tier and before registry order, and driven — like everything else in
+`recommend` — by what a backend **declares**, never by its name.
+
+Two declarations exist, both `False` unless a backend opts in:
+
+- `strong_on_large_dense` — the backend reaches the same energy as its peers
+  in a fraction of the time on a large dense model with no effective hard
+  constraint. `tabu` and `simulated_bifurcation` declare it.
+- `weak_on_penalty_dominated` — the backend has a measured lower hit rate per
+  read once hard constraints enter the model as penalty terms. Only
+  `simulated_bifurcation` declares it.
+
+Both are matched **only on the bqm path**. The shapes below describe a
+compiled BQM, so a backend whose selected model type is `cqm` is never matched
+even if it declares a flag: its hard constraints stay native and never become
+penalties, and the density of a BQM says nothing about it.
+
+The shapes are computed from the problem document and the estimate `validate`
+already reports, so no compiling and no solving happens:
+
+- **Size** — at least 500 estimated compiled variables, using the bqm estimate,
+  which already includes slack variables and integer encoding bits.
+- **Density** — the number of **distinct** variable pairs the model will
+  couple, divided by `m(m−1)/2`, where `m` is the number of variables the
+  document declares. A pair is counted from a quadratic objective term whose
+  coefficients sum to something non-zero and that is not a variable squared
+  with itself, and from the clique of every *effective* constraint — hard and
+  soft alike, since both put their variables into the same quadratic block. A
+  pair contributed twice, by two terms or by two constraints, counts once. The
+  threshold is `0.5`.
+- **Effective hard constraint** — a constraint whose type is `hard`, that has
+  at least one non-zero coefficient, and that is not a redundant inequality.
+  `x <= 1` on a binary variable is redundant: it holds over the declared
+  bounds, raises `REDUNDANT_CONSTRAINT`, and the compiler emits no penalty for
+  it, so it does not count here either. An all-zero constraint is skipped for
+  the same reason.
+
+The two shapes are then:
+
+- **Large dense** — the bqm path, at or above both thresholds, and **no**
+  effective hard constraint anywhere in the document.
+- **Penalty-dominated** — the bqm path with **at least one** effective hard
+  constraint. On that path each of them becomes a penalty weighted far above
+  the objective, which is exactly the regime the weakness was measured in.
+  Size and density are irrelevant here.
+
+A backend then scores `0` when it declares the strength and the problem is
+large dense (reason code `R_DENSE_STRENGTH`), `2` when it declares the weakness
+and the problem is penalty-dominated (`R_PENALTY_WEAKNESS`), and `1` otherwise;
+ties fall back to registry order. The result, for the three local heuristics:
+
+| Problem | Order |
+| --- | --- |
+| Large, dense, no effective hard constraint | `tabu`, `simulated_bifurcation`, `simulated_annealing` |
+| Any effective hard constraint on the bqm path (the shipped knapsack) | `simulated_annealing`, `tabu`, `simulated_bifurcation` |
+| Small, no effective hard constraint (neither shape) | `simulated_annealing`, `tabu`, `simulated_bifurcation` |
+
+Each of those orders is the order *within the local heuristic tier*. An
+`exact` the problem fits still ranks first overall, ahead of all three.
+
+The key only reorders backends that already share a tier: `exact` and the
+remote backends are unaffected, and nothing here makes an unusable backend
+usable or changes which errors are reported.
+
+The two thresholds are calibrated on the measurements recorded in
+[`CHANGELOG.md`](../CHANGELOG.md) and repeated in the backend sections above —
+dense SK instances where all three reached the same energy (−9112 at 1000
+variables) but dSB took 3.9 s against `tabu`'s 11.6 s and the annealer's 33 s,
+and the penalty-dominated knapsack where simulated bifurcation hits the
+optimum in 1–5 % of its reads against about 7 % for the annealer. They are
+deliberately coarse: `recommend` still performs no cost estimation, runs no
+benchmark and keeps no history, so the ordering stays deterministic and cheap.
+
+#### What the rule gives up
+
+The rule is deliberately conservative, and its worst case is worth stating
+plainly. A problem that is **large and dense but carries one effective hard
+constraint** is penalty-dominated, so it ranks `simulated_annealing`, `tabu`,
+`simulated_bifurcation` — even at a size where simulated bifurcation might
+finish many times sooner. That is intentional: the speed advantage was
+measured only on unconstrained SK instances, and no measurement exists for
+large models whose hard constraints compile to penalties. Rather than
+extrapolate from one shape to the other, `recommend` declines to recommend
+what it has no data for.
+
+So the recommendation is a floor, not a ceiling. On a large dense problem that
+does have a hard constraint, an agent should say so to the user — the ranking
+is playing safe, and trying `simulated_bifurcation` may be much faster or may
+miss the feasible region — or ask which trade the user wants, rather than
+present the top entry as the only sensible choice.
+
 ## D-Wave setup
 
 Remote backends are opt-in in three separate steps.
@@ -680,6 +818,17 @@ system dispatches on — never the backend's name:
 - `remote`, `heuristic`, `exhaustive`, `supports_seed`, `supports_num_reads`,
   `supports_num_sweeps`, `supports_time_limit`, `returns_multiple_samples`,
   `requires_embedding` — drive warnings, routing and the capabilities view.
+- `strong_on_large_dense` / `weak_on_penalty_dominated` — optional structural
+  preferences, both `False` by default, and **only matched on the bqm path**:
+  a backend that compiles to cqm gains nothing by declaring either, because
+  neither shape is computed for it. Declare the first only if the backend has
+  a **measured** advantage on large dense models with no effective hard
+  constraint, the second only if it has a measured disadvantage once hard
+  constraints compile to penalties. They order `recommend` inside a tier and
+  nothing else: they never change availability, limits or the compiler path,
+  and a backend that declares neither simply keeps registry order. Record the
+  measurement that justifies the claim, as the two heuristics that declare
+  them do; see [above](#how-recommend-orders-the-local-heuristics).
 - `seed_min` / `seed_max` — the inclusive range of `solver.seed` the backend
   itself accepts. Unlike `parameter_limits` this is the backend's own rule,
   not a policy ceiling: it takes no value from policy and no

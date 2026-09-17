@@ -272,6 +272,30 @@ class SolverCapabilities(BaseModel):
             "can run."
         ),
     )
+    # Structure affinity (2026-09-17): what a backend declares about the
+    # problem shapes it was measured on. Routing reads these two flags and
+    # the problem's shape only; it knows no backend by name.
+    strong_on_large_dense: bool = Field(
+        default=False,
+        description=(
+            "Whether the backend was measured to reach the same energy as its "
+            "peers in a fraction of the time on large, dense bqm models with "
+            "no effective hard constraint. On such a problem recommend ranks "
+            "it ahead of the other backends in its tier (R_DENSE_STRENGTH); "
+            "elsewhere, and on the cqm path, the flag has no effect."
+        ),
+    )
+    weak_on_penalty_dominated: bool = Field(
+        default=False,
+        description=(
+            "Whether the backend was measured to hit the optimum in fewer "
+            "reads on models whose hard constraints compile to penalty terms "
+            "(the bqm path with at least one effective hard constraint, at "
+            "any size). On such a problem recommend ranks it behind the other "
+            "backends in its tier (R_PENALTY_WEAKNESS); elsewhere the flag "
+            "has no effect."
+        ),
+    )
     parameter_limits: list[ParameterLimit] = Field(
         default_factory=list,
         description=(

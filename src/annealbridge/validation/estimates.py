@@ -563,3 +563,125 @@ def estimate_encoded_interactions(problem: OptimizationProblem) -> int:
         clique = constraint_bit_count(constraint, bounds, analysis=analysis)
         total += clique * (clique - 1) // 2
     return total
+
+
+# Problem shape for solver routing (2026-09-17). Two shapes, both pure
+# arithmetic over the raw problem, that a backend's ``strong_on_large_dense``
+# / ``weak_on_penalty_dominated`` declaration is matched against. Both are
+# shapes of the *bqm path*: that is where the measurements behind the two
+# declarations were taken, and where hard constraints become penalties. The
+# thresholds come from the measurements recorded in ``CHANGELOG.md`` and
+# ``docs/backends.md``: on a fully dense ±1 SK instance the local heuristics
+# are close at 200 variables and clearly apart at 1000, and the small
+# hard-constrained examples are where the dense-matrix heuristic is weakest.
+LARGE_DENSE_VARIABLES_THRESHOLD = 500
+DENSE_INTERACTION_RATIO_THRESHOLD = 0.5
+
+
+def _is_effective(constraint: Constraint, bounds: Bounds) -> bool:
+    """Whether the bqm path emits anything for ``constraint``.
+
+    A constraint with no non-zero coefficient, or an inequality that
+    :func:`analyze_inequality` finds redundant under the bounds, compiles to
+    nothing (the compiler skips it and :func:`estimate_encoded_interactions`
+    counts no clique for it), so it shapes neither density nor penalties.
+    """
+    if not nonzero_coefficients(constraint.terms):
+        return False
+    if constraint.operator in ("<=", ">="):
+        return not analyze_inequality(constraint, bounds).redundant
+    return True
+
+
+def effective_hard_constraints(
+    problem: OptimizationProblem, bounds: Bounds | None = None
+) -> list[Constraint]:
+    """The hard constraints the bqm path turns into penalty terms."""
+    bounds = variable_bounds(problem) if bounds is None else bounds
+    return [
+        constraint
+        for constraint in problem.constraints
+        if constraint.type == "hard" and _is_effective(constraint, bounds)
+    ]
+
+
+def coupled_variable_pairs(
+    problem: OptimizationProblem, bounds: Bounds | None = None
+) -> set[frozenset[str]]:
+    """Distinct unordered pairs of declared variables the bqm path couples.
+
+    A pair is coupled by the objective when its quadratic coefficients sum
+    to a non-zero value (duplicate terms are merged by the compiler, and
+    coefficients that cancel leave no edge), and by every effective
+    constraint, hard or soft, whose squared penalty couples all of its
+    variables pairwise. Counted at the variable level, before integer
+    encoding and without slack bits, and each pair once however many terms
+    or constraints mention it: this is the edge set of the compiled model
+    projected onto the declared variables, not the term count.
+    """
+    bounds = variable_bounds(problem) if bounds is None else bounds
+    weights: dict[frozenset[str], float] = {}
+    for term in problem.objective.quadratic_terms:
+        if term.variable1 == term.variable2:
+            continue  # an integer square couples bits of one variable only
+        pair = frozenset((term.variable1, term.variable2))
+        weights[pair] = weights.get(pair, 0.0) + term.coefficient
+    pairs = {pair for pair, weight in weights.items() if weight != 0}
+    for constraint in problem.constraints:
+        if not _is_effective(constraint, bounds):
+            continue
+        names = sorted(nonzero_coefficients(constraint.terms))
+        for index, first in enumerate(names):
+            for second in names[index + 1 :]:
+                pairs.add(frozenset((first, second)))
+    return pairs
+
+
+def estimate_interaction_density(problem: OptimizationProblem) -> float:
+    """Coupled variable pairs per possible pair, in ``[0, 1]``.
+
+    ``len(coupled_variable_pairs(problem)) / (m * (m - 1) / 2)`` with ``m``
+    the number of declared variables. Fewer than two variables have no pair
+    and give 0.0.
+    """
+    count = len(problem.variables)
+    pairs = count * (count - 1) // 2
+    if pairs <= 0:
+        return 0.0
+    return len(coupled_variable_pairs(problem)) / pairs
+
+
+def is_large_dense(
+    problem: OptimizationProblem,
+    estimated_variables: int,
+    model_type: ModelType | None,
+) -> bool:
+    """The shape ``strong_on_large_dense`` is declared for.
+
+    On the bqm path only: at least :data:`LARGE_DENSE_VARIABLES_THRESHOLD`
+    estimated compiled variables (the caller's bqm estimate, slack and
+    integer bits included), an interaction density of at least
+    :data:`DENSE_INTERACTION_RATIO_THRESHOLD`, and no effective hard
+    constraint. The strength was measured on unconstrained dense models,
+    and an effective hard constraint makes the penalty-dominated shape
+    below instead, whatever the size: the two shapes never overlap.
+    """
+    if model_type != "bqm":
+        return False
+    if estimated_variables < LARGE_DENSE_VARIABLES_THRESHOLD:
+        return False
+    if effective_hard_constraints(problem):
+        return False
+    return estimate_interaction_density(problem) >= DENSE_INTERACTION_RATIO_THRESHOLD
+
+
+def is_penalty_dominated(problem: OptimizationProblem, model_type: ModelType | None) -> bool:
+    """The shape ``weak_on_penalty_dominated`` is declared for.
+
+    On the bqm path every effective hard constraint becomes a squared
+    penalty whose multiplier dominates the objective by construction (see
+    ``penalty/strategy.py``), so the shape is "bqm with at least one
+    effective hard constraint", at any size. The cqm path keeps hard
+    constraints native and never has it.
+    """
+    return model_type == "bqm" and bool(effective_hard_constraints(problem))
