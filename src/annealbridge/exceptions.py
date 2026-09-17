@@ -12,7 +12,9 @@ from typing import Literal, get_args
 # named, ``configuration_error`` the one value a backend is authorised to
 # choose. Kept here rather than imported from ``models`` so this module
 # stays a leaf; the subset relation is pinned by a test.
-SolverErrorStatus = Literal["solver_error", "configuration_error"]
+SolverErrorStatus = Literal[
+    "solver_error", "configuration_error", "resource_limit_exceeded"
+]
 
 
 class OptimizerError(Exception):

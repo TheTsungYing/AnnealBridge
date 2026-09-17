@@ -190,6 +190,29 @@ def exact_variable_limit_error(
     )
 
 
+def compiled_variable_limit_error(
+    capabilities: SolverCapabilities, num_variables: int, *, path: str | None = None
+) -> SolveError | None:
+    """A backend's own compiled-size ceiling (``compiled_variable_limit``).
+
+    None when the backend declares no ceiling or ``num_variables`` fits.
+    One wording for every place it is checked -- the estimate before
+    compile, the compiled model after, and recommend's advisory estimate --
+    under the error code the backend declared, so the refusal reads the
+    same from ``solve``, ``recommend`` and a direct call to the backend.
+    """
+    limit = capabilities.compiled_variable_limit
+    if limit is None or num_variables <= limit.maximum:
+        return None
+    return catalog_error(
+        limit.error_code,
+        f"Compiled problem has {num_variables} variables (including "
+        f"internal), exceeding the {capabilities.name} backend limit of "
+        f"{limit.maximum}",
+        path=path,
+    )
+
+
 def preference_limit_errors(
     capabilities: SolverCapabilities,
     preferences: SolverPreferences,

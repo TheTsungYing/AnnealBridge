@@ -30,6 +30,7 @@ from annealbridge.models import (
     FujitsuDAOptions,
     LeapHybridBQMOptions,
     LeapHybridCQMOptions,
+    SimulatedBifurcationOptions,
     SolverPreferences,
 )
 from annealbridge.models.quantities import Count, Quantity
@@ -231,6 +232,15 @@ MODEL_FIELD_CASES = [
     ),
     pytest.param(
         SolverPreferences,
+        "simulated_bifurcation",
+        SimulatedBifurcationOptions,
+        False,
+        SimulatedBifurcationOptions,
+        False,
+        id="prefs.simulated_bifurcation",
+    ),
+    pytest.param(
+        SolverPreferences,
         "dwave_qpu",
         DWaveQPUOptions,
         False,
@@ -328,6 +338,16 @@ MODEL_FIELD_CASES = [
         True,
         id="fujitsu.num_output_solution",
     ),
+    # A Literal option: a block field that is neither a model nor a number.
+    pytest.param(
+        SimulatedBifurcationOptions,
+        "mode",
+        None,
+        False,
+        None,
+        False,
+        id="sb.mode",
+    ),
 ]
 
 PREFERENCE_MODELS = (
@@ -336,6 +356,7 @@ PREFERENCE_MODELS = (
     LeapHybridBQMOptions,
     LeapHybridCQMOptions,
     FujitsuDAOptions,
+    SimulatedBifurcationOptions,
 )
 
 

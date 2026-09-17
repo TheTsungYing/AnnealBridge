@@ -21,3 +21,4 @@ dwave.conf
 
 # AI-generated plans, review reports and internal design specs (not versioned)
 .ai-docs/
+.venv-gpu/

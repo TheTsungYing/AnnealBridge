@@ -9,6 +9,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- An eighth backend, `simulated_bifurcation`, implemented here on `numpy`:
+  the classical-mechanics heuristic of Goto et al., "High-performance
+  combinatorial optimization based on classical mechanics", *Science Advances*
+  **7**, eabe7953 (2021). One integration step updates every variable of every
+  read at once with a single dense matrix product, which is what makes it a
+  matrix routine rather than a loop over reads. It is part of the core install
+  — `numpy` is already a dependency — takes the BQM path, and honours
+  `num_reads` (parallel trajectories), `num_sweeps` (integration steps) and
+  `seed` (`0`–`4294967295`, the same range `tabu` declares). Both variants of
+  the paper are implemented and selected by a `solver.simulated_bifurcation`
+  option block: `mode: "discrete"` (dSB, the default) and `mode: "ballistic"`
+  (bSB). Which one wins is problem-dependent, which is why the choice is
+  exposed — on dense ±1 SK instances at 1000 variables dSB matched the best
+  energy simulated annealing and tabu search found (−9112) in 3.9 s against
+  their 33 s and 11.6 s, while bSB stopped three units short; on the shipped
+  integer knapsack example it is the other way round, with dSB stalling at a
+  local minimum three units above the optimum bSB reaches. Its weak spot is
+  the small penalty-dominated QUBO that most of the shipped examples are: it
+  hits their optimum in 1–5 % of its reads against about 7 % for the annealer,
+  so the knapsack example needs roughly 2000 reads. Neither more steps nor a
+  steepest-descent polish improved that when measured, so no polish is
+  applied. It is registered fourth, after `tabu`, ranks with the other local
+  heuristics in `recommend`, and is bounded by the existing
+  `ANNEALBRIDGE_MAX_LOCAL_READS`, `ANNEALBRIDGE_MAX_SWEEPS` and
+  `ANNEALBRIDGE_MAX_LOCAL_RETRIES` — it declares no time limit, because there
+  is no wall clock anywhere in it. The result is a function of `(problem,
+  num_reads, num_sweeps, seed, mode, device)`; the BLAS thread count is not
+  part of that (measured bit-identical at 1 and 6 threads), but a different
+  CPU instruction set or BLAS build may round the matrix products differently,
+  which is a weaker promise than `tabu` makes and is documented as such.
+- `ANNEALBRIDGE_SB_DEVICE` (`cpu`, the default, or `cuda`) chooses where the
+  `simulated_bifurcation` dynamics run, with a new `gpu` extra
+  (`pip install "annealbridge[gpu]"`) supplying PyTorch, imported lazily and
+  only on the `cuda` setting. The extra is deliberately **not** part of `all`:
+  torch is a large download, and on Windows the wheel PyPI serves is the
+  CPU-only build, so a CUDA run needs `torch` reinstalled from PyTorch's own
+  index — a second step a pip extra cannot express, and one the backends page
+  spells out. **The backend never falls back to the CPU**: with `cuda` set, no
+  torch reports `not_installed` and torch without a visible CUDA device
+  reports `unavailable`, both through the ordinary capabilities view, because
+  a silent fallback would hide a misconfigured server behind an answer that
+  merely arrived more slowly. Measured on a GeForce GTX 1660 SUPER against the
+  OpenBLAS CPU path on dense ±1 SK instances (1000 steps, 100 reads): 0.8 s
+  against 2.3 s at 1000 variables, 6.4 s against 25.5 s at 5000, and 23 s for
+  10 000 variables on the GPU at 740 MB of VRAM; the same request twice was
+  bit-identical on the GPU, while the GPU's samples differ from the CPU's for
+  the same request, as the device is part of the reproducibility contract.
+- `ANNEALBRIDGE_SB_MAX_VARIABLES` (int ≥ 1, default `10000`) caps the compiled
+  problem the `simulated_bifurcation` backend accepts, internal slack and
+  integer-encoding variables included. It holds the couplings as a dense
+  single-precision `N × N` matrix — `4 N²` bytes, about 400 MB at the default
+  — so unlike the read and sweep ceilings it bounds memory rather than time,
+  and like them it is a refusal, not a clamp: a larger problem is refused with
+  the new `SB_VARIABLE_LIMIT` error code under `resource_limit_exceeded`,
+  before compiling. The backend declares the cap in its capabilities (a new
+  `compiled_variable_limit` declaration any backend may make), so the service
+  checks it from the pre-compile estimate exactly as it checks the exhaustive
+  ceiling, `recommend` lists the same refusal in `blocking`, and
+  `capabilities` reports it as `max_variables`. It is a settings-only value,
+  not a policy limit key, for the same reason the worker counts are: it sizes
+  one backend's machine.
 - A seventh backend, `tabu`, on `dwave.samplers.TabuSampler` — a multistart
   tabu search and a strong heuristic on dense QUBOs, where simulated annealing
   spends sweeps on moves tabu search rules out. It is part of the core install:

@@ -172,15 +172,17 @@ class TestDefaultPolicy:
             "exact",
             "simulated_annealing",
             "tabu",
+            "simulated_bifurcation",
             "leap_hybrid_cqm",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "fujitsu_da",
         ]
-        assert [e.rank for e in result.recommendations] == [1, 2, 3, 4, 5, 6, 7]
+        assert [e.rank for e in result.recommendations] == [1, 2, 3, 4, 5, 6, 7, 8]
         assert by_name(result, "exact").usable is True
         assert by_name(result, "simulated_annealing").usable is True
         assert by_name(result, "tabu").usable is True
+        assert by_name(result, "simulated_bifurcation").usable is True
         for name in remote_names(registry):
             entry = by_name(result, name)
             assert entry.usable is False
@@ -192,6 +194,7 @@ class TestDefaultPolicy:
         assert by_name(result, "exact").reasons == ["R_EXACT_FITS"]
         assert by_name(result, "simulated_annealing").reasons == ["R_LOCAL_HEURISTIC"]
         assert by_name(result, "tabu").reasons == ["R_LOCAL_HEURISTIC"]
+        assert by_name(result, "simulated_bifurcation").reasons == ["R_LOCAL_HEURISTIC"]
         assert by_name(result, "leap_hybrid_cqm").reasons == [
             "R_UNUSABLE",
             "R_NATIVE_CONSTRAINTS",
@@ -249,10 +252,15 @@ class TestRemoteAllowed:
         order = [e.backend for e in result.recommendations]
         assert order.index("leap_hybrid_bqm") < order.index("leap_hybrid_cqm")
         assert by_name(result, "leap_hybrid_cqm").reasons == ["R_REMOTE"]
-        # The two local heuristics share tier 2 and sort by registry order.
-        assert order[:3] == ["exact", "simulated_annealing", "tabu"]
+        # The three local heuristics share tier 2 and sort by registry order.
+        assert order[:4] == [
+            "exact",
+            "simulated_annealing",
+            "tabu",
+            "simulated_bifurcation",
+        ]
         # Same tier (4): registry order decides.
-        assert order[3:] == [
+        assert order[4:] == [
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
@@ -434,6 +442,7 @@ class TestIntegerReasons:
         "exact",
         "simulated_annealing",
         "tabu",
+        "simulated_bifurcation",
         "dwave_qpu",
         "leap_hybrid_bqm",
         "fujitsu_da",
@@ -478,6 +487,7 @@ class TestIntegerReasons:
             "exact",
             "simulated_annealing",
             "tabu",
+            "simulated_bifurcation",
             "leap_hybrid_cqm",
             "dwave_qpu",
             "leap_hybrid_bqm",
@@ -515,11 +525,12 @@ class TestIntegerReasons:
             "exact",
             "simulated_annealing",
             "tabu",
+            "simulated_bifurcation",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "fujitsu_da",
         ]
-        assert [e.rank for e in result.recommendations] == [1, 2, 3, 4, 5, 6, 7]
+        assert [e.rank for e in result.recommendations] == [1, 2, 3, 4, 5, 6, 7, 8]
 
     def test_blowup_still_sorts_after_usability(self, registry):
         # Under the default policy the remote CQM backend is unusable, so the

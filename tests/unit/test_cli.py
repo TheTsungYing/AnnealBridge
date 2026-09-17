@@ -68,6 +68,7 @@ class TestCapabilities:
             "exact",
             "simulated_annealing",
             "tabu",
+            "simulated_bifurcation",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
@@ -78,6 +79,7 @@ class TestCapabilities:
             "exact",
             "simulated_annealing",
             "tabu",
+            "simulated_bifurcation",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
@@ -91,6 +93,10 @@ class TestCapabilities:
         # tabu takes no sweeps, so its row carries no sweep ceiling.
         assert "max_local_reads=100000" in rows["tabu"]
         assert "max_sweeps" not in rows["tabu"]
+        assert rows["simulated_bifurcation"].split()[1:4] == ["yes", "yes", "no"]
+        # Its sweeps are integration steps, so the sweep ceiling is shown.
+        assert "max_local_reads=100000" in rows["simulated_bifurcation"]
+        assert "max_sweeps=100000" in rows["simulated_bifurcation"]
         # Remote backends are not enabled while allow_remote is off (default).
         assert rows["dwave_qpu"].split()[2] == "no"
         assert rows["leap_hybrid_bqm"].split()[2] == "no"
@@ -222,6 +228,7 @@ class TestSolveErrors:
             "simulated_annealing",
             "exact",
             "tabu",
+            "simulated_bifurcation",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
@@ -379,19 +386,30 @@ class TestRecommend:
         )
         assert lines[2] == ""
         assert lines[3].split() == ["Rank", "Backend", "Usable", "Model", "Reasons"]
-        rows = [line.split() for line in lines[4:11]]
+        rows = [line.split() for line in lines[4:12]]
         assert [row[1] for row in rows] == [
             "exact",
             "simulated_annealing",
             "tabu",
+            "simulated_bifurcation",
             "leap_hybrid_cqm",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "fujitsu_da",
         ]
-        assert [row[0] for row in rows] == ["1", "2", "3", "4", "5", "6", "7"]
-        assert [row[2] for row in rows] == ["yes", "yes", "yes", "no", "no", "no", "no"]
+        assert [row[0] for row in rows] == ["1", "2", "3", "4", "5", "6", "7", "8"]
+        assert [row[2] for row in rows] == [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "no",
+            "no",
+            "no",
+            "no",
+        ]
         assert [row[3] for row in rows] == [
+            "bqm",
             "bqm",
             "bqm",
             "bqm",
@@ -402,14 +420,15 @@ class TestRecommend:
         ]
         assert lines[4].endswith("R_EXACT_FITS")
         assert lines[5].endswith("R_LOCAL_HEURISTIC")
-        # Same tier and same reason as the other local heuristic; registry
-        # order is what puts it third.
+        # Same tier and same reason as the other local heuristics; registry
+        # order is what orders the three of them.
         assert lines[6].endswith("R_LOCAL_HEURISTIC")
-        assert "R_UNUSABLE, R_NATIVE_CONSTRAINTS   [REMOTE_DISABLED]" in lines[7]
-        assert "R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]" in lines[8]
-        assert "R_UNUSABLE, R_REMOTE, R_SINGLE_SAMPLE   [REMOTE_DISABLED]" in lines[9]
-        assert "R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]" in lines[10]
-        assert len(lines) == 11
+        assert lines[7].endswith("R_LOCAL_HEURISTIC")
+        assert "R_UNUSABLE, R_NATIVE_CONSTRAINTS   [REMOTE_DISABLED]" in lines[8]
+        assert "R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]" in lines[9]
+        assert "R_UNUSABLE, R_REMOTE, R_SINGLE_SAMPLE   [REMOTE_DISABLED]" in lines[10]
+        assert "R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]" in lines[11]
+        assert len(lines) == 12
 
     def test_json_output_is_a_recommendation_result(self):
         from annealbridge.validation import BackendRecommendationResult
@@ -422,7 +441,7 @@ class TestRecommend:
         parsed = BackendRecommendationResult.model_validate_json(result.output)
         assert parsed.valid is True
         assert parsed.recommendations[0].backend == "exact"
-        assert [e.rank for e in parsed.recommendations] == [1, 2, 3, 4, 5, 6, 7]
+        assert [e.rank for e in parsed.recommendations] == [1, 2, 3, 4, 5, 6, 7, 8]
 
     def test_invalid_problem_exits_1_with_errors(self, tmp_path):
         problem = json.loads((EXAMPLES_DIR / "knapsack.json").read_text())

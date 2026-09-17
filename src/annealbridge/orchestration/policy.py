@@ -125,7 +125,9 @@ class ExecutionPolicy(BaseModel):
 
         The single source for both the capabilities view and the service
         (spec §12.3): what an agent reads here is exactly what a solve is
-        checked against. The exhaustive variable ceiling and the effective
+        checked against. The exhaustive variable ceiling (the policy's) and a
+        backend's own ``compiled_variable_limit`` share the ``max_variables``
+        key; that ceiling and the effective
         remote time limit are flag-driven (they need compiled data), and so
         are the service-level retry and ``top_k`` ceilings (they belong to
         no backend); the rest follows the declared ``parameter_limits``.
@@ -137,6 +139,10 @@ class ExecutionPolicy(BaseModel):
         result: dict[str, float | int | None] = {}
         if capabilities.exhaustive:
             result["max_variables"] = self.limit("variables")
+        elif capabilities.compiled_variable_limit is not None:
+            # The backend's own ceiling, reported under the same key so an
+            # agent reads one name for "largest compiled model".
+            result["max_variables"] = capabilities.compiled_variable_limit.maximum
         for declaration in capabilities.parameter_limits:
             result[f"max_{declaration.limit}"] = self.limit(declaration.limit)
         if capabilities.remote and capabilities.supports_time_limit:

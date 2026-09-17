@@ -64,6 +64,9 @@ EXPECTED_CODES = [
     # SOLVER_ERROR (3a spec §11.4).
     "LOCAL_READS_LIMIT",
     "SWEEPS_LIMIT",
+    # The simulated_bifurcation backend's dense-matrix ceiling: the compiled
+    # problem is refused before the N x N coupling matrix is allocated.
+    "SB_VARIABLE_LIMIT",
     "RETRY_LIMIT",
     "TOP_K_LIMIT",
     "PENALTY_OVERFLOW",
@@ -100,7 +103,7 @@ class TestRecommendedActions:
         assert set(RECOMMENDED_ACTIONS) == set(EXPECTED_CODES)
 
     def test_expected_codes_are_unique(self):
-        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 47
+        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 48
 
 
 class TestRetryableCodes:

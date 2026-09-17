@@ -24,6 +24,7 @@ BACKEND_NAMES = frozenset(
         "exact",
         "simulated_annealing",
         "tabu",
+        "simulated_bifurcation",
         "dwave_qpu",
         "leap_hybrid_bqm",
         "leap_hybrid_cqm",

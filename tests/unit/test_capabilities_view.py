@@ -213,12 +213,13 @@ class TestSeedRange:
     def test_each_seeded_backend_declares_its_own_seed_range(self):
         entries = _entries(SolverRegistry.default())
 
-        assert len(entries) == 7
-        # The two seeded backends wrap different samplers and their accepted
+        assert len(entries) == 8
+        # The seeded backends wrap different samplers and their accepted
         # ranges differ, so the view carries one range per backend.
         declared = {
             "simulated_annealing": (0, 2**31 - 1),
             "tabu": (0, 2**32 - 1),
+            "simulated_bifurcation": (0, 2**32 - 1),
         }
         for name, entry in entries.items():
             assert (entry.seed_min, entry.seed_max) == declared.get(name, (None, None)), name

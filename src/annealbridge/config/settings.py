@@ -8,7 +8,7 @@ settings — Ocean's native config handles them (spec §18).
 import logging
 import os
 from collections.abc import Mapping
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -102,6 +102,20 @@ class ServerSettings(BaseSettings):
     # ``sa_workers``, per backend because the two samplers are tuned
     # independently.
     tabu_workers: int | None = Field(default=None, ge=1)
+    # Where the ``simulated_bifurcation`` backend runs its dynamics: ``cpu``
+    # (numpy, core install) or ``cuda`` (PyTorch from the ``gpu`` extra). A
+    # machine knob like the worker counts, not a policy: it changes speed
+    # and, across devices, floating-point rounding, never the contract. A
+    # ``cuda`` setting without a usable CUDA device makes the backend report
+    # itself unavailable; it is never substituted by the CPU.
+    sb_device: Literal["cpu", "cuda"] = "cpu"
+    # Largest compiled problem the ``simulated_bifurcation`` backend accepts:
+    # it holds the couplings as a dense single-precision N x N matrix (4 N^2
+    # bytes, 400 MB at the default), so this sizes the machine's memory. A
+    # problem above it is refused with SB_VARIABLE_LIMIT, never clamped. Not
+    # a policy limit key: it is one backend's memory, like a worker count is
+    # one backend's CPU.
+    sb_max_variables: int = Field(default=10_000, ge=1)
     # ``NoDecode``: pydantic-settings would otherwise parse a set as JSON;
     # the operator writes ``exact,simulated_annealing`` instead.
     enabled_backends: Annotated[set[str] | None, NoDecode] = None
@@ -146,7 +160,8 @@ class ServerSettings(BaseSettings):
         Copies exactly the fields ``ExecutionPolicy`` declares, by name, so
         a limit added to both models reaches the policy without this method
         having to list it. The settings-only fields (``sa_workers``,
-        ``tabu_workers``, ``http_host``, ``http_port``) are left out on purpose rather than
+        ``tabu_workers``, ``sb_device``, ``sb_max_variables``, ``http_host``,
+        ``http_port``) are left out on purpose rather than
         passed and silently ignored: they configure the composition root,
         not the policy. That every policy field exists here with the same
         type, default and bounds is pinned by ``tests/unit/test_settings.py``.

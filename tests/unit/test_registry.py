@@ -78,6 +78,7 @@ class TestDefaultRegistry:
             "exact",
             "simulated_annealing",
             "tabu",
+            "simulated_bifurcation",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
@@ -101,6 +102,21 @@ class TestDefaultRegistry:
 
         assert registry.get("tabu").workers == 3
         assert SolverRegistry.default().get("tabu").workers >= 1
+
+    def test_default_forwards_the_sb_device_and_matrix_cap(self):
+        # Neither is a worker count: one says where the dynamics run, the
+        # other sizes the dense coupling matrix the backend will allocate.
+        registry = SolverRegistry.default(sb_device="cuda", sb_max_variables=42)
+
+        backend = registry.get("simulated_bifurcation")
+        assert backend.device == "cuda"
+        assert backend.max_variables == 42
+
+    def test_default_sb_settings_have_defaults(self):
+        backend = SolverRegistry.default().get("simulated_bifurcation")
+
+        assert backend.device == "cpu"
+        assert backend.max_variables == 10_000
 
     def test_default_registry_needs_no_dwave_system(self):
         # 3a §17.7 / §31: the remote backends lazy-import ``dwave.system``

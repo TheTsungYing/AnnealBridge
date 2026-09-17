@@ -117,6 +117,25 @@ class FujitsuDAOptions(InputModel):
     )
 
 
+class SimulatedBifurcationOptions(InputModel):
+    """Options specific to the simulated_bifurcation backend.
+
+    The two variants of Goto et al. (2021) are problem-dependent in which
+    one wins, so the choice is the caller's; the numerical constants of the
+    dynamics are not exposed."""
+
+    mode: Literal["discrete", "ballistic"] = Field(
+        default="discrete",
+        description=(
+            "Which simulated bifurcation variant to run: 'discrete' (dSB, "
+            "the force uses the signs of the positions; the default, and the "
+            "stronger one on dense problems) or 'ballistic' (bSB, the force "
+            "uses the continuous positions; better on some small "
+            "penalty-dominated problems where dSB stalls)."
+        ),
+    )
+
+
 class SolverPreferences(InputModel):
     """Caller preferences for solver backend and search parameters.
 
@@ -131,6 +150,7 @@ class SolverPreferences(InputModel):
         "simulated_annealing",
         "exact",
         "tabu",
+        "simulated_bifurcation",
         "dwave_qpu",
         "leap_hybrid_bqm",
         "leap_hybrid_cqm",
@@ -193,6 +213,14 @@ class SolverPreferences(InputModel):
             "Multiplier applied to the server's penalty scale for the first "
             "attempt's hard-constraint penalty. Must be finite and positive; "
             "leave at the default, as hard penalties are sized by the server."
+        ),
+    )
+    simulated_bifurcation: SimulatedBifurcationOptions | None = Field(
+        default=None,
+        description=(
+            "Options for the simulated_bifurcation backend. Filling in a "
+            "block that does not match the selected backend raises "
+            "PARAMETER_IGNORED."
         ),
     )
     dwave_qpu: DWaveQPUOptions | None = Field(

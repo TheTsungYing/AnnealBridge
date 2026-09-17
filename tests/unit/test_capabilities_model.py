@@ -8,10 +8,16 @@ from annealbridge.models import (
     ParameterLimit,
     SolverCapabilities,
 )
-from annealbridge.solvers import SimulatedAnnealingBackend, SolverRegistry, TabuBackend
+from annealbridge.solvers import (
+    SimulatedAnnealingBackend,
+    SimulatedBifurcationBackend,
+    SolverRegistry,
+    TabuBackend,
+)
 from annealbridge.solvers import SolverCapabilities as ReexportedCapabilities
 from annealbridge.solvers.base import AvailabilityStatus as ReexportedStatus
 from annealbridge.solvers.simulated_annealing import _SEED_LIMIT
+from annealbridge.solvers.simulated_bifurcation import _SEED_LIMIT as _SB_SEED_LIMIT
 from annealbridge.solvers.tabu import _SEED_LIMIT as _TABU_SEED_LIMIT
 
 
@@ -155,9 +161,9 @@ class TestSeedRange:
             make_capabilities(supports_seed=True, **overrides)
 
     def test_each_seeded_backend_declares_its_own_range(self):
-        # The two seeded backends wrap different vendors' samplers, whose
-        # accepted ranges differ; each declares its own rather than sharing
-        # one constant. Every other shipped backend declares none.
+        # The seeded backends wrap different samplers, whose accepted ranges
+        # differ; each declares its own rather than sharing one constant.
+        # Every other shipped backend declares none.
         registry = SolverRegistry.default()
         assert sorted(registry.names()) == [
             "dwave_qpu",
@@ -166,11 +172,13 @@ class TestSeedRange:
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",
             "simulated_annealing",
+            "simulated_bifurcation",
             "tabu",
         ]
         declared = {
             "simulated_annealing": (0, 2**31 - 1),
             "tabu": (0, 2**32 - 1),
+            "simulated_bifurcation": (0, 2**32 - 1),
         }
         for name in registry.names():
             caps = registry.get(name).capabilities
@@ -186,3 +194,10 @@ class TestSeedRange:
         caps = TabuBackend().capabilities
         assert caps.seed_min == 0
         assert caps.seed_max == _TABU_SEED_LIMIT - 1 == 2**32 - 1
+
+    def test_simulated_bifurcation_range_matches_its_own_seed_check(self):
+        # Its own constant, even though it currently equals tabu's: the
+        # declaration follows the backend's own check, not a neighbour's.
+        caps = SimulatedBifurcationBackend().capabilities
+        assert caps.seed_min == 0
+        assert caps.seed_max == _SB_SEED_LIMIT - 1 == 2**32 - 1

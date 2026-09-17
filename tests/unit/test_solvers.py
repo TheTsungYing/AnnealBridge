@@ -1,10 +1,15 @@
 """Unit tests for the solver backends (spec §20–§22, §33)."""
 
+import importlib.machinery
+import importlib.util
 import logging
 import os
+import sys
+import types
 from concurrent.futures import ThreadPoolExecutor
 
 import dimod
+import numpy as np
 import pytest
 from dwave.samplers import SimulatedAnnealingSampler, TabuSampler
 
@@ -20,6 +25,7 @@ from annealbridge.solvers import (
     AvailabilityStatus,
     ExactSolverBackend,
     SimulatedAnnealingBackend,
+    SimulatedBifurcationBackend,
     SolverCapabilities,
     SolverRegistry,
     TabuBackend,
@@ -32,6 +38,13 @@ from annealbridge.solvers.sharding import (
     shard_sizes,
 )
 from annealbridge.solvers.simulated_annealing import _SEED_LIMIT
+from annealbridge.solvers.simulated_bifurcation import (
+    _CAPABILITIES,
+    AGENTS_PER_BATCH,
+    _batch_sizes,
+    _dense_ising,
+    _initial_states,
+)
 from annealbridge.solvers.tabu import _SEED_LIMIT as _TABU_SEED_LIMIT
 
 # Knapsack (spec §30): capacity 10, items A(w6,v10) B(w5,v8) C(w4,v7) D(w3,v6).
@@ -835,6 +848,484 @@ class TestTabuBackend:
             backend.solve(compiled, SolverPreferences(num_reads=60, seed=1))
 
 
+class TestSimulatedBifurcationBackend:
+    """The eighth backend: Toshiba's simulated bifurcation, in numpy."""
+
+    @staticmethod
+    def compiled_from_bqm(
+        bqm: dimod.BinaryQuadraticModel, problem: OptimizationProblem
+    ) -> CompiledProblem:
+        """A compiled problem around an arbitrary BQM (the backend only reads
+        ``model`` and the counts; the provenance fields are not used)."""
+        return CompiledProblem(
+            model=bqm,
+            original_problem=problem,
+            internal_variables=set(),
+            constraint_trace=[],
+            hard_penalty=None,
+            objective_scale=1.0,
+            num_variables=bqm.num_variables,
+            num_interactions=bqm.num_interactions,
+        )
+
+    @staticmethod
+    def dense_bqm(n: int, seed: int) -> dimod.BinaryQuadraticModel:
+        """A dense +-1 SK instance with a random field, as a binary model."""
+        rng = np.random.default_rng(seed)
+        upper = np.triu(rng.choice([-1.0, 1.0], size=(n, n)), 1)
+        spin = dimod.BinaryQuadraticModel(
+            {f"s{i}": float(rng.normal()) for i in range(n)},
+            {(f"s{i}", f"s{j}"): upper[i, j] for i in range(n) for j in range(i + 1, n)},
+            0.0,
+            dimod.SPIN,
+        )
+        return spin.change_vartype(dimod.BINARY, inplace=False)
+
+    def test_properties(self):
+        backend = SimulatedBifurcationBackend()
+        assert backend.name == "simulated_bifurcation"
+        assert backend.is_exhaustive is False
+        assert backend.device == "cpu"
+        assert backend.max_variables == 10_000
+
+    def test_capabilities(self):
+        capabilities = SimulatedBifurcationBackend().capabilities
+        assert isinstance(capabilities, SolverCapabilities)
+        assert capabilities.name == "simulated_bifurcation"
+        assert capabilities.remote is False
+        assert capabilities.heuristic is True
+        assert capabilities.exhaustive is False
+        assert capabilities.supports_seed is True
+        assert capabilities.supports_num_reads is True
+        # Steps are sweeps: the one knob on the work per read.
+        assert capabilities.supports_num_sweeps is True
+        # No wall clock anywhere, so no time limit to declare.
+        assert capabilities.supports_time_limit is False
+        assert capabilities.supported_model_types == ["bqm"]
+        assert capabilities.returns_multiple_samples is True
+        assert capabilities.requires_embedding is False
+        assert capabilities.description.strip()
+        # The same range as tabu (the two backends added after the annealer
+        # agree), declared so validation refuses it before anything runs.
+        assert capabilities.seed_min == 0
+        assert capabilities.seed_max == 2**32 - 1
+        assert capabilities.parameter_limits == [
+            ParameterLimit(
+                preference="num_reads",
+                limit="local_reads",
+                error_code="LOCAL_READS_LIMIT",
+            ),
+            ParameterLimit(
+                preference="num_sweeps", limit="sweeps", error_code="SWEEPS_LIMIT"
+            ),
+        ]
+        assert capabilities.credentials.empty
+
+    def test_is_available_on_cpu(self):
+        status = SimulatedBifurcationBackend().is_available()
+        assert isinstance(status, AvailabilityStatus)
+        assert status == AvailabilityStatus(category="available")
+
+    def test_properties_alias_capabilities(self):
+        backend = SimulatedBifurcationBackend()
+        assert backend.name == backend.capabilities.name
+        assert backend.is_exhaustive == backend.capabilities.exhaustive
+
+    def test_resolve_time_limit_is_none(self, compile_knapsack):
+        compiled = compile_knapsack()
+        backend = SimulatedBifurcationBackend()
+        assert backend.resolve_time_limit(compiled, SolverPreferences()) is None
+
+    @pytest.mark.parametrize(
+        ("device", "max_variables"),
+        [("gpu", 10), ("cpu", 0), ("cpu", -1)],
+        ids=["unknown-device", "zero-cap", "negative-cap"],
+    )
+    def test_constructor_rejects_bad_arguments(self, device, max_variables):
+        with pytest.raises(ValueError):
+            SimulatedBifurcationBackend(device=device, max_variables=max_variables)
+
+    def test_same_seed_is_reproducible_across_batches(self, compile_knapsack):
+        # More reads than one batch holds: the initial state of every read
+        # depends on the seed and its index only, never on its batch.
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=AGENTS_PER_BATCH + 7, seed=42)
+        backend = SimulatedBifurcationBackend()
+
+        first = backend.solve(compiled, preferences)
+        second = backend.solve(compiled, preferences)
+
+        assert first.variables == second.variables
+        assert first.samples.tolist() == second.samples.tolist()
+        assert first.energies.tolist() == second.energies.tolist()
+
+    def test_returns_all_reads_as_binary_samples(self, compile_knapsack):
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=20, seed=7)
+        result = SimulatedBifurcationBackend().solve(compiled, preferences)
+
+        assert result.backend == "simulated_bifurcation"
+        assert result.num_samples == preferences.num_reads
+        assert result.samples.shape == (preferences.num_reads, compiled.num_variables)
+        assert result.samples.dtype == np.int8
+        assert set(np.unique(result.samples).tolist()) <= {0, 1}
+        assert len(result.energies) == preferences.num_reads
+        assert result.variables == list(compiled.model.variables)
+
+    def test_energies_are_the_models_own(self, compile_knapsack):
+        # Every sample is re-scored by the binary BQM (offset included), not
+        # by the dynamics.
+        compiled = compile_knapsack()
+        result = SimulatedBifurcationBackend().solve(
+            compiled, SolverPreferences(num_reads=30, seed=3)
+        )
+        expected = compiled.model.energies((result.samples, result.variables))
+        assert result.energies.dtype == np.float64
+        assert result.energies.tolist() == list(expected)
+
+    def test_none_seed_still_solves(self, compile_knapsack):
+        compiled = compile_knapsack()
+        result = SimulatedBifurcationBackend().solve(
+            compiled, SolverPreferences(num_reads=5, seed=None)
+        )
+        assert result.num_samples == 5
+
+    def test_reports_local_execution_metadata(self, compile_knapsack):
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=AGENTS_PER_BATCH + 1, seed=7)
+        result = SimulatedBifurcationBackend().solve(compiled, preferences)
+
+        assert result.metadata is not None
+        assert result.metadata.backend == "simulated_bifurcation"
+        assert result.metadata.remote is False
+        assert result.metadata.timing_us == {}
+        assert result.metadata.solver_id is None
+        assert result.metadata.effective_time_limit_seconds is None
+        assert result.metadata.average_chain_break_fraction is None
+        assert result.metadata.embedding_max_chain_length is None
+        assert result.metadata.sampler_reported_feasible is None
+        # The whole request, whatever the batch layout was.
+        assert result.metadata.num_reads_requested == preferences.num_reads
+        assert result.metadata.model_type is None
+
+    @pytest.mark.parametrize("seed", [-1, 2**32])
+    def test_out_of_range_seed_is_a_solver_error(self, compile_knapsack, seed):
+        compiled = compile_knapsack()
+        preferences = SolverPreferences.model_construct(num_reads=10, seed=seed)
+        with pytest.raises(SolverExecutionError) as excinfo:
+            SimulatedBifurcationBackend().solve(compiled, preferences)
+        assert str(excinfo.value) == (
+            "Simulated bifurcation solver failed: seed must be between 0 and "
+            f"2**32 - 1, got {seed}"
+        )
+
+    def test_largest_accepted_seed_solves(self, compile_knapsack):
+        compiled = compile_knapsack()
+        result = SimulatedBifurcationBackend().solve(
+            compiled, SolverPreferences(num_reads=10, seed=2**32 - 1)
+        )
+        assert result.num_samples == 10
+
+    def test_over_the_variable_cap_is_refused_before_running(self, compile_knapsack):
+        compiled = compile_knapsack()
+        backend = SimulatedBifurcationBackend(max_variables=compiled.num_variables - 1)
+        with pytest.raises(SolverExecutionError) as excinfo:
+            backend.solve(compiled, SolverPreferences(num_reads=10, seed=1))
+        assert excinfo.value.code == "SB_VARIABLE_LIMIT"
+        assert excinfo.value.status == "resource_limit_exceeded"
+        # The same wording the service uses from the declaration.
+        assert str(excinfo.value) == (
+            f"Compiled problem has {compiled.num_variables} variables (including "
+            f"internal), exceeding the simulated_bifurcation backend limit of "
+            f"{compiled.num_variables - 1}"
+        )
+
+    def test_exactly_the_cap_is_accepted(self, compile_knapsack):
+        compiled = compile_knapsack()
+        backend = SimulatedBifurcationBackend(max_variables=compiled.num_variables)
+        result = backend.solve(compiled, SolverPreferences(num_reads=10, seed=1))
+        assert result.num_samples == 10
+
+    def test_modes_both_solve_and_differ(self, compile_knapsack):
+        compiled = compile_knapsack()
+        backend = SimulatedBifurcationBackend()
+        discrete = backend.solve(
+            compiled,
+            SolverPreferences(
+                num_reads=50, seed=5, simulated_bifurcation={"mode": "discrete"}
+            ),
+        )
+        ballistic = backend.solve(
+            compiled,
+            SolverPreferences(
+                num_reads=50, seed=5, simulated_bifurcation={"mode": "ballistic"}
+            ),
+        )
+        assert discrete.num_samples == ballistic.num_samples == 50
+        # Same seed, same start; a different force law lands elsewhere.
+        assert discrete.samples.tolist() != ballistic.samples.tolist()
+
+    def test_no_option_block_means_discrete(self, compile_knapsack):
+        compiled = compile_knapsack()
+        backend = SimulatedBifurcationBackend()
+        implicit = backend.solve(compiled, SolverPreferences(num_reads=30, seed=9))
+        explicit = backend.solve(
+            compiled,
+            SolverPreferences(
+                num_reads=30, seed=9, simulated_bifurcation={"mode": "discrete"}
+            ),
+        )
+        assert implicit.samples.tolist() == explicit.samples.tolist()
+
+    @pytest.mark.parametrize("mode", ["discrete", "ballistic"])
+    def test_finds_the_optimum_of_a_dense_instance(self, load_knapsack, mode):
+        # 14 variables: the exact solver is the oracle. Dense +-1 couplings
+        # with a random field is SB's home ground.
+        bqm = self.dense_bqm(14, seed=2)
+        compiled = self.compiled_from_bqm(bqm, load_knapsack())
+        optimum = dimod.ExactSolver().sample(bqm).first.energy
+        result = SimulatedBifurcationBackend().solve(
+            compiled,
+            SolverPreferences(
+                num_reads=100, seed=11, simulated_bifurcation={"mode": mode}
+            ),
+        )
+        assert result.energies.min() == pytest.approx(optimum)
+
+    def test_linear_only_model_is_solved_exactly(self, load_knapsack):
+        # No couplings: the field is the only scale, and the optimum is the
+        # sign of every field. Every read should land on it.
+        bqm = dimod.BinaryQuadraticModel(
+            {"a": 3.0, "b": -2.0, "c": 0.5, "d": -4.0}, {}, 1.0, dimod.BINARY
+        )
+        compiled = self.compiled_from_bqm(bqm, load_knapsack())
+        result = SimulatedBifurcationBackend().solve(
+            compiled, SolverPreferences(num_reads=20, seed=1)
+        )
+        best = {"a": 0, "b": 1, "c": 0, "d": 1}
+        assert result.variables == ["a", "b", "c", "d"]
+        assert result.samples.tolist() == [[best[v] for v in result.variables]] * 20
+        assert result.energies.tolist() == [-5.0] * 20
+
+    def test_constant_model_solves_with_equal_energies(self, load_knapsack):
+        # Neither couplings nor field: every sample is optimal and the
+        # energy is the offset. Nothing to optimise, and nothing to raise.
+        bqm = dimod.BinaryQuadraticModel({"a": 0.0, "b": 0.0}, {}, 2.5, dimod.BINARY)
+        compiled = self.compiled_from_bqm(bqm, load_knapsack())
+        result = SimulatedBifurcationBackend().solve(
+            compiled, SolverPreferences(num_reads=8, seed=1)
+        )
+        assert result.samples.shape == (8, 2)
+        assert result.energies.tolist() == [2.5] * 8
+
+    def test_batch_layout(self):
+        assert _batch_sizes(0) == []
+        assert _batch_sizes(1) == [1]
+        assert _batch_sizes(AGENTS_PER_BATCH) == [AGENTS_PER_BATCH]
+        assert _batch_sizes(AGENTS_PER_BATCH + 1) == [AGENTS_PER_BATCH, 1]
+        assert _batch_sizes(3 * AGENTS_PER_BATCH) == [AGENTS_PER_BATCH] * 3
+
+    def test_initial_states_do_not_depend_on_the_batch_layout(self):
+        # Drawing 1024 + 7 reads in two batches consumes the generator
+        # exactly as drawing 1031 at once: read k's start is a function of
+        # (seed, k) alone.
+        n = 5
+        rng = np.random.default_rng(np.random.SeedSequence(42))
+        first, _ = _initial_states(rng, n, AGENTS_PER_BATCH)
+        second, _ = _initial_states(rng, n, 7)
+        rng = np.random.default_rng(np.random.SeedSequence(42))
+        whole, momenta = _initial_states(rng, n, AGENTS_PER_BATCH + 7)
+
+        assert whole.shape == (n, AGENTS_PER_BATCH + 7)
+        assert whole.dtype == np.float32
+        assert np.array_equal(np.concatenate([first, second], axis=1), whole)
+        assert not momenta.any()
+
+    def test_dense_ising_is_the_models_spin_form(self):
+        bqm = dimod.BinaryQuadraticModel(
+            {"a": 1.0, "b": -2.0}, {("a", "b"): 4.0}, 0.5, dimod.BINARY
+        )
+        variables, field, couplings, gain = _dense_ising(bqm)
+        spin = bqm.change_vartype(dimod.SPIN, inplace=False)
+        # dimod's own spin form is the oracle for the binary-to-spin
+        # arithmetic; both arrays come back divided by the largest magnitude.
+        peak = max(abs(spin.linear["a"]), abs(spin.linear["b"]),
+                   abs(spin.quadratic[("a", "b")]))
+
+        assert variables == ["a", "b"]
+        assert field.dtype == np.float32 and couplings.dtype == np.float32
+        assert field.tolist() == pytest.approx(
+            [spin.linear["a"] / peak, spin.linear["b"] / peak]
+        )
+        # J[i, j] = -q_ij, symmetric, zero diagonal: the force J s - h is
+        # minus the gradient of  -1/2 s^T J s + h . s.
+        q = spin.quadratic[("a", "b")] / peak
+        assert np.allclose(couplings, [[0.0, -q], [-q, 0.0]])
+        # c0 = 0.5 / (rms sqrt(N)) on the rescaled couplings: the two
+        # off-diagonal entries are +-q, so their RMS is |q|.
+        assert gain == pytest.approx(0.5 / (abs(q) * np.sqrt(2)))
+
+    def test_rescaling_makes_huge_biases_safe(self, load_knapsack):
+        # Finite float64 biases far outside float32's range (2026-09-17
+        # review): uniformly rescaled before the cast, so the dynamics see
+        # the same problem and the optimum is still found.
+        bqm = dimod.BinaryQuadraticModel(
+            {"a": 3e38, "b": -2e38, "c": 5e37}, {("a", "b"): -4e38}, 0.0, dimod.BINARY
+        )
+        compiled = self.compiled_from_bqm(bqm, load_knapsack())
+        optimum = dimod.ExactSolver().sample(bqm).first.energy
+        result = SimulatedBifurcationBackend().solve(
+            compiled, SolverPreferences(num_reads=50, seed=1)
+        )
+        assert np.isfinite(result.energies).all()
+        assert result.energies.min() == pytest.approx(optimum)
+
+    def test_a_non_finite_state_is_a_solver_error(self, monkeypatch, compile_knapsack):
+        # The guard behind the rescaling: a NaN state must never become a
+        # silent all-zero sample.
+        import annealbridge.solvers.simulated_bifurcation as module
+
+        def nan_run(xp, couplings, field, x, y, steps, c0, discrete):
+            x[...] = np.nan
+            return x
+
+        monkeypatch.setattr(module, "_run", nan_run)
+        with pytest.raises(SolverExecutionError, match="non-finite state"):
+            SimulatedBifurcationBackend().solve(
+                compile_knapsack(), SolverPreferences(num_reads=5, seed=1)
+            )
+
+    def test_declares_its_cap_for_the_service_and_recommend(self, compile_knapsack):
+        # The cap is in the declaration, so the service refuses before
+        # compiling and the capabilities view reports it as max_variables.
+        backend = SimulatedBifurcationBackend(max_variables=37)
+        limit = backend.capabilities.compiled_variable_limit
+        assert limit is not None
+        assert limit.maximum == 37
+        assert limit.error_code == "SB_VARIABLE_LIMIT"
+        assert SimulatedBifurcationBackend().capabilities.compiled_variable_limit.maximum == 10_000
+        # Each instance declares its own; the module declaration is untouched.
+        assert _CAPABILITIES.compiled_variable_limit is None
+
+    def test_logs_the_run_parameters(self, compile_knapsack, caplog):
+        compiled = compile_knapsack()
+        with caplog.at_level(
+            logging.INFO, logger="annealbridge.solvers.simulated_bifurcation"
+        ):
+            SimulatedBifurcationBackend().solve(
+                compiled,
+                SolverPreferences(
+                    num_reads=AGENTS_PER_BATCH + 1,
+                    num_sweeps=50,
+                    seed=4,
+                    simulated_bifurcation={"mode": "ballistic"},
+                ),
+            )
+        [record] = [r for r in caplog.records if "solved problem" in r.getMessage()]
+        message = record.getMessage()
+        assert "Backend simulated_bifurcation solved problem knapsack" in message
+        assert (
+            f"num_reads={AGENTS_PER_BATCH + 1}, num_sweeps=50, seed=4, "
+            "mode=ballistic, device=cpu, batches=2" in message
+        )
+
+
+class TestSimulatedBifurcationCudaDevice:
+    """The ``cuda`` device: PyTorch is imported lazily and only on that
+    setting, and a device that is not usable is reported, never replaced
+    by the CPU. CI has no GPU, so the torch seen here is a fake built on
+    numpy -- which also proves the dynamics routine is device-agnostic:
+    the same request gives the same samples on the fake device."""
+
+    @staticmethod
+    def _install_fake_torch(monkeypatch, *, cuda_available: bool) -> types.ModuleType:
+        class FakeTensor(np.ndarray):
+            def to(self, device):
+                return self
+
+            def cpu(self):
+                return self
+
+            def numpy(self):
+                return np.asarray(self)
+
+        torch = types.ModuleType("torch")
+        torch.__spec__ = importlib.machinery.ModuleSpec("torch", None)
+        torch.sign = np.sign
+        torch.abs = np.abs
+        torch.matmul = np.matmul
+        torch.isfinite = np.isfinite
+        torch.from_numpy = lambda array: array.view(FakeTensor)
+        torch.device = lambda name: name
+        torch.cuda = types.SimpleNamespace(is_available=lambda: cuda_available)
+        monkeypatch.setitem(sys.modules, "torch", torch)
+        return torch
+
+    @staticmethod
+    def _uninstall_torch(monkeypatch) -> None:
+        monkeypatch.delitem(sys.modules, "torch", raising=False)
+        real_find_spec = importlib.util.find_spec
+
+        def fake_find_spec(name, package=None):
+            if name == "torch":
+                return None
+            return real_find_spec(name, package)
+
+        monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+
+    def test_cpu_device_never_looks_for_torch(self, monkeypatch, compile_knapsack):
+        self._uninstall_torch(monkeypatch)
+        backend = SimulatedBifurcationBackend(device="cpu")
+        assert backend.is_available() == AvailabilityStatus(category="available")
+        result = backend.solve(compile_knapsack(), SolverPreferences(num_reads=5))
+        assert result.num_samples == 5
+
+    def test_torch_not_installed_is_reported(self, monkeypatch):
+        self._uninstall_torch(monkeypatch)
+        status = SimulatedBifurcationBackend(device="cuda").is_available()
+        assert status == AvailabilityStatus(
+            category="not_installed",
+            detail="PyTorch not installed (annealbridge[gpu] extra)",
+        )
+        assert status.available is False
+
+    def test_no_cuda_device_is_reported(self, monkeypatch):
+        self._install_fake_torch(monkeypatch, cuda_available=False)
+        status = SimulatedBifurcationBackend(device="cuda").is_available()
+        assert status == AvailabilityStatus(
+            category="unavailable", detail="no CUDA device visible to PyTorch"
+        )
+
+    def test_cuda_device_is_available_and_solves_like_the_cpu(
+        self, monkeypatch, compile_knapsack
+    ):
+        self._install_fake_torch(monkeypatch, cuda_available=True)
+        compiled = compile_knapsack()
+        preferences = SolverPreferences(num_reads=AGENTS_PER_BATCH + 3, seed=8)
+        gpu = SimulatedBifurcationBackend(device="cuda")
+        cpu = SimulatedBifurcationBackend(device="cpu")
+
+        assert gpu.is_available() == AvailabilityStatus(category="available")
+        on_gpu = gpu.solve(compiled, preferences)
+        on_cpu = cpu.solve(compiled, preferences)
+
+        assert on_gpu.samples.dtype == np.int8
+        assert on_gpu.samples.tolist() == on_cpu.samples.tolist()
+        assert on_gpu.energies.tolist() == on_cpu.energies.tolist()
+
+    def test_a_failing_device_is_a_solver_error(self, monkeypatch, compile_knapsack):
+        torch = self._install_fake_torch(monkeypatch, cuda_available=True)
+
+        def broken(array):
+            raise RuntimeError("CUDA out of memory")
+
+        torch.from_numpy = broken
+        with pytest.raises(SolverExecutionError, match="CUDA out of memory"):
+            SimulatedBifurcationBackend(device="cuda").solve(
+                compile_knapsack(), SolverPreferences(num_reads=5, seed=1)
+            )
+
+
 class TestBackendAliases:
     """2026-09-09 review F-26c: ``name``, ``is_exhaustive`` and the "no time
     limit" ``resolve_time_limit`` come from one mixin instead of twelve
@@ -850,7 +1341,7 @@ class TestBackendAliases:
     def test_every_built_in_backend_derives_its_aliases_from_the_declaration(self):
         backends = self.built_in_backends()
 
-        assert len(backends) == 7
+        assert len(backends) == 8
         for backend in backends:
             assert isinstance(backend, BackendAliases), backend
             assert backend.name == backend.capabilities.name

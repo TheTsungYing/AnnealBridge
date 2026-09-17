@@ -204,14 +204,15 @@ $ annealbridge recommend examples/knapsack.json
 Problem:   knapsack
 Advisory:  recommendations only; `solve` uses solver.backend as given
 
-Rank  Backend              Usable  Model  Reasons
-1     exact                yes     bqm    R_EXACT_FITS
-2     simulated_annealing  yes     bqm    R_LOCAL_HEURISTIC
-3     tabu                 yes     bqm    R_LOCAL_HEURISTIC
-4     leap_hybrid_cqm      no      cqm    R_UNUSABLE, R_NATIVE_CONSTRAINTS   [REMOTE_DISABLED]
-5     dwave_qpu            no      bqm    R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]
-6     leap_hybrid_bqm      no      bqm    R_UNUSABLE, R_REMOTE, R_SINGLE_SAMPLE   [REMOTE_DISABLED]
-7     fujitsu_da           no      bqm    R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]
+Rank  Backend                Usable  Model  Reasons
+1     exact                  yes     bqm    R_EXACT_FITS
+2     simulated_annealing    yes     bqm    R_LOCAL_HEURISTIC
+3     tabu                   yes     bqm    R_LOCAL_HEURISTIC
+4     simulated_bifurcation  yes     bqm    R_LOCAL_HEURISTIC
+5     leap_hybrid_cqm        no      cqm    R_UNUSABLE, R_NATIVE_CONSTRAINTS   [REMOTE_DISABLED]
+6     dwave_qpu              no      bqm    R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]
+7     leap_hybrid_bqm        no      bqm    R_UNUSABLE, R_REMOTE, R_SINGLE_SAMPLE   [REMOTE_DISABLED]
+8     fujitsu_da             no      bqm    R_UNUSABLE, R_REMOTE   [REMOTE_DISABLED]
 ```
 
 The trailing bracket holds the blocking error codes that make a backend
@@ -242,14 +243,15 @@ read `(D-Wave credentials not configured)` instead.
 
 ```console
 $ annealbridge capabilities
-Backend              Available  Enabled  Remote  Limits
-exact                yes        yes      no      max_variables=24, max_local_retries=10, max_top_k=1000
-simulated_annealing  yes        yes      no      max_local_reads=100000, max_sweeps=100000, max_local_retries=10, max_top_k=1000
-tabu                 yes        yes      no      max_local_reads=100000, max_local_retries=10, max_top_k=1000
-dwave_qpu            no         no       yes     max_reads=1000, max_annealing_time_us=2000, max_remote_retries=3, max_top_k=1000  (dwave-system not installed)
-leap_hybrid_bqm      no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000  (dwave-system not installed)
-leap_hybrid_cqm      no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000  (dwave-system not installed)
-fujitsu_da           no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000  (Fujitsu DA API key not configured)
+Backend                Available  Enabled  Remote  Limits
+exact                  yes        yes      no      max_variables=24, max_local_retries=10, max_top_k=1000
+simulated_annealing    yes        yes      no      max_local_reads=100000, max_sweeps=100000, max_local_retries=10, max_top_k=1000
+tabu                   yes        yes      no      max_local_reads=100000, max_local_retries=10, max_top_k=1000
+simulated_bifurcation  yes        yes      no      max_variables=10000, max_local_reads=100000, max_sweeps=100000, max_local_retries=10, max_top_k=1000
+dwave_qpu              no         no       yes     max_reads=1000, max_annealing_time_us=2000, max_remote_retries=3, max_top_k=1000  (dwave-system not installed)
+leap_hybrid_bqm        no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000  (dwave-system not installed)
+leap_hybrid_cqm        no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000  (dwave-system not installed)
+fujitsu_da             no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000  (Fujitsu DA API key not configured)
 ```
 
 - **Available** — the backend can run: its optional dependency is installed
@@ -330,7 +332,7 @@ Exit `2` covers three distinct situations, and all three print to stderr:
 
   ```console
   $ annealbridge solve examples/knapsack.json --backend nope
-  Error: unknown backend 'nope' (expected one of 'simulated_annealing', 'exact', 'tabu', 'dwave_qpu', 'leap_hybrid_bqm', 'leap_hybrid_cqm', 'fujitsu_da')
+  Error: unknown backend 'nope' (expected one of 'simulated_annealing', 'exact', 'tabu', 'simulated_bifurcation', 'dwave_qpu', 'leap_hybrid_bqm', 'leap_hybrid_cqm', 'fujitsu_da')
   ```
 
 - **An `ANNEALBRIDGE_*` setting holds an invalid value**, or a registered

@@ -23,13 +23,15 @@ request, and no setting can be changed by a problem JSON.
 | `ANNEALBRIDGE_MAX_QPU_ANNEALING_TIME_US` | float > 0 | `2000.0` | Upper bound on `dwave_qpu.annealing_time_us`, in microseconds (`QPU_ANNEALING_TIME_LIMIT`) |
 | `ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS` | int ≥ 1 | `300` | Upper bound on the effective remote time limit; shared by `leap_hybrid_bqm`, `leap_hybrid_cqm` and `fujitsu_da` (`REMOTE_TIME_LIMIT`) |
 | `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES` | int ≥ 1 | `4` | Concurrent solves allowed (`CONCURRENCY_LIMIT`, retryable). Multiplied by the larger of `ANNEALBRIDGE_SA_WORKERS` and `ANNEALBRIDGE_TABU_WORKERS` it bounds how many sampling threads can run at once (concurrent solves may use different local backends), so tune them together under a container CPU quota — see [Recommended production settings](#recommended-production-settings) |
-| `ANNEALBRIDGE_MAX_LOCAL_READS` | int ≥ 1 | `100000` | Upper bound on `num_reads` for `simulated_annealing` and `tabu` (`LOCAL_READS_LIMIT`) |
-| `ANNEALBRIDGE_MAX_SWEEPS` | int ≥ 1 | `100000` | Upper bound on `num_sweeps` for `simulated_annealing`, the only backend that takes sweeps (`SWEEPS_LIMIT`) |
+| `ANNEALBRIDGE_MAX_LOCAL_READS` | int ≥ 1 | `100000` | Upper bound on `num_reads` for `simulated_annealing`, `tabu` and `simulated_bifurcation` (`LOCAL_READS_LIMIT`) |
+| `ANNEALBRIDGE_MAX_SWEEPS` | int ≥ 1 | `100000` | Upper bound on `num_sweeps` for `simulated_annealing` and for `simulated_bifurcation`, where sweeps are integration steps; `tabu` takes no sweeps (`SWEEPS_LIMIT`) |
 | `ANNEALBRIDGE_MAX_LOCAL_RETRIES` | int ≥ 0 | `10` | Upper bound on `max_retries` for the local backends (`RETRY_LIMIT`) |
 | `ANNEALBRIDGE_MAX_REMOTE_RETRIES` | int ≥ 0 | `3` | Upper bound on `max_retries` for remote backends, enforced even when remote retries are enabled (`RETRY_LIMIT`) |
 | `ANNEALBRIDGE_MAX_TOP_K` | int ≥ 1 | `1000` | Upper bound on `top_k` (`TOP_K_LIMIT`) |
 | `ANNEALBRIDGE_SA_WORKERS` | int ≥ 1 | unset (auto-detect) | Threads the `simulated_annealing` backend samples with. Changes wall time only, never a result: the same seed gives the same answer for any value. Unset uses the CPUs available to the process; a container CPU quota is not detected, so set it there. Its product with `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES` is the ceiling on simultaneous sampling threads, so tune the two together — see [Recommended production settings](#recommended-production-settings) |
 | `ANNEALBRIDGE_TABU_WORKERS` | int ≥ 1 | unset (auto-detect) | The same setting for the `tabu` backend: threads it samples with, wall time only, never a result. The two backends have their own variable because they are tuned independently; whichever one a solve uses, its product with `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES` is the ceiling on simultaneous sampling threads |
+| `ANNEALBRIDGE_SB_DEVICE` | `cpu` \| `cuda` | `cpu` | Where the `simulated_bifurcation` backend runs its dynamics: `cpu` (`numpy`, part of the core install) or `cuda` (PyTorch, from the `[gpu]` extra, imported lazily and only on this setting). A `cuda` setting without a usable CUDA device makes the backend report itself unavailable; it is never substituted by the CPU. This backend has no worker variable — its threads are the BLAS ones, bound by `OPENBLAS_NUM_THREADS` / `MKL_NUM_THREADS` — see [Backends](backends.md#running-it-on-a-gpu) |
+| `ANNEALBRIDGE_SB_MAX_VARIABLES` | int ≥ 1 | `10000` | Compiled-variable ceiling for the `simulated_bifurcation` backend, slack and integer-encoding bits included (`SB_VARIABLE_LIMIT`). It holds the couplings as a dense single-precision `N × N` matrix (`4 N²` bytes, about 400 MB at the default), so this sizes the machine's memory rather than its time. A problem above it is refused before anything is allocated, never clamped |
 | `ANNEALBRIDGE_ENABLED_BACKENDS` | comma-separated names | unset | Registry names allowed to run. Unset or empty means every registered backend |
 | `ANNEALBRIDGE_LIMITS` | JSON object | `{}` | Generic policy limits for backends that declare custom limit keys. Not needed by the built-in backends |
 | `ANNEALBRIDGE_HTTP_HOST` | non-empty str, no whitespace | `127.0.0.1` | Default bind host for the MCP streamable-http transport. An empty or blank value is a configuration error, never a request to bind every interface |
@@ -50,13 +52,16 @@ value is reported in `metadata.effective_time_limit_seconds`.
 
 `annealbridge capabilities` prints the limits each backend is actually checked
 against under the current environment — the same values an agent reads from
-`get_optimization_capabilities`. See [CLI](cli.md#capabilities).
+`get_optimization_capabilities`. A backend's own declared ceiling appears there
+too: `simulated_bifurcation` reports `ANNEALBRIDGE_SB_MAX_VARIABLES` as
+`max_variables`, the same key the exhaustive backend's policy ceiling uses.
+See [CLI](cli.md#capabilities).
 
 ### `ANNEALBRIDGE_ENABLED_BACKENDS`
 
 A comma-separated allow-list of **registry names** — the same names that
 appear in `solver.backend`, in `annealbridge capabilities`, and in
-`get_optimization_capabilities`. Only the seven built-in names are accepted
+`get_optimization_capabilities`. Only the eight built-in names are accepted
 there: `solver.backend` is a closed schema, so a backend must be registered
 under its own `capabilities.name` for any request to name it:
 
@@ -87,7 +92,7 @@ export ANNEALBRIDGE_LIMITS='{"iterations": 100000}'
 - Every value must be a finite number greater than 0. A non-finite or
   non-positive value would either reject every solve or defeat the
   `value > limit` comparison, so it is rejected here.
-- The seven built-in backends need none of this: they use the dedicated
+- The eight built-in backends need none of this: they use the dedicated
   variables above. (`fujitsu_da` shares
   `ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS` with the hybrid solvers and declares
   no limit key of its own.)
@@ -207,5 +212,10 @@ of the host configuration.
   MAX_CONCURRENT_SOLVES` threads can be sampling at once (concurrent solves
   may use different local backends), so on a shared host keep that product
   near the core count (it only affects speed, never results).
+  `simulated_bifurcation` is not in that product: its parallelism is the BLAS
+  thread pool behind `numpy.matmul`, so on a shared host bound it with
+  `OPENBLAS_NUM_THREADS` / `MKL_NUM_THREADS` instead (that too only affects
+  speed, never results). Its memory, not its CPU, is what
+  `ANNEALBRIDGE_SB_MAX_VARIABLES` bounds.
 - **Watch the startup log for the unknown-variable `WARNING`.** It is the only
   signal that a setting you thought you configured is still at its default.

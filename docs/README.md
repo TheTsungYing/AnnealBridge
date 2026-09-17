@@ -16,7 +16,7 @@ needs, and the rules the project holds itself to.
 | [Error reference](errors.md) | The full error catalog and the warning codes, grouped by result status |
 | [CLI](cli.md) | The `annealbridge` commands, their options and their exit codes |
 | [MCP server](mcp.md) | The four MCP tools, the stdio and streamable-HTTP transports, and host configuration |
-| [Backends](backends.md) | The seven solver backends: what each one does, what it needs, and which compilation path it takes |
+| [Backends](backends.md) | The eight solver backends: what each one does, what it needs, and which compilation path it takes |
 | [Configuration](configuration.md) | Every `ANNEALBRIDGE_*` setting, the vendor credential variables, and how they become an execution policy |
 
 ## About the project

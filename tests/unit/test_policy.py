@@ -246,6 +246,15 @@ class TestLimitsFor:
                 "max_local_retries": 10,
                 "max_top_k": 1000,
             },
+            # ``simulated_bifurcation`` reads sweeps as integration steps,
+            # so it is capped under both local keys, like the annealer.
+            "simulated_bifurcation": {
+                "max_variables": 10000,
+                "max_local_reads": 100000,
+                "max_sweeps": 100000,
+                "max_local_retries": 10,
+                "max_top_k": 1000,
+            },
             "dwave_qpu": {
                 "max_reads": 1000,
                 "max_annealing_time_us": 2000.0,
@@ -283,6 +292,13 @@ class TestLimitsFor:
         ]
         assert list(limits["tabu"]) == [
             "max_local_reads",
+            "max_local_retries",
+            "max_top_k",
+        ]
+        assert list(limits["simulated_bifurcation"]) == [
+            "max_variables",
+            "max_local_reads",
+            "max_sweeps",
             "max_local_retries",
             "max_top_k",
         ]

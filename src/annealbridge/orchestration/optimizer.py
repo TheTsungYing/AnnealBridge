@@ -44,6 +44,7 @@ from annealbridge.models import (
     catalog_error,
 )
 from annealbridge.orchestration.limits import (
+    compiled_variable_limit_error,
     exact_variable_limit_error,
     gate_errors,
     no_compiler_error,
@@ -1089,6 +1090,18 @@ class OptimizationService:
                     direction,
                     [exact_variable_limit_error(estimated, variable_limit)],
                 )
+        # The same step for a backend that declares a ceiling of its own
+        # (``compiled_variable_limit``): flag-driven like the exhaustive one,
+        # never by name, and again refused before the O(n²) compile.
+        if backend.capabilities.compiled_variable_limit is not None:
+            estimated = estimate_model_variables(problem, compiler.model_type)
+            declared_error = compiled_variable_limit_error(
+                backend.capabilities, estimated
+            )
+            if declared_error is not None:
+                return self._failure(
+                    "resource_limit_exceeded", backend.name, direction, [declared_error]
+                )
 
         budget = self._max_attempts(backend, compiler, problem.solver)
         # §16.2 step 9: a native-constraint model has no hard penalty.
@@ -1172,6 +1185,17 @@ class OptimizationService:
                         compiled.num_variables, plan.variable_limit
                     )
                 ],
+                attempts=state.attempts,
+            )
+        declared_error = compiled_variable_limit_error(
+            backend.capabilities, compiled.num_variables
+        )
+        if declared_error is not None:
+            return self._failure(
+                "resource_limit_exceeded",
+                backend.name,
+                direction,
+                [declared_error],
                 attempts=state.attempts,
             )
         time_limit_error = self._effective_time_limit_error(

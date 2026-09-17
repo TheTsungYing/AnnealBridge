@@ -551,6 +551,9 @@ class TestSeedIgnored:
 SA_SEED_MAX = 2**31 - 1
 # The tabu sampler's own rule, which is *not* the annealer's.
 TABU_SEED_MAX = 2**32 - 1
+# Simulated bifurcation seeds a ``numpy.random.SeedSequence``; its declared
+# range happens to match tabu's, but it is its own constant.
+SB_SEED_MAX = 2**32 - 1
 
 
 def seed_range_message(seed: int, low: int, high: int, backend: str) -> str:
@@ -627,6 +630,35 @@ class TestSeedRange:
     def test_tabu_accepts_its_whole_range(self, seed):
         problem = make_problem(solver={"backend": "tabu", "seed": seed})
         result = validate_problem_full(problem, capabilities=registry_caps("tabu"))
+        assert result.valid is True
+        assert result.errors == []
+        assert seed_findings(result) == []
+
+    @pytest.mark.parametrize("seed", [-1, 2**32, 2**40])
+    def test_simulated_bifurcation_rejects_a_seed_outside_its_range(self, seed):
+        problem = make_problem(
+            solver={"backend": "simulated_bifurcation", "seed": seed}
+        )
+        result = validate_problem_full(
+            problem, capabilities=registry_caps("simulated_bifurcation")
+        )
+        assert result.valid is False
+        (error,) = result.errors
+        assert error.code == "INVALID_SOLVER_PREFERENCE"
+        assert error.path == "solver.seed"
+        assert error.message == seed_range_message(
+            seed, 0, SB_SEED_MAX, "simulated_bifurcation"
+        )
+        assert result.warnings == []
+
+    @pytest.mark.parametrize("seed", [0, SA_SEED_MAX + 1, SB_SEED_MAX])
+    def test_simulated_bifurcation_accepts_its_whole_range(self, seed):
+        problem = make_problem(
+            solver={"backend": "simulated_bifurcation", "seed": seed}
+        )
+        result = validate_problem_full(
+            problem, capabilities=registry_caps("simulated_bifurcation")
+        )
         assert result.valid is True
         assert result.errors == []
         assert seed_findings(result) == []
@@ -941,6 +973,7 @@ class TestOptionBlockReflection:
 
     def test_blocks_are_the_optional_model_fields(self):
         assert set(problem_validator._option_blocks()) == {
+            "simulated_bifurcation",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",

@@ -196,10 +196,11 @@ The same structure carries both errors and warnings.
 
 Sanitized execution facts about one solver run. It describes the **last
 completed attempt**, so timing and quota facts survive an `infeasible` result.
-The local backends (`exact`, `simulated_annealing`, `tabu`) report it as well,
-with the fields a local run can fill: `backend`, `remote: false`, the
-`model_type` the service stamps, and — on the two sampling backends,
-`simulated_annealing` and `tabu` — the `num_reads_requested` asked of the
+The local backends (`exact`, `simulated_annealing`, `tabu`,
+`simulated_bifurcation`) report it as well, with the fields a local run can
+fill: `backend`, `remote: false`, the `model_type` the service stamps, and — on
+the three sampling backends, `simulated_annealing`, `tabu` and
+`simulated_bifurcation` — the `num_reads_requested` asked of the
 sampler. There is no vendor side to a local run, so `timing_us` is
 empty and `solver_id`, `effective_time_limit_seconds` and the two QPU fields
 are `null`.

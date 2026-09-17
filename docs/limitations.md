@@ -52,11 +52,19 @@ variables.
 
 ## Backends
 
-- **`simulated_annealing` and `tabu`** are heuristic. Neither guarantees a
-  global optimum, and an `infeasible` result from either only means "not found
-  under this configuration" (`infeasibility_proven: false`). `tabu` also takes
-  no `num_sweeps` and no time limit: the only dial on its search effort is
-  `num_reads`.
+- **`simulated_annealing`, `tabu` and `simulated_bifurcation`** are heuristic.
+  None of them guarantees a global optimum, and an `infeasible` result from any
+  of them only means "not found under this configuration"
+  (`infeasibility_proven: false`). `tabu` also takes no `num_sweeps` and no
+  time limit: the only dial on its search effort is `num_reads`.
+- **`simulated_bifurcation` is weak on small penalty-dominated problems**, the
+  shape most of the shipped examples have: it finds their optimum in only 1 to
+  5 % of its reads, so it needs a large `num_reads` where the annealer does
+  not. It is at its strongest on large dense problems instead. It also holds
+  the couplings as a dense `N × N` matrix, so it is capped by
+  `ANNEALBRIDGE_SB_MAX_VARIABLES` (`SB_VARIABLE_LIMIT`) rather than by time,
+  and its answer is reproducible on one machine but may differ across CPUs or
+  BLAS builds — see [Backends](backends.md#simulated_bifurcation).
 - **`exact`** is a testing and debugging backend, and a ground-truth benchmark
   for the annealer. The state space doubles with every variable, so it is
   limited to small problems.

@@ -21,6 +21,7 @@ from annealbridge.models import (
 from annealbridge.models.capabilities import (  # noqa: F401
     AvailabilityCategory,
     AvailabilityStatus,
+    CompiledVariableLimit,
     CredentialDeclaration,
     ModelType,
     ParameterLimit,

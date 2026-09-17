@@ -16,12 +16,14 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # something a backend plugin may declare freely -- hence a Literal.
 ModelType = Literal["bqm", "cqm"]
 
-# Why a backend cannot run. The first four are the only categories the seven
-# built-in backends ever report; ``"unavailable"`` is the generic escape
-# hatch for a third-party backend that just cannot be reached and has no
-# more specific reason to give. ``orchestration/limits.py``'s
-# ``AVAILABILITY_MAP`` maps every category to a status plus a default error
-# code, and maps ``"unavailable"`` to ``BACKEND_UNAVAILABLE``.
+# Why a backend cannot run. The first four are the categories the eight
+# built-in backends normally report; ``"unavailable"`` is the generic escape
+# hatch for a backend that just cannot be reached and has no more specific
+# reason to give -- ``simulated_bifurcation`` reports it for a CUDA device
+# PyTorch is installed but cannot see, and a third-party backend may too.
+# ``orchestration/limits.py``'s ``AVAILABILITY_MAP`` maps every category to
+# a status plus a default error code, and maps ``"unavailable"`` to
+# ``BACKEND_UNAVAILABLE``.
 AvailabilityCategory = Literal[
     "available",
     "not_installed",
@@ -57,6 +59,35 @@ class ParameterLimit(BaseModel):
             "The error-catalog code reported when the preference exceeds the "
             "limit. The value is refused, never clamped."
         )
+    )
+
+
+class CompiledVariableLimit(BaseModel):
+    """A ceiling on the compiled model's size that a backend declares itself.
+
+    Unlike the exhaustive backend's ceiling, which is the policy's
+    (``exact_max_variables``), this one is the backend's own rule -- the
+    dense-matrix backend sizes its machine's memory with it -- and it is
+    declared here so the service refuses an oversized problem before
+    compiling (``resource_limit_exceeded``), ``recommend`` lists the same
+    refusal in ``blocking``, and the capabilities view reports it as
+    ``max_variables``: what an agent reads is what a solve is checked
+    against. The count includes the internal (slack and encoding)
+    variables, like the exhaustive one. Never a clamp.
+    """
+
+    maximum: int = Field(
+        ge=1,
+        description=(
+            "The largest compiled variable count (internal variables "
+            "included) the backend accepts."
+        ),
+    )
+    error_code: str = Field(
+        description=(
+            "The error-catalog code reported when the compiled model exceeds "
+            "the maximum. The problem is refused, never clamped."
+        ),
     )
 
 
@@ -254,6 +285,16 @@ class SolverCapabilities(BaseModel):
             "What this backend's credential material looks like, so the "
             "shared redaction can mask it. Shapes and names only, never "
             "values; empty on a local backend."
+        ),
+    )
+
+    compiled_variable_limit: CompiledVariableLimit | None = Field(
+        default=None,
+        description=(
+            "The backend's own ceiling on the compiled model's variable count, "
+            "if it has one (a dense-matrix backend bounding its memory). None "
+            "means no ceiling of its own; the exhaustive backend's ceiling is "
+            "the policy's, not declared here."
         ),
     )
 

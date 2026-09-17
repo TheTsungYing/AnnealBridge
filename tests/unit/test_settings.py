@@ -37,6 +37,10 @@ ENV_SUFFIXES = [
     # The local samplers' worker counts: speed knobs, not policy limits.
     "SA_WORKERS",
     "TABU_WORKERS",
+    # The simulated_bifurcation backend's machine knobs: where its dynamics
+    # run and how large a dense matrix it will hold.
+    "SB_DEVICE",
+    "SB_MAX_VARIABLES",
     # 2026-09-09 review (F-18): the enabled-backends gate's env entry.
     "ENABLED_BACKENDS",
     "LIMITS",
@@ -220,7 +224,14 @@ class TestPolicyFieldsMirrorExecutionPolicy:
     environment boundary than inside the service.
     """
 
-    SETTINGS_ONLY_FIELDS = {"sa_workers", "tabu_workers", "http_host", "http_port"}
+    SETTINGS_ONLY_FIELDS = {
+        "sa_workers",
+        "tabu_workers",
+        "sb_device",
+        "sb_max_variables",
+        "http_host",
+        "http_port",
+    }
 
     @pytest.mark.parametrize("name", sorted(ExecutionPolicy.model_fields))
     def test_policy_field_is_declared_identically_in_settings(self, name):
@@ -315,6 +326,33 @@ class TestEnabledBackends:
         assert field not in ExecutionPolicy.model_fields
         assert not hasattr(policy, field)
 
+    def test_sb_settings_default_and_do_not_leak_into_the_policy(self, clean_env):
+        # Like the worker counts: one backend's machine, not the service's
+        # policy, so they reach the registry through the composition root.
+        settings = ServerSettings()
+        assert settings.sb_device == "cpu"
+        assert settings.sb_max_variables == 10_000
+
+        clean_env.setenv("ANNEALBRIDGE_SB_DEVICE", "cuda")
+        clean_env.setenv("ANNEALBRIDGE_SB_MAX_VARIABLES", "128")
+        settings = ServerSettings()
+        assert settings.sb_device == "cuda"
+        assert settings.sb_max_variables == 128
+
+        policy = settings.to_policy()
+        for field in ("sb_device", "sb_max_variables"):
+            assert field not in ExecutionPolicy.model_fields
+            assert not hasattr(policy, field)
+
+    @pytest.mark.parametrize("value", ["tpu", "gpu", "CPU", ""])
+    def test_sb_device_rejects_anything_but_cpu_or_cuda(self, clean_env, value):
+        clean_env.setenv("ANNEALBRIDGE_SB_DEVICE", value)
+
+        with pytest.raises(ValidationError) as exc_info:
+            ServerSettings()
+
+        assert [error["loc"] for error in exc_info.value.errors()] == [("sb_device",)]
+
 
 class TestLimitBounds:
     """The env-driven limits carry the same lower bounds as ExecutionPolicy,
@@ -328,6 +366,7 @@ class TestLimitBounds:
         "MAX_CONCURRENT_SOLVES",
         "SA_WORKERS",
         "TABU_WORKERS",
+        "SB_MAX_VARIABLES",
     ]
 
     @pytest.mark.parametrize("suffix", LIMIT_SUFFIXES)

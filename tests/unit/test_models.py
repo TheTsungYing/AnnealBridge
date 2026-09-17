@@ -399,6 +399,7 @@ class TestRemoteBackendOptions:
             "simulated_annealing",
             "exact",
             "tabu",
+            "simulated_bifurcation",
             "dwave_qpu",
             "leap_hybrid_bqm",
             "leap_hybrid_cqm",

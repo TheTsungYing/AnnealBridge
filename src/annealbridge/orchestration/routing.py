@@ -20,6 +20,7 @@ from annealbridge.models import (
     SolverCapabilities,
 )
 from annealbridge.orchestration.limits import (
+    compiled_variable_limit_error,
     exact_variable_limit_error,
     gate_errors,
     no_compiler_error,
@@ -173,6 +174,14 @@ def _assess(
                 path="solver.backend",
             )
         )
+    if validation.estimated_compiled_variables is not None:
+        # A backend's own compiled-size ceiling: the same refusal solve
+        # gives (§16.2 step 9), from the same estimate.
+        declared_error = compiled_variable_limit_error(
+            caps, validation.estimated_compiled_variables, path="solver.backend"
+        )
+        if declared_error is not None:
+            blocking.append(declared_error)
     usable = not blocking
 
     reasons: list[str] = []

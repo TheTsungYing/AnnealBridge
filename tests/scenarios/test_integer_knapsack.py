@@ -1,14 +1,15 @@
-"""Bounded-integer knapsack across all four paths (3b spec §26.3).
+"""Bounded-integer knapsack across all five paths (3b spec §26.3).
 
 ``examples/integer_knapsack.json`` is the first shipped ``version 1.1``
 problem: four ``[0, 3]`` integer variables, a hard capacity constraint and
 one soft preference. It goes JSON -> ``OptimizationService`` -> result on
-four independent paths — the exhaustive BQM backend (``exact``), the two
-heuristic BQM backends (``simulated_annealing`` and ``tabu``) and a
-constraint-model backend (``FakeLocalCQMBackend``, 3a §26.1) — and all of
-them must return the same business optimum, with the integer values decoded
-back to plain ``int`` inside their declared bounds and no binary-expansion
-variable left in sight.
+five independent paths — the exhaustive BQM backend (``exact``), the three
+heuristic BQM backends (``simulated_annealing``, ``tabu`` and
+``simulated_bifurcation``) and a constraint-model backend
+(``FakeLocalCQMBackend``, 3a §26.1) — and all of them must return the same
+business optimum, with the integer values decoded back to plain ``int``
+inside their declared bounds and no binary-expansion variable left in
+sight.
 
 Nothing here calls a compiler, a decoder or a validator by hand: the whole
 point is that the *service* pipeline gets the integers right end to end.
@@ -45,10 +46,21 @@ SA_OVERRIDES = {"seed": 1234, "num_reads": 500}
 # The tabu sampler takes no sweeps, so the same two preferences are all it
 # accepts; anything else would come back as a PARAMETER_IGNORED warning.
 TABU_OVERRIDES = {"seed": 1234, "num_reads": 500}
+# Simulated bifurcation needs both a variant and far more trajectories here:
+# the discrete variant stalls three units below the optimum on this model, and
+# even the ballistic one reaches 34 in only about 1 % of its trajectories, so
+# 2000 reads is what makes the assertions below hold rather than merely
+# usually hold.
+SB_OVERRIDES = {
+    "seed": 1234,
+    "num_reads": 2000,
+    "simulated_bifurcation": {"mode": "ballistic"},
+}
 PATHS = [
     ("exact", {}),
     ("simulated_annealing", SA_OVERRIDES),
     ("tabu", TABU_OVERRIDES),
+    ("simulated_bifurcation", SB_OVERRIDES),
     (FAKE_LOCAL_CQM_NAME, {}),
 ]
 
@@ -176,6 +188,22 @@ class TestIntegerKnapsackTabu:
         assert result.backend == "tabu"
         # The sweep count it cannot honour is never sent, so nothing is
         # reported as ignored on this path.
+        assert result.warnings == []
+
+        best = result.solutions[0]
+        assert best.objective_value == pytest.approx(INTEGER_KNAPSACK_OPTIMUM_VALUE)
+        assert best.variables == INTEGER_KNAPSACK_OPTIMUM_SELECTION
+        assert best.hard_constraints_satisfied is True
+
+
+class TestIntegerKnapsackSimulatedBifurcation:
+    def test_sb_with_fixed_seed_finds_the_optimum(self, solve_on):
+        result = solve_on("simulated_bifurcation", **SB_OVERRIDES)
+
+        assert result.status == "success"
+        assert result.backend == "simulated_bifurcation"
+        # The option block belongs to the selected backend, so it is applied
+        # rather than reported as ignored.
         assert result.warnings == []
 
         best = result.solutions[0]

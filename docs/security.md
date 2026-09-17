@@ -40,6 +40,10 @@ credentials: all three have to be true before a remote backend runs. See
   rather than clamped as well. `ANNEALBRIDGE_SA_WORKERS` and
   `ANNEALBRIDGE_TABU_WORKERS` are the CPU budget of one local solve on their
   respective backend (threads per solve); they never change a result.
+  `ANNEALBRIDGE_SB_MAX_VARIABLES` is the matching bound on *memory* for
+  `simulated_bifurcation`, which holds the couplings as a dense `N × N`
+  matrix: an over-limit problem is refused with `SB_VARIABLE_LIMIT` before
+  anything is allocated, never clamped.
 - **The penalty ladder cannot run away.** A hard penalty that would have to
   double past the floating-point range stops with a structured
   `PENALTY_OVERFLOW` error instead of a solver error, and no backend is ever

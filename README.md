@@ -68,7 +68,13 @@ Optional extras:
 pip install "annealbridge[mcp]"       # + MCP server (annealbridge-mcp)
 pip install "annealbridge[dwave]"     # + D-Wave cloud backends
 pip install "annealbridge[all]"       # everything
+pip install "annealbridge[gpu]"       # + PyTorch, for simulated_bifurcation on CUDA
 ```
+
+`[gpu]` is deliberately **not** part of `[all]`: PyTorch is a large download,
+and on Windows the wheel PyPI serves is the CPU-only build, so a CUDA run needs
+`torch` installed from PyTorch's own index first — see
+[docs/backends.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/backends.md#running-it-on-a-gpu).
 
 ## Use it from an AI agent (MCP)
 
@@ -230,13 +236,14 @@ vendor account.
 
 ## Backends
 
-Seven backends sit behind one protocol.
+Eight backends sit behind one protocol.
 
 | Backend | Kind | Path | Notes |
 | --- | --- | --- | --- |
 | `exact` | local | BQM | Enumerates every assignment; 24 compiled variables by default |
 | `simulated_annealing` | local | BQM | Heuristic; honours `num_reads`, `num_sweeps`, `seed` |
 | `tabu` | local | BQM | Heuristic multistart tabu search, strong on dense QUBOs; honours `num_reads`, `seed` |
+| `simulated_bifurcation` | local | BQM | Heuristic dense-matrix dynamics (Goto et al. 2021), fastest on large dense QUBOs, weak on small penalty-dominated ones; honours `num_reads`, `num_sweeps`, `seed`; optional CUDA via `[gpu]` |
 | `dwave_qpu` | remote | BQM | D-Wave quantum annealer via `EmbeddingComposite` |
 | `leap_hybrid_bqm` | remote | BQM | D-Wave Leap hybrid BQM solver |
 | `leap_hybrid_cqm` | remote | CQM | D-Wave Leap hybrid CQM solver; native constraints |
@@ -286,7 +293,7 @@ The pages below live under [docs/](https://github.com/TheTsungYing/AnnealBridge/
 | [docs/errors.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/errors.md) | Error catalog, warning codes, reason codes, exit codes |
 | [docs/cli.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/cli.md) | The `annealbridge` command line |
 | [docs/mcp.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/mcp.md) | The MCP server, tools, host configuration, Inspector |
-| [docs/backends.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/backends.md) | The seven backends, D-Wave and Fujitsu setup, adding a backend |
+| [docs/backends.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/backends.md) | The eight backends, D-Wave and Fujitsu setup, adding a backend |
 | [docs/configuration.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/configuration.md) | Every `ANNEALBRIDGE_*` variable and the vendor credentials |
 | [docs/architecture.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/architecture.md) | Layers, package layout, design principles |
 | [docs/security.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/security.md) | Defaults, limits, credential redaction, what reaches a vendor |
@@ -309,7 +316,7 @@ development version without a checkout:
 Architecture rules, design principles and the pull-request checklist are in
 [CONTRIBUTING.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/CONTRIBUTING.md).
 
-Version 0.2.1: the problem contract (`1.0` / `1.1`), the seven backends, the
+Version 0.2.1: the problem contract (`1.0` / `1.1`), the eight backends, the
 CLI and the MCP tools are complete and covered by tests. What is not
 supported, by design for now, is listed in
 [docs/limitations.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/limitations.md);

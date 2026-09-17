@@ -1,10 +1,10 @@
 """The local backends report execution metadata too.
 
-``exact``, ``simulated_annealing`` and ``tabu`` have no vendor facts to
-relay, but a run still happened here: the metadata names the backend, says
-the run did not leave this machine, and carries the model type the service
-stamped on it. What a vendor would fill in — timing, solver id, quota,
-embedding — is empty or null, and stays that way.
+``exact``, ``simulated_annealing``, ``tabu`` and ``simulated_bifurcation``
+have no vendor facts to relay, but a run still happened here: the metadata
+names the backend, says the run did not leave this machine, and carries the
+model type the service stamped on it. What a vendor would fill in — timing,
+solver id, quota, embedding — is empty or null, and stays that way.
 
 The service still never invents metadata for a solve that produced no
 attempt; that contract is tested with fake backends elsewhere
@@ -16,7 +16,7 @@ import pytest
 from annealbridge.orchestration import OptimizationService
 from tests.unit.test_solve_timing import _infeasible_pair, _knapsack
 
-LOCAL_BACKENDS = ["exact", "simulated_annealing", "tabu"]
+LOCAL_BACKENDS = ["exact", "simulated_annealing", "tabu", "simulated_bifurcation"]
 
 
 def _assert_no_vendor_facts(metadata) -> None:

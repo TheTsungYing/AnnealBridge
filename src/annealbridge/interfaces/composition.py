@@ -55,11 +55,14 @@ def exit_on_settings_error(exc: SettingsError) -> NoReturn:
 
 def build_state(settings: ServerSettings | None = None) -> AppState:
     settings = settings if settings is not None else load_settings()
-    # The worker counts are the settings that are not policy: they tune a
-    # backend's speed, so they go to the registry, not the service.
+    # The worker counts, the SB device and its dense-matrix cap are the
+    # settings that are not policy: they tune a backend's speed or size its
+    # machine, so they go to the registry, not the service.
     registry = SolverRegistry.default(
         sa_workers=settings.sa_workers,
         tabu_workers=settings.tabu_workers,
+        sb_device=settings.sb_device,
+        sb_max_variables=settings.sb_max_variables,
     )
     return build_state_from_policy(settings.to_policy(), registry)
 

@@ -4,6 +4,7 @@ import pytest
 
 from annealbridge.models import OptimizationProblem
 from annealbridge.orchestration import OptimizationService
+from annealbridge.solvers import SolverRegistry
 
 # Spec §30: capacity 10, items A(w6,v10) B(w5,v8) C(w4,v7) D(w3,v6).
 # {A, C} weighs 6 + 4 = 10 (feasible) and is worth 10 + 7 = 17; the next
@@ -128,4 +129,103 @@ class TestKnapsackTabu:
             assert solution.sample_count >= 1
         assert sum(s.sample_count for s in result.solutions) <= (
             result.attempts[0].samples_received
+        )
+
+
+class TestKnapsackSimulatedBifurcation:
+    def test_sb_with_fixed_seed_finds_the_optimum(self, load_problem):
+        # The third local heuristic, and the one that needs the most reads
+        # here: this model's hard-constraint penalty dwarfs the objective and
+        # the dynamics land on the optimum in roughly 1 % of the
+        # trajectories, so 2000 of them is what makes the assertion below
+        # hold rather than merely usually hold.
+        result = OptimizationService().solve(
+            load_problem(
+                backend="simulated_bifurcation",
+                seed=1234,
+                num_reads=2000,
+                simulated_bifurcation={"mode": "discrete"},
+            )
+        )
+
+        assert result.status == "success"
+        assert result.backend == "simulated_bifurcation"
+        assert result.objective_direction == "maximize"
+        # The option block names the selected backend, so nothing about it is
+        # reported as ignored.
+        assert result.warnings == []
+
+        best = result.solutions[0]
+        assert best.objective_value == pytest.approx(KNAPSACK_OPTIMUM_VALUE)
+        assert best.variables == KNAPSACK_OPTIMUM_SELECTION
+        for solution in result.solutions:
+            assert solution.hard_constraints_satisfied is True
+            assert solution.sample_count >= 1
+        assert sum(s.sample_count for s in result.solutions) <= (
+            result.attempts[0].samples_received
+        )
+
+    def test_a_block_for_another_backend_is_reported_as_ignored(self, load_problem):
+        # The block is named after the backend it configures, so filling it
+        # in while asking for a different one is a caller mistake worth
+        # saying out loud -- and it does not stop the solve.
+        result = OptimizationService().solve(
+            load_problem(
+                backend="tabu",
+                seed=1234,
+                num_reads=100,
+                simulated_bifurcation={"mode": "ballistic"},
+            )
+        )
+
+        assert result.status == "success"
+        assert result.backend == "tabu"
+        assert [(w.code, w.path) for w in result.warnings] == [
+            ("PARAMETER_IGNORED", "solver.simulated_bifurcation")
+        ]
+
+
+class TestKnapsackSimulatedBifurcationVariableCap:
+    """The declared dense-matrix cap reaches solve, recommend and the
+    capabilities view without any name in the core (2026-09-17 review)."""
+
+    @staticmethod
+    def registry_with_cap(maximum: int) -> SolverRegistry:
+        return SolverRegistry.default(sb_max_variables=maximum)
+
+    def test_solve_refuses_before_compiling_as_a_resource_limit(self, load_problem):
+        service = OptimizationService(registry=self.registry_with_cap(3))
+        result = service.solve(
+            load_problem(backend="simulated_bifurcation", seed=1, num_reads=10)
+        )
+
+        assert result.status == "resource_limit_exceeded"
+        assert result.backend == "simulated_bifurcation"
+        assert [error.code for error in result.errors] == ["SB_VARIABLE_LIMIT"]
+        assert "exceeding the simulated_bifurcation backend limit of 3" in (
+            result.errors[0].message
+        )
+        # Refused from the estimate: no attempt was made.
+        assert result.attempts == []
+
+    def test_recommend_lists_the_same_refusal(self, load_problem):
+        service = OptimizationService(registry=self.registry_with_cap(3))
+        recommendation = service.recommend(load_problem(backend="exact"))
+        by_name = {entry.backend: entry for entry in recommendation.recommendations}
+        entry = by_name["simulated_bifurcation"]
+
+        assert entry.usable is False
+        assert "R_UNUSABLE" in entry.reasons
+        assert [error.code for error in entry.blocking] == ["SB_VARIABLE_LIMIT"]
+        assert entry.blocking[0].path == "solver.backend"
+
+    def test_a_cap_the_problem_fits_changes_nothing(self, load_problem):
+        # The knapsack example compiles to 8 variables (slack included).
+        service = OptimizationService(registry=self.registry_with_cap(8))
+        result = service.solve(
+            load_problem(backend="simulated_bifurcation", seed=1234, num_reads=2000)
+        )
+        assert result.status == "success"
+        assert result.solutions[0].objective_value == pytest.approx(
+            KNAPSACK_OPTIMUM_VALUE
         )

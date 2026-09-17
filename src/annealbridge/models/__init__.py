@@ -3,6 +3,7 @@
 from annealbridge.models.capabilities import (
     AvailabilityCategory,
     AvailabilityStatus,
+    CompiledVariableLimit,
     CredentialDeclaration,
     ModelType,
     ParameterLimit,
@@ -27,6 +28,7 @@ from annealbridge.models.problem import (
     LeapHybridBQMOptions,
     LeapHybridCQMOptions,
     OptimizationProblem,
+    SimulatedBifurcationOptions,
     SolverPreferences,
 )
 from annealbridge.models.solution import (
@@ -55,6 +57,7 @@ __all__ = [
     "Constraint",
     "ConstraintEvaluation",
     "ConstraintTrace",
+    "CompiledVariableLimit",
     "CredentialDeclaration",
     "DWaveQPUOptions",
     "FujitsuDAOptions",
@@ -70,6 +73,7 @@ __all__ = [
     "QuadraticTerm",
     "RECOMMENDED_ACTIONS",
     "RETRYABLE_CODES",
+    "SimulatedBifurcationOptions",
     "Solution",
     "SolveAttempt",
     "SolveError",

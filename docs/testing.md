@@ -56,13 +56,23 @@ fixture with a no-op — it is the one place that needs the real credentials.
 | Directory | What it covers |
 | --- | --- |
 | `tests/unit/` | Models, validators, the bounds-aware size estimates (checked against brute-force enumeration), slack and integer encoding, both compilers including their integer paths, the `decode` step, the penalty strategy, the policy limits, backend routing, candidate arrays over integer rows, and each solver backend |
-| `tests/scenarios/` | The full JSON → validate → compile → solve → re-validate → rank pipeline on the shipped examples, including the integer knapsack down all four paths (exact, simulated annealing, tabu, a fake CQM backend) reaching the same optimum |
+| `tests/scenarios/` | The full JSON → validate → compile → solve → re-validate → rank pipeline on the shipped examples, including the integer knapsack down all five paths (exact, simulated annealing, tabu, simulated bifurcation, a fake CQM backend) reaching the same optimum |
 | `tests/mcp/` | The four MCP tools driven through an in-memory MCP client, plus the tool list, the generated schemas, the thread offload and the stdio entry point (a few real subprocess checks; the rest of its argument and settings handling in-process) |
 | `tests/remote_mock/` | The D-Wave backends against mocked samplers (with the contract all three Ocean backends share written once, in `ocean_contract.py`) and the Fujitsu backend against a scripted HTTP transport — request shape, polling, delete / cancel, every error mapping — plus the real `UrllibTransport` against a loopback server and the credential-leak suite |
 | `tests/remote_live/` | Opt-in tests against real vendor hardware (see above) |
 | `tests/architecture/` | The import boundaries, the no-backend-name rule, the no-third-party-HTTP rule and the fifth-backend rule, all described in [Architecture](architecture.md#enforced-boundaries) |
 | `tests/golden/` | The recorded snapshot the golden test compares against, and the script that recorded it |
 | `tests/fakes/` | Shared test doubles: a declared fake backend, a local CQM backend and a scripted Fujitsu transport |
+
+## The GPU path
+
+The `simulated_bifurcation` backend's `cuda` device is exercised in the
+default suite through a fake `torch` module built on numpy, which proves the
+dynamics routine is device-agnostic and pins the three availability answers;
+CI has no GPU, and nothing is skipped. The real PyTorch path was verified by
+hand on a GeForce GTX 1660 SUPER (PyTorch 2.14 + CUDA 12.6, 2026-09-17) in a
+separate `.venv-gpu`: the same unit tests, bit-identical repeats of the same
+request, and the timings in [Backends](backends.md#running-it-on-a-gpu).
 
 ## The golden test
 

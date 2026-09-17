@@ -14,6 +14,7 @@ from annealbridge.solvers import (
     LeapHybridBQMBackend,
     LeapHybridCQMBackend,
     SimulatedAnnealingBackend,
+    SimulatedBifurcationBackend,
     TabuBackend,
 )
 from annealbridge.solvers.fujitsu_da import (
@@ -27,6 +28,7 @@ BACKEND_CLASSES = (
     ExactSolverBackend,
     SimulatedAnnealingBackend,
     TabuBackend,
+    SimulatedBifurcationBackend,
     DWaveQPUBackend,
     LeapHybridBQMBackend,
     LeapHybridCQMBackend,
@@ -73,6 +75,7 @@ async def test_all_backends_listed():
         "leap_hybrid_bqm",
         "leap_hybrid_cqm",
         "simulated_annealing",
+        "simulated_bifurcation",
         "tabu",
     ]
 
@@ -80,7 +83,7 @@ async def test_all_backends_listed():
 async def test_local_backends_available_and_enabled():
     content = (await _get_capabilities()).structured_content
     by_name = {backend["name"]: backend for backend in content["backends"]}
-    for name in ("exact", "simulated_annealing", "tabu"):
+    for name in ("exact", "simulated_annealing", "tabu", "simulated_bifurcation"):
         assert by_name[name]["available"] is True
         assert by_name[name]["enabled"] is True
         assert by_name[name]["unavailable_reason"] is None
@@ -151,6 +154,16 @@ async def test_limits_come_from_policy():
         "max_local_retries": 10,
         "max_top_k": 1000,
     }
+    # Simulated bifurcation's sweeps are its integration steps, so it is
+    # capped under the same two local keys as the annealer; its own
+    # dense-matrix cap (declared, not policy) shows as max_variables.
+    assert by_name["simulated_bifurcation"]["limits"] == {
+        "max_variables": 10000,
+        "max_local_reads": 100000,
+        "max_sweeps": 100000,
+        "max_local_retries": 10,
+        "max_top_k": 1000,
+    }
 
 
 async def test_seed_range_is_declared_per_backend():
@@ -158,11 +171,12 @@ async def test_seed_range_is_declared_per_backend():
     by_name = {backend["name"]: backend for backend in content["backends"]}
     for backend in by_name.values():
         assert "seed_min" in backend and "seed_max" in backend, backend["name"]
-    # Each seeded backend publishes its own sampler's rule; the two do not
-    # agree (2**31 - 1 against 2**32 - 1) and neither is a shared constant.
+    # Each seeded backend publishes its own sampler's rule; they do not all
+    # agree (2**31 - 1 against 2**32 - 1) and none is a shared constant.
     declared = {
         "simulated_annealing": (0, 2147483647),
         "tabu": (0, 4294967295),
+        "simulated_bifurcation": (0, 4294967295),
     }
     for name, backend in by_name.items():
         expected = declared.get(name, (None, None))

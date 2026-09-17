@@ -2,7 +2,7 @@
 
 # Solver backends
 
-This page describes the seven solver backends AnnealBridge ships with: what each
+This page describes the eight solver backends AnnealBridge ships with: what each
 one runs on, which compiler path it takes, which solver preferences it honours
 and which it ignores, and what it needs before it can be used. It also covers
 the setup steps for the D-Wave and Fujitsu backends, how the compiler path is
@@ -19,6 +19,7 @@ For the environment variables named here, see
 | `exact` | local | bqm | none (core install) | none |
 | `simulated_annealing` | local | bqm | none (core install) | none |
 | `tabu` | local | bqm | none (core install) | none |
+| `simulated_bifurcation` | local | bqm | none (core install); optional `[gpu]` | none |
 | `dwave_qpu` | remote | bqm | `[dwave]` | D-Wave Leap, via Ocean |
 | `leap_hybrid_bqm` | remote | bqm | `[dwave]` | D-Wave Leap, via Ocean |
 | `leap_hybrid_cqm` | remote | cqm | `[dwave]` | D-Wave Leap, via Ocean |
@@ -80,8 +81,8 @@ configured. See [CLI](cli.md#capabilities).
 - Reads are sampled in shards of 25, up to `ANNEALBRIDGE_SA_WORKERS` of
   them concurrently (see [Configuration](configuration.md)). The shard split,
   the derived shard seeds and the merge are shared code, used by
-  [`tabu`](#tabu) on the same terms, so both local samplers carry the same
-  reproducibility contract. The shard
+  [`tabu`](#tabu) on the same terms, so both `dwave-samplers` backends carry
+  the same reproducibility contract. The shard
   layout and each shard's seed — derived from the request seed through
   `numpy.random.SeedSequence` — depend on `num_reads` and `seed` alone, so
   **the result is a function of `(problem, num_reads, num_sweeps, seed)` and
@@ -119,8 +120,8 @@ configured. See [CLI](cli.md#capabilities).
 
 - Local heuristic sampler: `dwave.samplers.TabuSampler`, a multistart tabu
   search. It is part of the core install — no extra, no credential — and is
-  generally the stronger of the two local heuristics on dense QUBOs, where
-  simulated annealing has to spend sweeps on moves tabu search rules out.
+  generally stronger than simulated annealing on dense QUBOs, where the
+  annealer has to spend sweeps on moves tabu search rules out.
 - Honours `num_reads` and `seed`. It has no notion of sweeps, so a non-default
   `num_sweeps` raises `PARAMETER_IGNORED` rather than being passed along and
   quietly ignored by the sampler.
@@ -168,7 +169,7 @@ configured. See [CLI](cli.md#capabilities).
   rejected, never clamped.
 - If no feasible solution is found, the service retries with a doubled
   hard-constraint penalty, up to `max_retries` times (bounded by
-  `ANNEALBRIDGE_MAX_LOCAL_RETRIES`), exactly as on the other local heuristic.
+  `ANNEALBRIDGE_MAX_LOCAL_RETRIES`), exactly as on the other local heuristics.
 - Being heuristic, it proves neither optimality nor infeasibility: an
   `infeasible` result carries `infeasibility_proven: false` and only means
   "not found under this configuration".
@@ -178,6 +179,170 @@ configured. See [CLI](cli.md#capabilities).
   `num_reads_requested` set to the reads asked of the sampler — the whole
   request, not a shard. A local run has no vendor side, so `timing_us` is
   empty and the vendor fields are `null`.
+
+## `simulated_bifurcation`
+
+- Local heuristic, implemented in this package on `numpy`: simulated
+  bifurcation, the classical-mechanics heuristic of H. Goto, K. Endo,
+  M. Suzuki, Y. Kanao, Y. Hamakawa, R. Hidaka, M. Yamasaki and K. Tatsumura,
+  "High-performance combinatorial optimization based on classical mechanics",
+  *Science Advances* **7**, eabe7953 (2021). Every spin is a continuous
+  oscillator driven by the couplings and by a "pump" that grows from 0 to 1
+  over the run; as the pump passes the bifurcation point each oscillator falls
+  into `+1` or `-1`, and the signs are the answer. It needs no extra, no
+  credential and no network: `numpy` is already a core dependency.
+- **One step updates every variable of every read at once**, with a single
+  matrix product against the dense `N × N` coupling matrix. That is what makes
+  it a matrix routine rather than a loop over reads, why it is strongest on
+  large dense problems, and why it has no thread setting of its own — the BLAS
+  behind `numpy.matmul` already uses the cores (bound it with
+  `OPENBLAS_NUM_THREADS` / `MKL_NUM_THREADS`).
+- Honours `num_reads` (the number of parallel trajectories, the paper's
+  "agents"), `num_sweeps` (the number of integration steps) and `seed`.
+- `seed` must lie between `0` and `4294967295` inclusive (`0 <= seed < 2^32`,
+  the same range the `tabu` backend declares). It is declared as `seed_min` /
+  `seed_max` and reported by the capabilities view; a seed outside it is
+  refused before anything runs, with `INVALID_SOLVER_PREFERENCE` at
+  `solver.seed` ("solver.seed must be an integer between 0 and 4294967295 on
+  backend simulated_bifurcation, got -1"), so `solve` returns
+  `invalid_problem` and `recommend` lists the same error in this backend's
+  `blocking`.
+- Two variants of the dynamics are implemented, and which one wins is
+  problem-dependent, so the choice is a solver option:
+
+  ```json
+  {"solver": {"backend": "simulated_bifurcation",
+              "simulated_bifurcation": {"mode": "discrete"}}}
+  ```
+
+  - `"discrete"` (dSB, the default) — the force uses the *signs* of the
+    positions. The stronger variant on the dense instances measured below.
+  - `"ballistic"` (bSB) — the force uses the continuous positions. Weaker on
+    those instances, but it finds the optimum of the shipped integer knapsack
+    example, where dSB stalls at a local minimum three units above it.
+
+  The numerical constants of the dynamics (the final pump value, the time
+  step, the coupling gain, the initial amplitude) are the paper's and are not
+  exposed: they are not a dial an agent can reason about.
+- Measured best energy and wall time on dense ±1 SK instances, single
+  precision, 1000 steps, 100 reads, on an Intel Core i5-12500 with OpenBLAS
+  0.3.34:
+
+  | Instance | `simulated_annealing` | `tabu` | bSB | dSB |
+  | --- | --- | --- | --- | --- |
+  | `N = 200` | −836 / 1.2 s | −836 / 1.1 s | −834 / 0.25 s | −836 / 0.4 s |
+  | `N = 1000` | −9112 / 33 s | −9112 / 11.6 s | −9109 / 3.3 s | −9112 / 3.9 s |
+
+  Cost per integration step on the same machine: 7 ms at 2000 variables with
+  100 reads, 26 ms at 5000 variables with 100 reads, 39 ms at 10 000 variables
+  with 32 reads. Multiply by `num_sweeps` to size a request.
+- **The weak spot is the small penalty-dominated QUBO**, which is what the
+  shipped examples are: with a hard-constraint penalty orders of magnitude
+  above the objective coefficients, only 1 to 5 % of the reads land on the
+  optimum in either mode, against about 7 % for simulated annealing — the
+  knapsack example needs roughly 2000 reads to be reliable. Neither more
+  integration steps nor a steepest-descent polish improved that when measured,
+  so no polish is applied.
+- `num_reads` is bounded by `ANNEALBRIDGE_MAX_LOCAL_READS`
+  (`LOCAL_READS_LIMIT`) and `num_sweeps` by `ANNEALBRIDGE_MAX_SWEEPS`
+  (`SWEEPS_LIMIT`). There is no time-limit ceiling, because there is no wall
+  clock anywhere in the backend: the step count bounds the work. An over-limit
+  value is rejected, never clamped.
+- `ANNEALBRIDGE_SB_MAX_VARIABLES` (default `10000`) caps the compiled problem,
+  including the internal slack and integer-encoding variables. The dynamics
+  need the couplings as a dense single-precision `N × N` matrix — `4 N²`
+  bytes, about 400 MB at the default — on top of the compiled `dimod` model
+  itself, which on a dense problem holds every interaction and is the larger
+  of the two. The cap is part of the backend's declaration, so the service
+  refuses a problem above it *before compiling*, with `SB_VARIABLE_LIMIT`
+  under `resource_limit_exceeded`, `recommend` lists the same refusal in
+  `blocking`, and `capabilities` reports it as `max_variables` next to the
+  policy ceilings; nothing is allocated or clamped. Reads are simulated in
+  batches of a fixed 1024 columns to bound the state memory; the samples
+  themselves are `num_reads × N` bytes.
+- **Reproducibility is a slightly weaker promise than on the other two local
+  backends.** The result is a function of `(problem, num_reads, num_sweeps,
+  seed, mode, device)`: the initial states come from `numpy.random.SeedSequence`
+  on every device, the batch layout is fixed, and nothing in the run depends on
+  a clock. The BLAS thread count does not change the answer — measured
+  bit-identical at 1 and at 6 threads. But a different CPU instruction set or a
+  different BLAS build may round the matrix products differently and arrive at
+  different samples, which the count-bounded `tabu` search does not do.
+- If no feasible solution is found, the service retries with a doubled
+  hard-constraint penalty, up to `max_retries` times (bounded by
+  `ANNEALBRIDGE_MAX_LOCAL_RETRIES`), exactly as on the other local heuristics.
+- Being heuristic, it proves neither optimality nor infeasibility: an
+  `infeasible` result carries `infeasibility_proven: false` and only means
+  "not found under this configuration".
+- Reports `metadata` with `remote: false`, `model_type: "bqm"` and
+  `num_reads_requested` set to the reads asked for — the whole request, not a
+  batch. A local run has no vendor side, so `timing_us` is empty and the vendor
+  fields are `null`.
+
+### Running it on a GPU
+
+`ANNEALBRIDGE_SB_DEVICE` decides where the dynamics run: `cpu` (the default,
+`numpy`) or `cuda` (PyTorch, imported lazily and only on that setting). It is a
+server setting, not a policy limit and not something a request can choose —
+the same problem, reads, steps, seed and mode are asked for either way.
+
+Installing the GPU path takes two steps, because a pip extra cannot express
+the first one, and the order matters:
+
+```sh
+# 1. On Windows (and anywhere the PyPI wheel is the CPU-only build), the CUDA
+#    build of torch from PyTorch's own index, FIRST. Take the exact command
+#    and the CUDA version tag from https://pytorch.org/get-started/.
+pip install torch --index-url https://download.pytorch.org/whl/cu126
+
+# 2. The extra, which is deliberately NOT part of [all]. It finds torch
+#    already satisfied and leaves the CUDA build in place.
+pip install "annealbridge[gpu]"
+```
+
+The order matters because pip treats the CPU build as satisfying the `torch`
+requirement: run in the other order, step 1 reports "already satisfied" and
+the CPU build stays. If the CPU build is already installed, repeat step 1 with
+`--force-reinstall`. Budget roughly 2.5 GB of download and 4–6 GB on disk for
+the CUDA build. Step 2 alone is enough on a platform whose PyPI wheel already
+carries CUDA.
+
+**The backend never falls back to the CPU.** A silent fallback would hide a
+misconfigured server behind an answer that merely arrived more slowly, so with
+`ANNEALBRIDGE_SB_DEVICE=cuda` the backend reports itself unavailable instead,
+in one of three states the capabilities view and `recommend` show:
+
+| State | Reported as | Detail |
+| --- | --- | --- |
+| PyTorch installed and a CUDA device visible | available | — |
+| PyTorch not installed | not installed | `PyTorch not installed (annealbridge[gpu] extra)` |
+| PyTorch installed, no CUDA device | unavailable | `no CUDA device visible to PyTorch` |
+
+Availability is re-checked on every call and never cached: a driver or an
+install can change between requests.
+
+Measured on an NVIDIA GeForce GTX 1660 SUPER (6 GB, Turing, no tensor cores;
+PyTorch 2.14 + CUDA 12.6) against the same Intel Core i5-12500 / OpenBLAS CPU
+path, dense ±1 SK instances, 1000 steps:
+
+| Instance | `cpu`, 100 reads | `cuda`, 100 reads | `cuda`, 1000 reads | peak VRAM |
+| --- | --- | --- | --- | --- |
+| `N = 1000` | 2.3 s | 0.8 s | 3.4 s | 47 MB |
+| `N = 5000` | 25.5 s | 6.4 s | 46 s | 278 MB |
+| `N = 10 000` | — | 23 s | 203 s | 740 MB |
+
+The GPU is three to four times faster at 100 reads and is not yet saturated
+there: ten times the reads cost four to nine times the wall time. Below a few
+hundred variables the fixed cost of launching the kernels dominates and the CPU
+path is the better choice.
+
+The reproducibility rule above is unchanged on `cuda`: the initial states are
+still drawn by `numpy`, so the same request is a function of the same inputs,
+with the device among them. Measured on this card, the same request twice
+returned bit-identical samples at every size above. The `cuda` and `cpu`
+samples for the same request are *not* the same — the two round the matrix
+products differently — and both reach the same best energy on the `N = 1000`
+instance and on the knapsack example; the device is part of the function.
 
 ## `dwave_qpu`
 
@@ -385,8 +550,9 @@ If none of the declared model types has a compiler, the result is
 `configuration_error` / `NO_COMPILER_FOR_MODEL_TYPE`. (`validate` reports the
 same code as a warning and leaves `model_type` unset, since it does not solve.)
 
-`exact`, `simulated_annealing`, `tabu`, `dwave_qpu`, `leap_hybrid_bqm` and
-`fujitsu_da` all declare `bqm`; `leap_hybrid_cqm` declares `cqm`. On the BQM
+`exact`, `simulated_annealing`, `tabu`, `simulated_bifurcation`, `dwave_qpu`,
+`leap_hybrid_bqm` and `fujitsu_da` all declare `bqm`; `leap_hybrid_cqm`
+declares `cqm`. On the BQM
 path hard constraints become penalty terms, inequalities get binary slack
 variables, and integer variables are binary-encoded; on the CQM path
 constraints and integers are native. See
@@ -554,7 +720,7 @@ system dispatches on — never the backend's name:
 
 **3. Register it.** `SolverRegistry` maps a registry key to a backend
 instance. The key is the name a request puts in `solver.backend` and the one
-`ANNEALBRIDGE_ENABLED_BACKENDS` is matched against; the seven built-in
+`ANNEALBRIDGE_ENABLED_BACKENDS` is matched against; the eight built-in
 backends register under their own `capabilities.name`.
 
 Contributions are welcome — see [CONTRIBUTING](../CONTRIBUTING.md).

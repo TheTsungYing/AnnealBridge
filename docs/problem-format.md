@@ -197,8 +197,9 @@ Rules, each enforced by the validator with its own error code:
 What the compiler does with an integer depends on the model type of the chosen
 backend, and the caller never sees either encoding:
 
-- **BQM path** (`exact`, `simulated_annealing`, `tabu`, `dwave_qpu`,
-  `leap_hybrid_bqm`, `fujitsu_da`): the integer is expanded into
+- **BQM path** (`exact`, `simulated_annealing`, `tabu`,
+  `simulated_bifurcation`, `dwave_qpu`, `leap_hybrid_bqm`, `fujitsu_da`): the
+  integer is expanded into
   `(upper_bound − lower_bound).bit_length()` binary bits (`0..3` → 2 bits,
   `−3..4` → 3 bits) using the same binary expansion as inequality slack. These
   bits are compiler-internal (`__int_` prefix), they count towards the
@@ -394,13 +395,14 @@ The `solver` block is optional; every field has a default.
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `backend` | enum | `"simulated_annealing"` | One of `simulated_annealing`, `exact`, `tabu`, `dwave_qpu`, `leap_hybrid_bqm`, `leap_hybrid_cqm`, `fujitsu_da`. See [Backends](backends.md). |
+| `backend` | enum | `"simulated_annealing"` | One of `simulated_annealing`, `exact`, `tabu`, `simulated_bifurcation`, `dwave_qpu`, `leap_hybrid_bqm`, `leap_hybrid_cqm`, `fujitsu_da`. See [Backends](backends.md). |
 | `num_reads` | integer > 0 | `100` | Number of samples to request. Bounded by policy (`LOCAL_READS_LIMIT` / `QPU_READS_LIMIT`). |
-| `num_sweeps` | integer > 0 | `1000` | Annealing sweeps per read on backends that take them. Bounded by policy (`SWEEPS_LIMIT`). |
-| `seed` | integer \| null | `null` | Random seed. A backend that does not support seeding raises the `SEED_IGNORED` warning. A backend that declares a seed range — its own sampler's rule, so it differs per backend (`simulated_annealing`: `0`–`2147483647`; `tabu`: `0`–`4294967295`) — refuses a seed outside it with `INVALID_SOLVER_PREFERENCE`. |
+| `num_sweeps` | integer > 0 | `1000` | Annealing sweeps per read on backends that take them — on `simulated_bifurcation`, integration steps. Bounded by policy (`SWEEPS_LIMIT`). |
+| `seed` | integer \| null | `null` | Random seed. A backend that does not support seeding raises the `SEED_IGNORED` warning. A backend that declares a seed range — its own sampler's rule, so it differs per backend (`simulated_annealing`: `0`–`2147483647`; `tabu` and `simulated_bifurcation`: `0`–`4294967295`) — refuses a seed outside it with `INVALID_SOLVER_PREFERENCE`. |
 | `top_k` | integer > 0 | `5` | Maximum number of ranked solutions to return. Bounded by policy (`TOP_K_LIMIT`). |
 | `max_retries` | integer >= 0 | `3` | Additional attempts with a doubled hard penalty when no feasible solution was found. Bounded by policy (`RETRY_LIMIT`). |
 | `penalty_multiplier` | finite number > 0 | `2.0` | Multiplier applied to `penalty_scale` for the first attempt. |
+| `simulated_bifurcation` | object \| null | `null` | Options for the `simulated_bifurcation` backend. |
 | `dwave_qpu` | object \| null | `null` | Options for the `dwave_qpu` backend. |
 | `leap_hybrid_bqm` | object \| null | `null` | Options for the `leap_hybrid_bqm` backend. |
 | `leap_hybrid_cqm` | object \| null | `null` | Options for the `leap_hybrid_cqm` backend. |
@@ -423,6 +425,14 @@ Only a non-default value triggers it.
 
 Each block is named exactly like the backend it belongs to. An option left out
 is not sent at all, so the backend's or the vendor's own default applies.
+
+**`simulated_bifurcation`**
+
+| Option | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `mode` | `"discrete"` \| `"ballistic"` | `"discrete"` | Which simulated bifurcation variant to run. `"discrete"` (dSB) drives the oscillators with the *signs* of their positions and is the stronger variant on dense problems; `"ballistic"` (bSB) uses the continuous positions and does better on some small penalty-dominated problems where dSB stalls. See [Backends](backends.md#simulated_bifurcation). |
+
+The numerical constants of the dynamics are the paper's and are not exposed.
 
 **`dwave_qpu`**
 

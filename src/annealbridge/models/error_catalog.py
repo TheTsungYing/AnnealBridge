@@ -57,6 +57,12 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "num_sweeps exceeds the server's limit for local sampling; lower "
         "num_sweeps. The server never clamps values silently."
     ),
+    "SB_VARIABLE_LIMIT": (
+        "The compiled problem has more variables than the simulated "
+        "bifurcation backend's dense-matrix limit; reduce the problem size "
+        "or use simulated_annealing or tabu. The server never clamps values "
+        "silently."
+    ),
     "RETRY_LIMIT": (
         "max_retries exceeds the server's retry limit for this backend "
         "(remote retries are bounded more tightly because each one is a "

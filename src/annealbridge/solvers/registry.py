@@ -8,6 +8,10 @@ from annealbridge.solvers.leap_hybrid_bqm import LeapHybridBQMBackend
 from annealbridge.solvers.leap_hybrid_cqm import LeapHybridCQMBackend
 from annealbridge.solvers.metadata import declare_credentials
 from annealbridge.solvers.simulated_annealing import SimulatedAnnealingBackend
+from annealbridge.solvers.simulated_bifurcation import (
+    Device,
+    SimulatedBifurcationBackend,
+)
 from annealbridge.solvers.tabu import TabuBackend
 
 
@@ -47,20 +51,26 @@ class SolverRegistry:
         *,
         sa_workers: int | None = None,
         tabu_workers: int | None = None,
+        sb_device: Device = "cpu",
+        sb_max_variables: int = 10_000,
     ) -> "SolverRegistry":
         """Build the default registry.
 
         Registration order is fixed (3a §17.7, 3b §20.9): ``exact``,
-        ``simulated_annealing``, ``tabu``, ``dwave_qpu``,
-        ``leap_hybrid_bqm``, ``leap_hybrid_cqm``, ``fujitsu_da``. The
-        capabilities list, the CLI table and the routing tie-break all
-        follow it.
+        ``simulated_annealing``, ``tabu``, ``simulated_bifurcation``,
+        ``dwave_qpu``, ``leap_hybrid_bqm``, ``leap_hybrid_cqm``,
+        ``fujitsu_da``. The capabilities list, the CLI table and the
+        routing tie-break all follow it.
 
         ``sa_workers`` and ``tabu_workers`` are handed to
         :class:`SimulatedAnnealingBackend` and :class:`TabuBackend`
         respectively (``None``: detect the CPUs available to the process).
         They only change how fast that backend samples, never what it
-        returns.
+        returns. ``sb_device`` and ``sb_max_variables`` go to
+        :class:`SimulatedBifurcationBackend`: where its dynamics run (the
+        CUDA device needs the ``gpu`` extra and is never substituted by the
+        CPU) and the largest compiled problem it will hold as a dense
+        matrix.
 
         Registering the remote backends never imports any D-Wave cloud
         package: each D-Wave backend lazy-imports ``dwave.system`` inside
@@ -71,6 +81,9 @@ class SolverRegistry:
             ExactSolverBackend(),
             SimulatedAnnealingBackend(workers=sa_workers),
             TabuBackend(workers=tabu_workers),
+            SimulatedBifurcationBackend(
+                device=sb_device, max_variables=sb_max_variables
+            ),
             DWaveQPUBackend(),
             LeapHybridBQMBackend(),
             LeapHybridCQMBackend(),
