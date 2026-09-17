@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same request produces the same sentence — timings stay in `elapsed_ms` and
   the per-attempt fields. The infeasible and failure paths keep the messages
   they had, and the `message` field description now documents all three.
+- `OptimizationCapabilities` gained `annealbridge_version`, the installed
+  package version, read from the same `package_version()` source as
+  `SolveResult.annealbridge_version`, so a capabilities response names the
+  build that produced it. Both interfaces build the same view: the MCP tool
+  returns the field, and the CLI `capabilities` command carries it in the
+  object it renders from, whose table still prints backends only.
 - `recommend` orders the local heuristics by problem shape instead of by
   registry position, from two new `SolverCapabilities` declarations that are
   `False` unless a backend opts in: `strong_on_large_dense` (declared by
@@ -174,6 +180,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `get_optimization_capabilities` takes an `include_schema` boolean that
+  defaults to `false`, and the default response no longer carries
+  `problem_json_schema`: the field's type went from `object` to
+  `object | null`, so the output schema a host sees changed with it. The
+  schema was roughly three quarters of every response, so the plain call is
+  now about a quarter of its former size, and an agent that only
+  needs the backend list with its limits now pays for none of it, while
+  `include_schema: true` returns exactly the schema it always did, identical
+  to what `annealbridge export-schema` prints. `build_capabilities` grew a
+  matching `include_schema` keyword argument defaulting to `true`, so the CLI
+  `capabilities` command and every other direct caller are unchanged; with it
+  false the cached schema is not even serialised, rather than serialised and
+  dropped. The server instructions and the `validate_optimization_problem`
+  description now say to pass `include_schema: true` when the schema itself is
+  what is needed, and `scripts/check_install.py` asks for it the same way —
+  which is also where the stale `Call order` assertion, left behind when
+  those instructions' heading became `When to call each tool`, is fixed.
 - The `structure_fit` key described under *Added* changes what `recommend`
   prints for problems that already existed: the shipped
   `examples/knapsack.json` now lists `simulated_bifurcation` last among the

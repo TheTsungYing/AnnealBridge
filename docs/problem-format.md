@@ -500,7 +500,8 @@ annealbridge export-schema
 
 prints the complete JSON Schema for `OptimizationProblem` — the same schema an
 agent can use for structured output, and the same one returned in the
-`problem_json_schema` field of the `get_optimization_capabilities` MCP tool.
+`problem_json_schema` field of the `get_optimization_capabilities` MCP tool
+(called with `include_schema: true`).
 Because it is generated from the pydantic models, it never drifts from the
 behaviour documented here: every field carries a `description`, and every
 object declares `additionalProperties: false` (see

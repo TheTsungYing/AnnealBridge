@@ -109,6 +109,33 @@ class TestCapabilities:
         assert "max_time=300s" in rows["leap_hybrid_cqm"]
         assert "max_time=300s" in rows["fujitsu_da"]
 
+    def test_the_cli_view_still_asks_for_the_full_schema(self, monkeypatch):
+        """``include_schema`` is an MCP-side economy, not a CLI change.
+
+        The table never prints the schema, but ``build_capabilities`` keeps
+        its default, so a caller reading the CLI's source is not misled into
+        thinking the full view is gone.
+        """
+        recorded: list[dict] = []
+        views = []
+        original = cli_main.build_capabilities
+
+        def spy(*args, **kwargs):
+            recorded.append(kwargs)
+            views.append(original(*args, **kwargs))
+            return views[-1]
+
+        monkeypatch.setattr(cli_main, "build_capabilities", spy)
+
+        result = runner.invoke(app, ["capabilities"])
+
+        assert result.exit_code == 0
+        assert len(recorded) == 1
+        # The CLI relies on the default rather than opting out, and the view
+        # it renders from really does carry the schema.
+        assert "include_schema" not in recorded[0]
+        assert views[0].problem_json_schema is not None
+
     def test_remote_backends_enabled_when_policy_allows(self, monkeypatch):
         monkeypatch.setenv("ANNEALBRIDGE_ALLOW_REMOTE", "true")
         result = runner.invoke(app, ["capabilities"])

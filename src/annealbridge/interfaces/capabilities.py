@@ -20,6 +20,7 @@ from annealbridge.models import Constraint, OptimizationProblem, Variable
 from annealbridge.orchestration import ExecutionPolicy
 from annealbridge.orchestration.limits import availability_refusal, policy_gate_errors
 from annealbridge.solvers import SolverRegistry
+from annealbridge.version import package_version
 
 
 class BackendCapability(BaseModel):
@@ -134,12 +135,20 @@ class OptimizationCapabilities(BaseModel):
     backends: list[BackendCapability] = Field(
         description="Every registered backend, with its flags and limits."
     )
-    problem_json_schema: dict = Field(
+    problem_json_schema: dict | None = Field(
         description=(
             "The full OptimizationProblem JSON Schema, identical to what "
-            "annealbridge export-schema prints. Its field descriptions "
-            "explain the document one level down."
+            "annealbridge export-schema prints, when it was requested "
+            "(include_schema on the MCP tool); null otherwise. Its field "
+            "descriptions explain the document one level down."
         )
+    )
+    annealbridge_version: str | None = Field(
+        default=None,
+        description=(
+            'The installed package version that produced this view; '
+            '"unknown" outside an installed distribution.'
+        ),
     )
 
 
@@ -164,9 +173,15 @@ def _problem_json_schema() -> dict:
 
 
 def build_capabilities(
-    registry: SolverRegistry, policy: ExecutionPolicy
+    registry: SolverRegistry, policy: ExecutionPolicy, *, include_schema: bool = True
 ) -> OptimizationCapabilities:
-    """Assemble the capabilities response from the registry and policy."""
+    """Assemble the capabilities response from the registry and policy.
+
+    ``include_schema=False`` leaves ``problem_json_schema`` null and skips
+    generating it: the schema is three quarters of the response, and an
+    agent that only needs the backend list should not pay for it on every
+    call. The default keeps the full view for the CLI and any direct caller.
+    """
     backends: list[BackendCapability] = []
     for name in registry.names():
         backend = registry.get(name)
@@ -214,5 +229,6 @@ def build_capabilities(
         supported_objective_terms=["linear", "quadratic"],
         inequality_requires_integer_coefficients=True,
         backends=backends,
-        problem_json_schema=_problem_json_schema(),
+        problem_json_schema=_problem_json_schema() if include_schema else None,
+        annealbridge_version=package_version(),
     )

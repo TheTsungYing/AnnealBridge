@@ -292,9 +292,9 @@ annealbridge export-schema > problem.schema.json
 
 No options, no configuration read, no network I/O. The output is the complete
 JSON Schema of the problem document — the same schema an agent can use for
-structured output, and the same one returned inside
-`get_optimization_capabilities`. It is generated from the pydantic models, so
-it can never drift from what the server actually accepts. See
+structured output, and the same one `get_optimization_capabilities` returns
+when called with `include_schema: true`. It is generated from the pydantic
+models, so it can never drift from what the server actually accepts. See
 [Problem format](problem-format.md) for the human-readable description.
 
 ## `mcp`

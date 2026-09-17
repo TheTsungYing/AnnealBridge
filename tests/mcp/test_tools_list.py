@@ -72,6 +72,37 @@ async def test_recommend_output_schema_matches_recommendation_result():
     } <= set(entry["properties"])
 
 
+async def test_capabilities_input_schema_offers_only_include_schema():
+    tools = await _list_tools()
+    tool = next(
+        tool for tool in tools if tool.name == "get_optimization_capabilities"
+    )
+    schema = tool.input_schema
+
+    assert set(schema["properties"]) == {"include_schema"}
+    include_schema = schema["properties"]["include_schema"]
+    assert include_schema["type"] == "boolean"
+    # Optional, and off by default: the plain call must stay the cheap one.
+    assert include_schema["default"] is False
+    assert include_schema["description"].strip()
+    assert "include_schema" not in schema.get("required", [])
+
+
+async def test_capabilities_output_schema_marks_the_schema_nullable():
+    tools = await _list_tools()
+    tool = next(
+        tool for tool in tools if tool.name == "get_optimization_capabilities"
+    )
+    properties = tool.output_schema["properties"]
+
+    # The host must be told the field can be absent, otherwise a null looks
+    # like a server bug rather than the documented default.
+    variants = properties["problem_json_schema"]["anyOf"]
+    assert any(variant.get("type") == "null" for variant in variants)
+    assert any(variant.get("type") == "object" for variant in variants)
+    assert "annealbridge_version" in properties
+
+
 def _properties_without_description(schema: dict) -> list[str]:
     """``Model.field`` for every schema property missing a description."""
     missing: list[str] = []

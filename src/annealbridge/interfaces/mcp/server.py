@@ -92,10 +92,12 @@ document; nothing is ever silently substituted, clamped or dropped.
 
 When to call each tool:
 - get_optimization_capabilities - when you need to know which backends are
-  available and enabled and which limits apply, or the full problem JSON
-  schema (problem_json_schema) and the accepted schema versions. For a
-  small binary problem on a local backend the example below already shows
-  the whole document shape.
+  available and enabled and which limits apply, or the accepted schema
+  versions. The full problem JSON schema (problem_json_schema) is only
+  included when you pass include_schema: true; ask for it when the
+  document needs more than the example below shows. For a small binary
+  problem on a local backend the example already shows the whole document
+  shape.
 - validate_optimization_problem - before solving on a remote backend, or
   when the problem is large (many variables, wide integer ranges): it
   returns every semantic error at once, each with a recommended_action,
@@ -124,9 +126,11 @@ Choosing solver.backend:
   say in the answer which backend ran and why.
 
 Rules a first document most often breaks:
-- Only the fields in problem_json_schema exist. A field the schema does not
-  declare (at any level) is rejected as a tool error naming its path; it is
-  never ignored, so an invented field can never silently change the problem.
+- Only the fields the problem JSON schema declares exist
+  (get_optimization_capabilities with include_schema: true returns it as
+  problem_json_schema). A field the schema does not declare (at any level)
+  is rejected as a tool error naming its path; it is never ignored, so an
+  invented field can never silently change the problem.
 - An integer variable needs "type": "integer" with both lower_bound and
   upper_bound, and the document must then carry "version": "1.1".
 - Inequality constraints (<=, >=) need integer coefficients and an integer

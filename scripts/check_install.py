@@ -259,8 +259,14 @@ async def run_mcp_checks(problems: dict[str, dict]) -> None:
     async with asyncio.timeout(120):
         async with Client(params) as client:
 
-            async def call(name: str, problem: dict | None = None) -> dict:
-                arguments = {} if problem is None else {"problem": problem}
+            async def call(
+                name: str,
+                problem: dict | None = None,
+                *,
+                arguments: dict | None = None,
+            ) -> dict:
+                if arguments is None:
+                    arguments = {} if problem is None else {"problem": problem}
                 result = await client.call_tool(name, arguments)
                 assert not result.is_error, f"{name} returned a tool error: {result}"
                 return result.structured_content
@@ -269,12 +275,19 @@ async def run_mcp_checks(problems: dict[str, dict]) -> None:
                 tools = (await client.list_tools()).tools
                 assert sorted(tool.name for tool in tools) == MCP_TOOLS
                 assert client.server_info.version == metadata.version("annealbridge")
-                assert "Call order" in client.instructions
+                assert "When to call each tool" in client.instructions
 
             with check("MCP capabilities"):
-                assert "problem_json_schema" in await call(
-                    "get_optimization_capabilities"
+                # The schema only comes back when it is asked for; the plain
+                # call must still carry the field, explicitly null.
+                requested = await call(
+                    "get_optimization_capabilities",
+                    arguments={"include_schema": True},
                 )
+                assert requested["problem_json_schema"]["title"] == "OptimizationProblem"
+                assert (await call("get_optimization_capabilities"))[
+                    "problem_json_schema"
+                ] is None
 
             knapsack = problems["knapsack.json"]
             with check("MCP validate"):

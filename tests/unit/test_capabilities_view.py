@@ -15,6 +15,7 @@ unavailable with a (redacted) reason instead of failing the whole view.
 """
 
 import logging
+from importlib.metadata import version
 
 import pytest
 
@@ -59,6 +60,27 @@ class TestSchemaCache:
         assert second == OptimizationProblem.model_json_schema()
         assert "POLLUTED" not in second["properties"]["name"]
         assert "version" in second["properties"]
+
+    def test_include_schema_false_skips_the_schema_entirely(self):
+        registry = SolverRegistry.default()
+        policy = ExecutionPolicy()
+
+        before = _problem_json_schema_json.cache_info()
+        view = build_capabilities(registry, policy, include_schema=False)
+
+        assert view.problem_json_schema is None
+        # Not merely dropped from the response: the cached schema is never
+        # even asked for, so the caller pays nothing for it. The whole
+        # cache_info is compared so a cold cache (a miss, not a hit) would
+        # be caught too when this test runs on its own.
+        assert _problem_json_schema_json.cache_info() == before
+
+
+class TestPackageVersion:
+    def test_the_view_carries_the_installed_distribution_version(self):
+        view = build_capabilities(SolverRegistry.default(), ExecutionPolicy())
+
+        assert view.annealbridge_version == version("annealbridge")
 
 
 class TestNameIsTheRegistryKey:

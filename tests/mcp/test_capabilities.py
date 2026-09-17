@@ -1,9 +1,12 @@
 """get_optimization_capabilities over the in-memory MCP client (spec §22, §26)."""
 
+from importlib.metadata import version
+
 import pytest
 from mcp import Client
 
 from annealbridge.interfaces.mcp import mcp
+from annealbridge.models import OptimizationProblem
 from annealbridge.solvers import (
     REASON_CONFIG_INVALID,
     REASON_CREDENTIALS_MISSING,
@@ -53,9 +56,11 @@ UNAVAILABLE_REASONS = {
 }
 
 
-async def _get_capabilities():
+async def _get_capabilities(arguments: dict | None = None):
     async with Client(mcp) as client:
-        result = await client.call_tool("get_optimization_capabilities", {})
+        result = await client.call_tool(
+            "get_optimization_capabilities", {} if arguments is None else arguments
+        )
     assert result.is_error is False
     return result
 
@@ -108,7 +113,34 @@ async def test_schema_metadata():
     assert content["supported_variable_types"] == ["binary", "integer"]
     assert content["supported_constraint_operators"] == ["==", "<=", ">="]
     assert content["inequality_requires_integer_coefficients"] is True
-    assert content["problem_json_schema"]["title"] == "OptimizationProblem"
+
+
+class TestProblemJsonSchemaIsOptional:
+    """The schema is three quarters of the response, so it is only sent when
+    the caller asks for it; the default keeps the view small."""
+
+    async def test_the_default_call_leaves_the_schema_out(self):
+        content = (await _get_capabilities()).structured_content
+        assert content["problem_json_schema"] is None
+
+    async def test_include_schema_true_returns_the_whole_model_schema(self):
+        content = (
+            await _get_capabilities({"include_schema": True})
+        ).structured_content
+        # Identical to the model — and so to what ``export-schema`` prints.
+        assert content["problem_json_schema"] == OptimizationProblem.model_json_schema()
+        assert content["problem_json_schema"]["title"] == "OptimizationProblem"
+
+    async def test_include_schema_false_is_the_default_behaviour(self):
+        content = (
+            await _get_capabilities({"include_schema": False})
+        ).structured_content
+        assert content["problem_json_schema"] is None
+
+
+async def test_annealbridge_version_is_the_installed_distribution_version():
+    content = (await _get_capabilities()).structured_content
+    assert content["annealbridge_version"] == version("annealbridge")
 
 
 async def test_limits_come_from_policy():

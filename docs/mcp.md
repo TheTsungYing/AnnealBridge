@@ -154,7 +154,7 @@ stored credential.
 
 | Tool | Input | Returns |
 | --- | --- | --- |
-| `get_optimization_capabilities` | none | `OptimizationCapabilities` |
+| `get_optimization_capabilities` | `include_schema` (optional, default `false`) | `OptimizationCapabilities` |
 | `validate_optimization_problem` | `problem` | `ProblemValidationResult` |
 | `recommend_backend` | `problem` | `BackendRecommendationResult` |
 | `solve_optimization` | `problem` | `SolveResult` |
@@ -185,14 +185,16 @@ to `solve_optimization`, since an invalid document comes back as
 `invalid_problem` carrying the same errors and recommended actions
 `validate_optimization_problem` would give, while a remote backend or a large
 problem is validated first and `get_optimization_capabilities` is for when the
-backend list with its limits or the full schema is actually needed; a
-**choosing a backend** section; the rules a first document most often breaks
+backend list with its limits or the full schema is actually needed, the schema
+only on request; a **choosing a backend** section; the rules a first document
+most often breaks
 (schema version `1.1` for integer variables, integer coefficients on
 inequalities, unknown fields being rejected); and one complete minimal problem,
 so an agent learns the document shape before its first call rather than from
-its first error. The field descriptions in `problem_json_schema` serve the same
-purpose one level down. Neither names a configuration value or a limit; those
-come from `get_optimization_capabilities`.
+its first error. The field descriptions in `problem_json_schema` (returned when
+`get_optimization_capabilities` is called with `include_schema: true`) serve
+the same purpose one level down. Neither names a configuration value or a
+limit; those come from `get_optimization_capabilities`.
 
 The backend section is the one piece of guidance that is about the agent's
 own behaviour rather than the document: a backend the user named is used as
@@ -215,18 +217,26 @@ level — is refused as a tool error naming the path, never dropped. See
 
 Describes what this server accepts and which backends are usable right now.
 
-- **Input:** none.
+- **Input:** `include_schema`, an optional boolean that defaults to `false`.
+  The problem JSON schema is roughly three quarters of the full response, so
+  it is left out unless it is asked for: the backend list an agent usually
+  wants is a fraction of the size. Pass `true` when the schema itself is
+  needed — an unfamiliar field, the exact shape of an integer variable, or
+  anything the example in the server instructions does not cover.
 - **Returns:** `OptimizationCapabilities` — the supported variable types,
   constraint operators and objective terms, the accepted schema versions,
-  whether inequalities require integer coefficients, the full problem JSON
-  schema, and one entry per backend with `available`, `enabled`,
-  `unavailable_reason`, its flags, the `seed_min` / `seed_max` range it
-  accepts for `solver.seed` (`null` when it declares none) and its resource
-  limits.
+  whether inequalities require integer coefficients, the installed package
+  version (`annealbridge_version`), `problem_json_schema` (only when
+  `include_schema` is `true`, otherwise `null`), and one entry per backend
+  with `available`, `enabled`, `unavailable_reason`, its flags, the
+  `seed_min` / `seed_max` range it accepts for `solver.seed` (`null` when it
+  declares none) and its resource limits.
 - **When to call:** when the agent needs the list of backends with their
   limits, or the full problem schema. Not before every problem — a small
   binary problem on a local backend can follow the example in the server
-  instructions. It performs no solving and no network requests.
+  instructions. Pass `include_schema: true` when the document needs more
+  than the example in the server instructions shows. It performs no solving
+  and no network requests.
 
 `schema_version` is the newest accepted version and `schema_versions` lists
 them all, newest last; `supported_variable_types` lists `binary` and
@@ -493,8 +503,9 @@ The full sequence below is what a careful run looks like; the fast path after
 it is what a simple problem takes.
 
 1. **`get_optimization_capabilities`** — when the agent needs the list of
-   backends with their limits, or the full schema. It tells it which variable
-   types and operators it may use, which schema version to declare, which
+   backends with their limits, or the full schema (`include_schema: true`).
+   It tells it which variable types and operators it may use, which schema
+   version to declare, which
    backends are `available` *and* `enabled` on this server, and what limits
    they enforce. It is worth the round trip when the document goes beyond the
    shape the server instructions already show, or when a backend's

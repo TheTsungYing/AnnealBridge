@@ -439,7 +439,8 @@ configured.
 | `supported_objective_terms` | array of string | `linear`, `quadratic`. |
 | `inequality_requires_integer_coefficients` | boolean | Whether `<=` / `>=` constraints need integral coefficients and `rhs`. |
 | `backends` | array of [BackendCapability](#backendcapability) | Every registered backend. |
-| `problem_json_schema` | object | The full `OptimizationProblem` JSON Schema, identical to `annealbridge export-schema`. |
+| `problem_json_schema` | object \| null | The full `OptimizationProblem` JSON Schema, identical to `annealbridge export-schema`. `null` unless the MCP tool was called with `include_schema: true`; the CLI always fills it. |
+| `annealbridge_version` | string \| null | The installed package version that produced this view (`"unknown"` outside an installed distribution). |
 
 ### BackendCapability
 

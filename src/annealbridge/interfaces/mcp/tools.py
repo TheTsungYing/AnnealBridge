@@ -11,7 +11,10 @@ the full validation once per registered backend — would otherwise freeze the
 event loop and with it every other client of the server.
 """
 
+from typing import Annotated
+
 import anyio
+from pydantic import Field
 
 from annealbridge.interfaces.mcp.models import (
     OptimizationCapabilities,
@@ -26,17 +29,35 @@ from annealbridge.validation import (
 
 
 @mcp.tool()
-async def get_optimization_capabilities() -> OptimizationCapabilities:
+async def get_optimization_capabilities(
+    include_schema: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to include the full OptimizationProblem JSON Schema "
+                "as problem_json_schema. The default false keeps the response "
+                "small; pass true only when the schema itself is needed, e.g. "
+                "for integer variables or an unfamiliar field."
+            )
+        ),
+    ] = False,
+) -> OptimizationCapabilities:
     """Describe what this optimization server accepts and which solver backends
     are usable right now.
 
-    Call this when you need the supported problem schema (variable types,
-    constraint operators, objective terms and the full JSON schema) or, per
+    Call this when you need the supported problem vocabulary (variable types,
+    constraint operators, objective terms, accepted schema versions) or, per
     backend, whether it is installed/configured (available), whether server
     policy permits it (enabled), and its resource limits. It is not required
     before every problem: for a small binary problem on a local backend the
     example in the server instructions already shows the document shape. This
     performs no solving and no network requests.
+
+    The full problem JSON schema is several times the size of everything
+    else, so problem_json_schema is null unless include_schema is true. Ask
+    for it when the document needs more than the example shows — integer
+    variables, soft constraints, solver preferences — or before inventing a
+    field; every field description is in it.
 
     supported_variable_types lists the variable types a problem may declare —
     "binary" and "integer" — and schema_versions lists every problem schema
@@ -45,7 +66,9 @@ async def get_optimization_capabilities() -> OptimizationCapabilities:
     "version": "1.0" accepts binary variables only.
     """
     state = get_state()
-    return build_capabilities(state.registry, state.policy)
+    return build_capabilities(
+        state.registry, state.policy, include_schema=include_schema
+    )
 
 
 @mcp.tool()
@@ -67,8 +90,9 @@ async def validate_optimization_problem(
     solve.
 
     A field the schema does not declare is a tool error naming its path,
-    never ignored: check the problem_json_schema from
-    get_optimization_capabilities before inventing one.
+    never ignored: check the schema (get_optimization_capabilities with
+    include_schema: true returns it as problem_json_schema) before inventing
+    one.
 
     The estimate follows the model type the chosen backend compiles to. On a
     bqm backend it counts the slack bits of every inequality constraint plus
