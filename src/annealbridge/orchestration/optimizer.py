@@ -636,6 +636,61 @@ def _infeasible_message(
     return message, warnings
 
 
+def _exact_number(value: float) -> str:
+    """Render integral floats without a trailing ``.0`` (``17``, not ``17.0``).
+
+    Non-integral values keep their full ``repr``: the message is meant to
+    be quoted, so it must not say ``1.23457e+06`` for an objective the
+    result records as ``1234567.5``. Deliberately not the CLI's
+    ``_format_number``, which rounds with ``:g`` for a table.
+    """
+    if float(value).is_integer():
+        return str(int(value))
+    return repr(float(value))
+
+
+def _success_message(
+    backend: str,
+    direction: str,
+    optimality_proven: bool,
+    attempt: SolveAttempt,
+    solutions: list[Solution],
+) -> str:
+    """The success result's one-line summary, for an agent to relay as is.
+
+    Built only from facts the result already carries — the backend, the
+    proof flag, the rank-1 objective and soft violation, and the attempt's
+    candidate counts — so it is deterministic: no timings, no random
+    values, and (like every recommended_action) no configuration value or
+    limit. Pure so each wording can be pinned by a test without a backend.
+
+    ``solutions`` must be non-empty with rank 1 first, as ``process_candidates``
+    returns it. The soft violation is quoted exactly as ``soft_violation_score``
+    records it, tolerance-free like the field itself. Only the unproven
+    wording can name a later attempt: an exhaustive backend, the only kind
+    that proves optimality, is given a single attempt (``_max_attempts``).
+    """
+    best = solutions[0]
+    objective = f"rank 1 has objective {_exact_number(best.objective_value)}"
+    if best.soft_violation_score > 0:
+        objective += (
+            f" with soft violation {_exact_number(best.soft_violation_score)}"
+        )
+    objective += f" ({direction})"
+    if optimality_proven:
+        return (
+            f"{backend} proved optimality: {objective}; "
+            f"{attempt.feasible_samples} of {attempt.unique_samples} distinct "
+            f"candidates were feasible, {len(solutions)} returned."
+        )
+    on_attempt = f" on attempt {attempt.attempt}" if attempt.attempt > 1 else ""
+    return (
+        f"{backend} found {attempt.unique_samples} distinct candidates "
+        f"({attempt.feasible_samples} feasible), {len(solutions)} "
+        f"returned{on_attempt}: {objective}; optimality is not proven."
+    )
+
+
 class OptimizationService:
     """End-to-end solve pipeline over pluggable components (spec §28)."""
 
@@ -1233,20 +1288,19 @@ class OptimizationService:
         feasible_samples = processed.feasible_samples
         state.infeasibility = processed.infeasibility
         validate_ms = _elapsed_ms(validate_started)
-        state.attempts.append(
-            SolveAttempt(
-                attempt=attempt,
-                penalty=penalty,
-                samples_received=raw.num_samples,
-                unique_samples=unique_samples,
-                feasible_samples=feasible_samples,
-                compiled_variables=compiled.num_variables,
-                compiled_interactions=compiled.num_interactions,
-                compile_ms=compile_ms,
-                solve_ms=solve_ms,
-                validate_ms=validate_ms,
-            )
+        current = SolveAttempt(
+            attempt=attempt,
+            penalty=penalty,
+            samples_received=raw.num_samples,
+            unique_samples=unique_samples,
+            feasible_samples=feasible_samples,
+            compiled_variables=compiled.num_variables,
+            compiled_interactions=compiled.num_interactions,
+            compile_ms=compile_ms,
+            solve_ms=solve_ms,
+            validate_ms=validate_ms,
         )
+        state.attempts.append(current)
         logger.info(
             "Problem %s backend %s attempt %d: model_type=%s, "
             "hard_penalty=%s, compiled_variables=%d, samples=%d, "
@@ -1263,19 +1317,23 @@ class OptimizationService:
             solutions[0].ranking_score if solutions else None,
         )
         if solutions:
+            # Mirrors ``infeasibility_proven``: an exhaustive backend
+            # that returned samples enumerated every assignment, every
+            # business assignment was re-validated and ranked, so rank 1
+            # is the global optimum of the ranking score. Computed once
+            # so the field and the message can never disagree.
+            optimality_proven = backend.is_exhaustive and raw.num_samples > 0
             return SolveResult(
                 status="success",
                 backend=backend.name,
                 objective_direction=direction,
                 solutions=solutions,
                 attempts=state.attempts,
-                # Mirrors ``infeasibility_proven``: an exhaustive
-                # backend that returned samples enumerated every
-                # assignment, every business assignment was
-                # re-validated and ranked, so rank 1 is the global
-                # optimum of the ranking score.
-                optimality_proven=backend.is_exhaustive and raw.num_samples > 0,
+                optimality_proven=optimality_proven,
                 metadata=raw.metadata,
+                message=_success_message(
+                    backend.name, direction, optimality_proven, current, solutions
+                ),
             )
         return None
 

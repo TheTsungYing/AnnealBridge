@@ -468,8 +468,15 @@ class SolveResult(BaseModel):
     message: str | None = Field(
         default=None,
         description=(
-            "Human-readable summary, mainly used to explain an infeasible "
-            "result. Null when there is nothing to add."
+            "Human-readable one-line summary of the result. On success: "
+            "which backend produced it, whether optimality is proven, the "
+            "rank-1 objective with its direction (and its soft violation "
+            "when non-zero), how many distinct candidates the attempt saw, "
+            "how many were feasible and how many are returned, and the "
+            "attempt number when a retry produced it. On infeasible: why "
+            "nothing feasible was found. On a failure: the first error's "
+            "message. Deterministic — it never contains timings. Null when "
+            "there is nothing to add."
         ),
     )
     elapsed_ms: float | None = Field(

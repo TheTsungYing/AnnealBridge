@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A successful `SolveResult` now carries a `message`: one deterministic
+  English sentence an agent can relay as is, where the field used to be null
+  unless something had gone wrong. It names the backend that produced the
+  answer, whether optimality is proven, the rank-1 objective with the
+  optimization direction, and how many distinct candidates the attempt saw,
+  how many of those were feasible and how many are returned — every one a
+  fact the result already carries in a field of its own, computed from the
+  same values, so the sentence cannot disagree with what sits beside it.
+  There are two shapes, one per kind of backend: `exact proved optimality:
+  rank 1 has objective 17 (maximize); 10 of 16 distinct candidates were
+  feasible, 5 returned.` when an exhaustive backend enumerated everything,
+  and `simulated_annealing found 11 distinct candidates (10 feasible), 5
+  returned: rank 1 has objective 17 (maximize); optimality is not proven.`
+  for a heuristic. `with soft violation X` follows the objective when rank 1
+  carries one, and the heuristic shape adds `on attempt N` when the answer
+  came from a retry (an exhaustive backend is given a single attempt).
+  It deliberately holds no timing and no configuration value or limit, so the
+  same request produces the same sentence — timings stay in `elapsed_ms` and
+  the per-attempt fields. The infeasible and failure paths keep the messages
+  they had, and the `message` field description now documents all three.
 - `recommend` orders the local heuristics by problem shape instead of by
   registry position, from two new `SolverCapabilities` declarations that are
   `False` unless a backend opts in: `strong_on_large_dense` (declared by

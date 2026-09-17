@@ -2,14 +2,21 @@
 refactor: ``_infeasible_message`` is a pure function and ``_max_attempts``
 now returns an ``_AttemptBudget``, so each wording and each budget cut can
 be pinned directly instead of through a whole solve.
+
+``_success_message`` is pure for the same reason: its wording is pinned
+here word for word, without a backend, a compiler and a policy behind it.
 """
 
 import pytest
 
 from annealbridge.compiler import BQMCompiler, CQMCompiler
-from annealbridge.models import SolverPreferences
+from annealbridge.models import Solution, SolveAttempt, SolverPreferences
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
-from annealbridge.orchestration.optimizer import _infeasible_message
+from annealbridge.orchestration.optimizer import (
+    _exact_number,
+    _infeasible_message,
+    _success_message,
+)
 from annealbridge.solvers import SolverRegistry
 from tests.fakes.declared_backend import (
     FAKE_DECLARED_NAME,
@@ -79,6 +86,118 @@ class TestInfeasibleMessage:
         )
         assert "in 3 attempt(s)" in message
         assert warnings == []
+
+
+def solution(objective: float, soft: float = 0.0, rank: int = 1) -> Solution:
+    """One ranked solution; only the fields the message reads matter here."""
+    return Solution(
+        rank=rank,
+        variables={"x1": 1},
+        objective_value=objective,
+        soft_violation_score=soft,
+        ranking_score=objective - soft,
+        energy=None,
+        sample_count=1,
+        hard_constraints_satisfied=True,
+        constraint_evaluations=[],
+    )
+
+
+def solutions(objective: float, soft: float = 0.0, count: int = 5) -> list[Solution]:
+    """``count`` solutions whose rank 1 carries the given objective."""
+    return [solution(objective, soft, rank) for rank in range(1, count + 1)]
+
+
+def attempt(number: int = 1, unique: int = 16, feasible: int = 10) -> SolveAttempt:
+    """One recorded attempt; the timing and size fields keep their defaults."""
+    return SolveAttempt(
+        attempt=number,
+        penalty=62.0,
+        samples_received=256,
+        unique_samples=unique,
+        feasible_samples=feasible,
+    )
+
+
+class TestExactNumber:
+    def test_integral_value_drops_the_trailing_zero(self):
+        assert _exact_number(17.0) == "17"
+
+    def test_fractional_value_keeps_its_digits(self):
+        assert _exact_number(17.5) == "17.5"
+
+    def test_large_fractional_value_is_not_rounded(self):
+        # The CLI's ``:g`` would print 1.23457e+06; a quoted message must not.
+        assert _exact_number(1234567.5) == "1234567.5"
+
+
+class TestSuccessMessage:
+    def test_proven_on_the_first_attempt(self):
+        message = _success_message(
+            "exact", "maximize", True, attempt(), solutions(17.0)
+        )
+
+        assert message == (
+            "exact proved optimality: rank 1 has objective 17 (maximize); "
+            "10 of 16 distinct candidates were feasible, 5 returned."
+        )
+
+    def test_not_proven_says_so_explicitly(self):
+        message = _success_message(
+            "simulated_annealing", "maximize", False, attempt(), solutions(17.0)
+        )
+
+        assert message == (
+            "simulated_annealing found 16 distinct candidates (10 feasible), "
+            "5 returned: rank 1 has objective 17 (maximize); optimality is "
+            "not proven."
+        )
+
+    def test_not_proven_names_the_attempt_it_succeeded_on(self):
+        # Only the heuristic wording can carry an attempt number: an
+        # exhaustive backend, the only kind that proves optimality, is given
+        # a single attempt by ``_max_attempts``.
+        message = _success_message(
+            "simulated_annealing", "maximize", False, attempt(2), solutions(17.0)
+        )
+
+        assert message == (
+            "simulated_annealing found 16 distinct candidates (10 feasible), "
+            "5 returned on attempt 2: rank 1 has objective 17 (maximize); "
+            "optimality is not proven."
+        )
+
+    def test_soft_violation_is_reported_beside_the_objective(self):
+        message = _success_message(
+            "exact", "maximize", True, attempt(), solutions(17.0, 2.5)
+        )
+
+        assert message == (
+            "exact proved optimality: rank 1 has objective 17 with soft "
+            "violation 2.5 (maximize); 10 of 16 distinct candidates were "
+            "feasible, 5 returned."
+        )
+
+    def test_fractional_objective_keeps_its_digits(self):
+        message = _success_message(
+            "exact", "maximize", True, attempt(), solutions(17.5)
+        )
+
+        assert message == (
+            "exact proved optimality: rank 1 has objective 17.5 (maximize); "
+            "10 of 16 distinct candidates were feasible, 5 returned."
+        )
+
+    def test_minimize_direction_is_echoed(self):
+        message = _success_message(
+            "simulated_annealing", "minimize", False, attempt(), solutions(17.0)
+        )
+
+        assert message == (
+            "simulated_annealing found 16 distinct candidates (10 feasible), "
+            "5 returned: rank 1 has objective 17 (minimize); optimality is "
+            "not proven."
+        )
 
 
 def make_service(**policy_overrides) -> OptimizationService:

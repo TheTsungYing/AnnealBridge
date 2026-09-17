@@ -40,7 +40,7 @@ The outcome of `solve_optimization` / `annealbridge solve`.
 | `errors` | array of [SolveError](#solveerror) | Structured failures. Empty on success. |
 | `warnings` | array of [SolveError](#solveerror) | Non-blocking advice, same structure as an error: the warnings `validate` gives for this backend, then any raised during the run. Present whatever the `status`, except `invalid_problem`. |
 | `metadata` | [SolverExecutionMetadata](#solverexecutionmetadata) \| null | Sanitized execution facts. Present whenever an attempt actually completed, local backends included; `null` when the request failed before any solve finished. |
-| `message` | string \| null | Human-readable summary, mainly used to explain an `infeasible` result. |
+| `message` | string \| null | Human-readable one-line summary of the result. On `success`: which backend produced it, whether optimality is proven, the rank-1 objective with its direction (and its soft violation when non-zero), how many distinct candidates the attempt saw, how many were feasible and how many are returned, and the attempt number when a retry produced it. On `infeasible`: why nothing feasible was found. On a failure: the first error's message. Deterministic — it never contains timings. `null` when there is nothing to add. |
 | `elapsed_ms` | number \| null | Wall-clock milliseconds measured by the service from entering `solve` to returning, problem validation and any wait for a concurrency slot included. Present whatever the `status`. Unrelated to `metadata.timing_us`, which is what a vendor reports about its own side. |
 | `annealbridge_version` | string \| null | The installed package version that produced the result (`"unknown"` outside an installed distribution). |
 
@@ -353,7 +353,7 @@ Ranks 3–5 are elided below; they continue the same pattern down to
     "model_type": "bqm",
     "sampler_reported_feasible": null
   },
-  "message": null,
+  "message": "exact proved optimality: rank 1 has objective 17 (maximize); 10 of 16 distinct candidates were feasible, 5 returned.",
   "elapsed_ms": 6.1,
   "annealbridge_version": "0.2.1"
 }
@@ -372,8 +372,12 @@ on this machine and took the `bqm` path; everything a vendor would report is
 empty, and `num_reads_requested` is `null` because `exact` enumerates rather
 than samples. `optimality_proven` is `true` because
 `exact` enumerated every assignment, so the rank-1 objective of 17 is the
-best any feasible assignment can reach. The `*_ms` values are illustrative:
-they are wall-clock measurements and differ on every run.
+best any feasible assignment can reach. `message` restates exactly these
+facts — the backend, the proof, the rank-1 objective, the 10 feasible out of
+16 distinct candidates and the 5 solutions returned — in one sentence an
+agent can relay. The `*_ms` values are illustrative: they are wall-clock
+measurements and differ on every run, which is why `message` never mentions
+them.
 
 ## ProblemValidationResult
 

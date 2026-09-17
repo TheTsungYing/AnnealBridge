@@ -35,6 +35,9 @@ async def test_solve_knapsack_on_exact_backend(load_example):
 
     assert content["status"] == "success"
     assert content["optimality_proven"] is True
+    # The one-line summary travels with the payload and states the proof.
+    assert isinstance(content["message"], str)
+    assert "proved optimality" in content["message"]
     assert content["annealbridge_version"] == version("annealbridge")
     assert content["elapsed_ms"] >= 0
     attempt = content["attempts"][0]
