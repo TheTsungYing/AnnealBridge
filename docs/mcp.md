@@ -368,6 +368,17 @@ Validates, compiles, solves, re-validates and ranks.
 - **When to call:** only after translating the user's request into explicit
   binary or bounded-integer variables, an objective, and hard or soft linear
   constraints. Natural-language requirements do not belong in the tool input.
+- **Progress:** when the host asked for progress (it sent a progress token
+  with the call), the server sends one progress notification as each stage
+  of each attempt starts — compile, solve, validate — with the message
+  `attempt 2 of 3: solving on simulated_annealing` and the stage count as
+  progress out of the total the attempt budget allows. Nothing finer, never
+  per read, and no configuration value in the message. Without a progress
+  token nothing is sent. A notification that cannot be delivered (the host
+  went away mid-solve) is logged once on the server and the rest are
+  skipped; the solve itself finishes and returns its result regardless. The
+  server uses progress notifications only, not MCP logging, which the
+  2026-07-28 protocol deprecates and delivers only on a per-request opt-in.
 
 Things worth knowing before calling it:
 

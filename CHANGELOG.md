@@ -29,6 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it. The server instructions now name both surfaces, and
   `scripts/check_install.py` checks an installed wheel lists them and serves
   the packaged example unchanged.
+- `solve_optimization` reports progress. A host that sends a progress token
+  with the call receives one MCP progress notification as each stage of each
+  attempt starts — compile, solve, validate — carrying a message such as
+  `attempt 2 of 3: solving on simulated_annealing` and the stage count as
+  progress out of the total the attempt budget allows; without a token
+  nothing is sent, and a notification the host can no longer receive is
+  logged once and the rest skipped while the solve finishes regardless.
+  Underneath, `OptimizationService.solve` grew a keyword-only `on_progress`
+  callback, called with a new `orchestration.SolveProgress` (attempt number,
+  attempt budget, stage, backend name, and the message above) on the solving
+  thread and outside every timing window; an exception it raises is logged
+  and dropped, never turned into `solver_error`. Without the argument the
+  service behaves exactly as before, and the CLI passes none. `validate` and
+  `recommend` report no progress.
 - A successful `SolveResult` now carries a `message`: one deterministic
   English sentence an agent can relay as is, where the field used to be null
   unless something had gone wrong. It names the backend that produced the

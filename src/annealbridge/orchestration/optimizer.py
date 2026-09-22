@@ -53,6 +53,11 @@ from annealbridge.orchestration.limits import (
     select_model_type,
 )
 from annealbridge.orchestration.policy import ExecutionPolicy
+from annealbridge.orchestration.progress import (
+    ProgressCallback,
+    SolveProgress,
+    Stage,
+)
 from annealbridge.orchestration.routing import recommend
 from annealbridge.penalty import PenaltyStrategy, ScaledPenaltyStrategy
 from annealbridge.solvers import (
@@ -581,12 +586,45 @@ class _AttemptState:
     infeasibility proof (``num_samples``); ``infeasibility`` is the last
     attempt's diagnosis, so an infeasible result explains the final
     (highest-penalty) attempt.
+
+    ``on_progress`` and ``max_attempts`` carry the caller's progress callback
+    to ``_solve_attempt`` without widening its signature; ``max_attempts``
+    is set once the attempt budget is known.
     """
 
     attempts: list[SolveAttempt] = field(default_factory=list)
     raw: RawSolverResult | None = None
     last_metadata: SolverExecutionMetadata | None = None
     infeasibility: InfeasibilityDiagnostics | None = None
+    on_progress: ProgressCallback | None = None
+    max_attempts: int = 0
+
+    def emit(self, attempt: int, stage: Stage, backend_name: str) -> None:
+        """Call the progress callback, if any, for a stage that is starting.
+
+        The callback runs on the solving thread and outside every
+        per-attempt timing window. Whatever it raises is logged and dropped
+        here, on purpose:
+        ``_run_attempts`` turns any exception into ``solver_error``, and a
+        progress listener (a host that went away mid-solve) must never
+        change the result.
+        """
+        if self.on_progress is None:
+            return
+        event = SolveProgress(
+            attempt=attempt,
+            max_attempts=self.max_attempts,
+            stage=stage,
+            backend=backend_name,
+        )
+        try:
+            self.on_progress(event)
+        except Exception as exc:
+            logger.warning(
+                "progress callback raised %s: %s; solving continues",
+                type(exc).__name__,
+                exc,
+            )
 
 
 def _infeasible_message(
@@ -852,7 +890,12 @@ class OptimizationService:
         """
         return recommend(problem, self._registry, self._policy, self._compilers)
 
-    def solve(self, problem: OptimizationProblem) -> SolveResult:
+    def solve(
+        self,
+        problem: OptimizationProblem,
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> SolveResult:
         """Solve ``problem`` and return a structured :class:`SolveResult`.
 
         Never raises for domain errors: validation and compilation failures
@@ -866,6 +909,12 @@ class OptimizationService:
         describe the problem as submitted, and an agent that skipped
         ``validate`` must still see them. Only ``invalid_problem`` carries
         none: warnings are produced for an error-free problem only.
+
+        ``on_progress``, when given, is called with a
+        :class:`~annealbridge.orchestration.progress.SolveProgress` as each
+        stage (compile, solve, validate) of each attempt starts, on this
+        thread. An exception it raises is logged and ignored; it cannot
+        change the result. Without it the behaviour is exactly as before.
         """
         started = time.perf_counter()
         validation, _, _ = self._validate_against_backend(problem)
@@ -877,7 +926,7 @@ class OptimizationService:
             )
             result = self._failure("invalid_problem", None, None, validation.errors)
         else:
-            result = self._dispatch(problem)
+            result = self._dispatch(problem, on_progress=on_progress)
         # Every path is stamped the same way: the service's own wall clock
         # (independent of the vendor-reported ``metadata.timing_us``) and
         # the package version that produced the result.
@@ -889,7 +938,12 @@ class OptimizationService:
             }
         )
 
-    def _dispatch(self, problem: OptimizationProblem) -> SolveResult:
+    def _dispatch(
+        self,
+        problem: OptimizationProblem,
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> SolveResult:
         """§16.2 steps 2–6 for a validated problem: resolve the backend,
         gate it, take a concurrency slot and run the attempts."""
         direction = problem.objective.direction
@@ -928,7 +982,9 @@ class OptimizationService:
                 ],
             )
         try:
-            return self._run_attempts(problem, backend, direction)
+            return self._run_attempts(
+                problem, backend, direction, on_progress=on_progress
+            )
         finally:
             self._solve_slots.release()
 
@@ -1224,6 +1280,7 @@ class OptimizationService:
                 penalty,
                 metadata=state.last_metadata,
             )
+        state.emit(attempt, "compile", backend.name)
         compile_started = time.perf_counter()
         compiled = self._compile(compiler, problem, penalty)
         compile_ms = _elapsed_ms(compile_started)
@@ -1264,6 +1321,7 @@ class OptimizationService:
                 [time_limit_error],
                 attempts=state.attempts,
             )
+        state.emit(attempt, "solve", backend.name)
         solve_started = time.perf_counter()
         raw = backend.solve(compiled, problem.solver)
         solve_ms = _elapsed_ms(solve_started)
@@ -1275,6 +1333,7 @@ class OptimizationService:
             )
         state.raw = raw
         state.last_metadata = raw.metadata
+        state.emit(attempt, "validate", backend.name)
         # 3b §16 step 12a: the compiler strips internal columns and
         # decodes integer variables; the candidate pipeline only
         # ever sees business variables in problem order.
@@ -1342,6 +1401,8 @@ class OptimizationService:
         problem: OptimizationProblem,
         backend: SolverBackend,
         direction: str,
+        *,
+        on_progress: ProgressCallback | None = None,
     ) -> SolveResult:
         """3a §16.2 steps 7–19: the compile/solve/validate loop.
 
@@ -1351,7 +1412,7 @@ class OptimizationService:
         ``solver_error`` — is kept by the service itself rather than
         delegated to every backend's own wrapping.
         """
-        state = _AttemptState()
+        state = _AttemptState(on_progress=on_progress)
         # The current penalty, so the NonFiniteModelError handler can tell
         # the hard-penalty path from a penalty-free one; None until
         # ``_prepare_attempts`` has chosen it.
@@ -1362,6 +1423,7 @@ class OptimizationService:
                 return plan
             penalty = plan.initial_penalty
             max_attempts = plan.budget.max_attempts
+            state.max_attempts = max_attempts
             for attempt in range(1, max_attempts + 1):
                 result = self._solve_attempt(
                     problem, backend, plan, direction, attempt, penalty, state

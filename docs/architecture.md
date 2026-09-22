@@ -106,7 +106,7 @@ Everything lives under `src/annealbridge/`.
 | `penalty/` | The penalty strategy: objective scale, penalty scale, initial penalty and the doubling ladder |
 | `compiler/` | The BQM compiler (slack and integer encoding), the CQM compiler, and the `decode` step that folds encoding bits back into integer values |
 | `solvers/` | The eight solver backends, the registry, the `SolverBackend` protocol, the read sharding the two `dwave-samplers` backends share (`solvers/sharding.py` — not a backend), and metadata sanitisation / redaction |
-| `orchestration/` | `OptimizationService`, `ExecutionPolicy`, model-type routing, candidate arrays |
+| `orchestration/` | `OptimizationService`, `ExecutionPolicy`, model-type routing, candidate arrays, progress events |
 | `config/` | `ServerSettings` (the `ANNEALBRIDGE_*` environment) — importable by the interfaces only |
 | `interfaces/` | `capabilities.py` and `composition.py` shared by both adapters, plus `cli/` and `mcp/` |
 
@@ -133,6 +133,14 @@ Everything lives under `src/annealbridge/`.
 5. **Rank** the feasible solutions by `ranking_score` with deterministic
    tie-breaking, and keep the top `top_k`.
 6. **Retry** with a doubled hard penalty when nothing feasible was found.
+
+`solve` also takes a keyword-only `on_progress` callback. It is called once
+with a `SolveProgress` as the compile, solve and validate stage of each attempt
+begins, on the thread running the solve and outside every per-attempt timing
+window, so a listener never inflates an attempt's reported durations. Whatever
+the callback raises is logged and dropped: it can never change the result. The
+MCP server passes one to turn those events into progress notifications; the
+CLI passes none.
 
 The retry ladder is deliberately narrow. It runs at most once per attempt
 budget, and the budget is `1` — a single attempt, no retry — whenever any of

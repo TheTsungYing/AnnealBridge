@@ -11,9 +11,12 @@ the full validation once per registered backend — would otherwise freeze the
 event loop and with it every other client of the server.
 """
 
+import functools
+import logging
 from typing import Annotated
 
 import anyio
+from mcp.server.mcpserver import Context
 from pydantic import Field
 
 from annealbridge.interfaces.mcp.models import (
@@ -22,10 +25,54 @@ from annealbridge.interfaces.mcp.models import (
 )
 from annealbridge.interfaces.mcp.server import get_state, mcp
 from annealbridge.models import OptimizationProblem, SolveResult
+from annealbridge.orchestration import ProgressCallback, SolveProgress
 from annealbridge.validation import (
     BackendRecommendationResult,
     ProblemValidationResult,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _progress_reporter(ctx: Context) -> ProgressCallback:
+    """Turn the core's progress events into MCP progress notifications.
+
+    The core calls the callback on the worker thread ``solve`` runs on, so
+    each event hops back to the event loop with ``anyio.from_thread.run``.
+    ``ctx.report_progress`` is a no-op when the client sent no progress
+    token, so a host that does not show progress costs one no-op round trip
+    to the event loop per stage and nothing more.
+
+    A notification that cannot be delivered (the client went away, the
+    stream closed) is logged once at INFO and every later event is skipped:
+    the solve itself must finish and return its result regardless, and one
+    line says why the host saw nothing more. Only progress notifications are
+    used — the MCP logging capability is deprecated in the 2026-07-28
+    protocol and delivered only on a per-request opt-in.
+    """
+    dropped = False
+
+    def report(event: SolveProgress) -> None:
+        nonlocal dropped
+        if dropped:
+            return
+        try:
+            anyio.from_thread.run(
+                ctx.report_progress,
+                float(event.step),
+                float(event.total_steps),
+                event.message,
+            )
+        except Exception as exc:
+            dropped = True
+            logger.info(
+                "progress notification dropped (%s: %s); the remaining ones "
+                "for this solve are skipped",
+                type(exc).__name__,
+                exc,
+            )
+
+    return report
 
 
 @mcp.tool()
@@ -137,7 +184,9 @@ async def recommend_backend(problem: OptimizationProblem) -> BackendRecommendati
 
 
 @mcp.tool()
-async def solve_optimization(problem: OptimizationProblem) -> SolveResult:
+async def solve_optimization(
+    problem: OptimizationProblem, ctx: Context
+) -> SolveResult:
     """Solve a structured binary or bounded-integer combinatorial optimization
     problem.
 
@@ -186,4 +235,11 @@ async def solve_optimization(problem: OptimizationProblem) -> SolveResult:
     answer which backend ran and why.
     """
     state = get_state()
-    return await anyio.to_thread.run_sync(state.service.solve, problem)
+    # One progress notification as each stage of each attempt starts
+    # ("attempt 2 of 3: solving on simulated_annealing"), for hosts that
+    # asked for progress; see ``_progress_reporter``.
+    return await anyio.to_thread.run_sync(
+        functools.partial(
+            state.service.solve, problem, on_progress=_progress_reporter(ctx)
+        )
+    )

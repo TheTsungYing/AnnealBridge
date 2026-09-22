@@ -11,6 +11,7 @@ from annealbridge.orchestration.optimizer import (
     process_candidates,
 )
 from annealbridge.orchestration.policy import ExecutionPolicy
+from annealbridge.orchestration.progress import ProgressCallback, SolveProgress
 from annealbridge.orchestration.routing import REASON_DESCRIPTIONS, recommend
 
 __all__ = [
@@ -18,7 +19,9 @@ __all__ = [
     "ExecutionPolicy",
     "OptimizationService",
     "ProcessedCandidates",
+    "ProgressCallback",
     "REASON_DESCRIPTIONS",
+    "SolveProgress",
     "recommend",
     "deduplicate_samples",
     "diagnose_infeasibility",

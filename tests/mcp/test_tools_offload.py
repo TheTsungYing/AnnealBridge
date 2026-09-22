@@ -74,9 +74,11 @@ def record_calls(monkeypatch, method: str) -> list[tuple[int, bool]]:
     original = getattr(service, method)
     calls: list[tuple[int, bool]] = []
 
-    def wrapper(problem):
+    # ``solve`` is called with ``on_progress=`` as well; the wrapper passes
+    # every keyword through so it observes, never narrows, the real call.
+    def wrapper(problem, **kwargs):
         calls.append((threading.get_ident(), running_loop()))
-        return original(problem)
+        return original(problem, **kwargs)
 
     monkeypatch.setattr(service, method, wrapper)
     return calls
