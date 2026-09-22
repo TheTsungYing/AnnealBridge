@@ -57,7 +57,7 @@ fixture with a no-op — it is the one place that needs the real credentials.
 | --- | --- |
 | `tests/unit/` | Models, validators, the bounds-aware size estimates (checked against brute-force enumeration), slack and integer encoding, both compilers including their integer paths, the `decode` step, the penalty strategy, the policy limits, backend routing, candidate arrays over integer rows, and each solver backend |
 | `tests/scenarios/` | The full JSON → validate → compile → solve → re-validate → rank pipeline on the shipped examples, including the integer knapsack down all five paths (exact, simulated annealing, tabu, simulated bifurcation, a fake CQM backend) reaching the same optimum |
-| `tests/mcp/` | The four MCP tools driven through an in-memory MCP client, plus the tool list, the generated schemas, the thread offload and the stdio entry point (a few real subprocess checks; the rest of its argument and settings handling in-process) |
+| `tests/mcp/` | The four MCP tools, three prompts and five resources driven through an in-memory MCP client, plus the tool list, the generated schemas, the thread offload, the progress notifications and the stdio entry point (a few real subprocess checks; the rest of its argument and settings handling in-process) |
 | `tests/remote_mock/` | The D-Wave backends against mocked samplers (with the contract all three Ocean backends share written once, in `ocean_contract.py`) and the Fujitsu backend against a scripted HTTP transport — request shape, polling, delete / cancel, every error mapping — plus the real `UrllibTransport` against a loopback server and the credential-leak suite |
 | `tests/remote_live/` | Opt-in tests against real vendor hardware (see above) |
 | `tests/architecture/` | The import boundaries, the no-backend-name rule, the no-third-party-HTTP rule and the fifth-backend rule, all described in [Architecture](architecture.md#enforced-boundaries) |
@@ -99,8 +99,9 @@ re-recording the other is a failure rather than a silent gap.
 - **Scenario tests run the whole pipeline.** A scenario starts from problem
   JSON and goes through `OptimizationService`; calling an internal function
   directly and labelling it an integration test does not count.
-- **MCP tests go through a real client.** The four tools are exercised over an
-  actual MCP client session, not by calling the Python functions underneath.
+- **MCP tests go through a real client.** The four tools, the prompts and the
+  resources are exercised over an actual MCP client session, not by calling
+  the Python functions underneath.
 
 ## Continuous integration
 

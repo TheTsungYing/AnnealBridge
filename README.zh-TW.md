@@ -124,6 +124,12 @@ claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
 可用，server instructions 會要求 agent 先列出排在前面的選項並請你決定，而不
 是自行選定。
 
+如果你的 host 會在輸入選單列出 prompts，其中三個──`pick_subset`、`assign`
+與 `schedule_shifts`──各自帶著 agent 把你自己的句子寫成一種日常請求類型的
+問題文件，再由它求解。server 同時提供 resources：`annealbridge://examples/` 底下的四個範例
+文件，以及 `annealbridge://schema` 的完整問題 schema，agent 可以直接讀完整
+範例或 schema，不必用猜的。
+
 **它不適合什麼。** AnnealBridge 不處理連續（實數）變數、非線性目標函式或非
 線性限制式。只有 `exact` 能證明一個答案是最佳解、或證明不存在可行解，而且它
 編譯後的變數（含 slack bits）預設上限 24 個；其他本機 backend
@@ -220,8 +226,9 @@ Optimality proven: yes
 
 repository 裡有四個可直接執行的範例：[背包問題](examples/knapsack.json)、
 [指派問題](examples/assignment.json)、[TSP](examples/tsp.json) 與
-[整數背包問題](examples/integer_knapsack.json)。安裝後的 wheel 不含這些檔案，
-請從 checkout 或 GitHub 取得。
+[整數背包問題](examples/integer_knapsack.json)。安裝後的 wheel 不會留下一個
+CLI 讀得到的 `examples/` 目錄，請從 checkout 或 GitHub 取得；MCP server 則以
+`annealbridge://examples/` 底下的 resources 提供同樣這四個文件。
 
 ## 運作方式
 
@@ -293,7 +300,7 @@ agent 永遠不必寫 QUBO 矩陣、penalty 權重、slack 變數或整數編碼
 | [docs/output-format.md](docs/output-format.md) | `SolveResult` 以及它帶的每一個欄位 |
 | [docs/errors.md](docs/errors.md) | 錯誤碼清單、warning code、reason code、exit code |
 | [docs/cli.md](docs/cli.md) | `annealbridge` 命令列 |
-| [docs/mcp.md](docs/mcp.md) | MCP server、工具、host 設定、Inspector |
+| [docs/mcp.md](docs/mcp.md) | MCP server、工具、prompts、resources、host 設定、Inspector |
 | [docs/backends.md](docs/backends.md) | 八個 backend、D-Wave 與 Fujitsu 設定、如何新增 backend |
 | [docs/configuration.md](docs/configuration.md) | 每一個 `ANNEALBRIDGE_*` 變數與廠商憑證 |
 | [docs/architecture.md](docs/architecture.md) | 分層、套件結構、設計原則 |

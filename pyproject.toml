@@ -79,6 +79,12 @@ annealbridge-mcp = "annealbridge.interfaces.mcp_entrypoint:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The example problems the MCP server serves as resources. They are byte-for-byte
+# copies of the repository's examples/ (a test holds the two equal) and must
+# reach the wheel, which the repository directory never does.
+[tool.setuptools.package-data]
+"annealbridge.interfaces.mcp" = ["examples/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Deselect the opt-in live remote tests by default so a plain `pytest` never

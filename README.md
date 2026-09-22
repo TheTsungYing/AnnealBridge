@@ -134,6 +134,14 @@ when you did not name a backend and more than one local backend fits, the
 server instructions tell the agent to show the top entries and ask which to
 run rather than to decide for you.
 
+If your host lists prompts in its input menu, three of them — `pick_subset`,
+`assign` and `schedule_shifts` — walk the agent from your own sentence to a
+problem document of that everyday shape, which it then solves. The server
+also serves resources: the four
+example documents under `annealbridge://examples/` and the full problem
+schema at `annealbridge://schema`, so an agent can read a complete example or
+the schema itself instead of guessing.
+
 **What it is not for.** AnnealBridge does not handle continuous
 (real-valued) variables, non-linear objectives or non-linear constraints.
 Only `exact` proves that an answer is optimal or that no feasible one
@@ -237,7 +245,9 @@ Four ready-to-run examples live in the repository —
 [assignment](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/assignment.json),
 [TSP](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/tsp.json) and
 [integer knapsack](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/integer_knapsack.json).
-The installed wheel does not ship them; take them from a checkout or from GitHub.
+An installed wheel leaves no `examples/` directory for the CLI to read, so
+take them from a checkout or from GitHub; the MCP server serves the same four
+documents as the resources under `annealbridge://examples/`.
 
 ## How it works
 
@@ -316,7 +326,7 @@ The pages below live under [docs/](https://github.com/TheTsungYing/AnnealBridge/
 | [docs/output-format.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/output-format.md) | `SolveResult` and every field it carries |
 | [docs/errors.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/errors.md) | Error catalog, warning codes, reason codes, exit codes |
 | [docs/cli.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/cli.md) | The `annealbridge` command line |
-| [docs/mcp.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/mcp.md) | The MCP server, tools, host configuration, Inspector |
+| [docs/mcp.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/mcp.md) | The MCP server: tools, prompts, resources, host configuration, Inspector |
 | [docs/backends.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/backends.md) | The eight backends, D-Wave and Fujitsu setup, adding a backend |
 | [docs/configuration.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/configuration.md) | Every `ANNEALBRIDGE_*` variable and the vendor credentials |
 | [docs/architecture.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/architecture.md) | Layers, package layout, design principles |

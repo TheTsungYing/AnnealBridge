@@ -38,6 +38,12 @@ async def test_instructions_reach_the_client():
     # How a recommendation becomes the one backend the request carries.
     assert "Choosing solver.backend" in instructions
     assert "R_DENSE_STRENGTH" in instructions
+    # The prompts and resources the host also lists, so an agent that only
+    # reads the instructions still learns they exist.
+    for prompt in ("pick_subset", "assign", "schedule_shifts"):
+        assert prompt in instructions
+    assert "annealbridge://examples/" in instructions
+    assert "annealbridge://schema" in instructions
 
 
 async def test_version_is_the_installed_distribution_version():

@@ -1,0 +1,107 @@
+{
+  "version": "1.0",
+  "name": "assignment",
+  "description": "Assign 3 workers to 3 tasks (one task per worker, one worker per task) minimizing total cost. Costs: alice clean=4 cook=2 drive=8; bob clean=3 cook=7 drive=5; carol clean=6 cook=4 drive=3. Optimum: alice=cook, bob=clean, carol=drive with total cost 8.",
+  "variables": [
+    {"name": "alice_clean", "type": "binary", "description": "Alice does cleaning (cost 4)"},
+    {"name": "alice_cook", "type": "binary", "description": "Alice does cooking (cost 2)"},
+    {"name": "alice_drive", "type": "binary", "description": "Alice does driving (cost 8)"},
+    {"name": "bob_clean", "type": "binary", "description": "Bob does cleaning (cost 3)"},
+    {"name": "bob_cook", "type": "binary", "description": "Bob does cooking (cost 7)"},
+    {"name": "bob_drive", "type": "binary", "description": "Bob does driving (cost 5)"},
+    {"name": "carol_clean", "type": "binary", "description": "Carol does cleaning (cost 6)"},
+    {"name": "carol_cook", "type": "binary", "description": "Carol does cooking (cost 4)"},
+    {"name": "carol_drive", "type": "binary", "description": "Carol does driving (cost 3)"}
+  ],
+  "objective": {
+    "direction": "minimize",
+    "linear_terms": [
+      {"variable": "alice_clean", "coefficient": 4},
+      {"variable": "alice_cook", "coefficient": 2},
+      {"variable": "alice_drive", "coefficient": 8},
+      {"variable": "bob_clean", "coefficient": 3},
+      {"variable": "bob_cook", "coefficient": 7},
+      {"variable": "bob_drive", "coefficient": 5},
+      {"variable": "carol_clean", "coefficient": 6},
+      {"variable": "carol_cook", "coefficient": 4},
+      {"variable": "carol_drive", "coefficient": 3}
+    ]
+  },
+  "constraints": [
+    {
+      "id": "alice_one_task",
+      "description": "Alice does exactly one task",
+      "type": "hard",
+      "terms": [
+        {"variable": "alice_clean", "coefficient": 1},
+        {"variable": "alice_cook", "coefficient": 1},
+        {"variable": "alice_drive", "coefficient": 1}
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "bob_one_task",
+      "description": "Bob does exactly one task",
+      "type": "hard",
+      "terms": [
+        {"variable": "bob_clean", "coefficient": 1},
+        {"variable": "bob_cook", "coefficient": 1},
+        {"variable": "bob_drive", "coefficient": 1}
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "carol_one_task",
+      "description": "Carol does exactly one task",
+      "type": "hard",
+      "terms": [
+        {"variable": "carol_clean", "coefficient": 1},
+        {"variable": "carol_cook", "coefficient": 1},
+        {"variable": "carol_drive", "coefficient": 1}
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "clean_one_worker",
+      "description": "Cleaning is done by exactly one worker",
+      "type": "hard",
+      "terms": [
+        {"variable": "alice_clean", "coefficient": 1},
+        {"variable": "bob_clean", "coefficient": 1},
+        {"variable": "carol_clean", "coefficient": 1}
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "cook_one_worker",
+      "description": "Cooking is done by exactly one worker",
+      "type": "hard",
+      "terms": [
+        {"variable": "alice_cook", "coefficient": 1},
+        {"variable": "bob_cook", "coefficient": 1},
+        {"variable": "carol_cook", "coefficient": 1}
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "drive_one_worker",
+      "description": "Driving is done by exactly one worker",
+      "type": "hard",
+      "terms": [
+        {"variable": "alice_drive", "coefficient": 1},
+        {"variable": "bob_drive", "coefficient": 1},
+        {"variable": "carol_drive", "coefficient": 1}
+      ],
+      "operator": "==",
+      "rhs": 1
+    }
+  ],
+  "solver": {
+    "backend": "exact"
+  }
+}

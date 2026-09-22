@@ -19,7 +19,7 @@ rejected document produces, see [Errors and warnings](errors.md).
 
 A 0/1 knapsack with a capacity of 10 — the reduced form of
 [examples/knapsack.json](../examples/knapsack.json), a file in a repository
-checkout rather than in the installed package:
+checkout (the MCP server also serves it as `annealbridge://examples/knapsack`):
 
 ```json
 {

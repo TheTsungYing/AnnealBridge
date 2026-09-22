@@ -277,6 +277,31 @@ async def run_mcp_checks(problems: dict[str, dict]) -> None:
                 assert client.server_info.version == metadata.version("annealbridge")
                 assert "When to call each tool" in client.instructions
 
+            with check("MCP prompts and resources"):
+                listed_prompts = (await client.list_prompts()).prompts
+                assert sorted(prompt.name for prompt in listed_prompts) == [
+                    "assign",
+                    "pick_subset",
+                    "schedule_shifts",
+                ]
+                listed_resources = (await client.list_resources()).resources
+                assert sorted(str(resource.uri) for resource in listed_resources) == [
+                    "annealbridge://examples/assignment",
+                    "annealbridge://examples/integer_knapsack",
+                    "annealbridge://examples/knapsack",
+                    "annealbridge://examples/tsp",
+                    "annealbridge://schema",
+                ]
+                # The examples are package data; the wheel must actually ship
+                # them, and what it serves must parse to the file this probe
+                # copied in (the byte-for-byte guard is a unit test).
+                served = await client.read_resource("annealbridge://examples/knapsack")
+                assert (
+                    json.loads(served.contents[0].text) == problems["knapsack.json"]
+                ), "the packaged knapsack example differs from the shipped one"
+                schema = await client.read_resource("annealbridge://schema")
+                assert "properties" in json.loads(schema.contents[0].text)
+
             with check("MCP capabilities"):
                 # The schema only comes back when it is asked for; the plain
                 # call must still carry the field, explicitly null.

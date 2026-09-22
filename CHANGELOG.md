@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The MCP server now exposes three prompts and five resources beside its four
+  tools. The prompts — `pick_subset`, `assign` and `schedule_shifts` — each
+  take the user's request in their own words as one optional `request`
+  argument and return a guide for turning that shape of request into a problem
+  document (which decisions become variables, what the objective and the
+  constraints are, which schema version to declare, which tools to call),
+  ending in the smallest complete document of that shape; a host lists them in
+  its input menu, which makes them the one place a user sees what the server
+  is for without reading a tool description. They repeat what the server
+  instructions already say and add no rule of their own, and a test validates
+  and solves each embedded example. The resources are the four example
+  documents (`annealbridge://examples/knapsack`, `integer_knapsack`,
+  `assignment`, `tsp`) and the full problem schema
+  (`annealbridge://schema`, the same text `annealbridge export-schema`
+  prints), all `application/json`. The examples ship inside the package as
+  data files, since the repository's `examples/` directory never reaches an
+  installed wheel, and a test holds the packaged copies byte-for-byte equal to
+  it. The server instructions now name both surfaces, and
+  `scripts/check_install.py` checks an installed wheel lists them and serves
+  the packaged example unchanged.
 - A successful `SolveResult` now carries a `message`: one deterministic
   English sentence an agent can relay as is, where the field used to be null
   unless something had gone wrong. It names the backend that produced the

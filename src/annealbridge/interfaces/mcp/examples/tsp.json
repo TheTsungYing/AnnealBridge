@@ -1,0 +1,524 @@
+{
+  "version": "1.0",
+  "name": "tsp_4_cities",
+  "description": "Traveling salesman over 4 cities (a,b,c,d) with symmetric distances. x_{city}_{position} = 1 iff the city is visited at that tour position. Optimal cyclic tour a-b-c-d has total length 8.",
+  "variables": [
+    {
+      "name": "x_a_0",
+      "description": "city a visited at position 0"
+    },
+    {
+      "name": "x_a_1",
+      "description": "city a visited at position 1"
+    },
+    {
+      "name": "x_a_2",
+      "description": "city a visited at position 2"
+    },
+    {
+      "name": "x_a_3",
+      "description": "city a visited at position 3"
+    },
+    {
+      "name": "x_b_0",
+      "description": "city b visited at position 0"
+    },
+    {
+      "name": "x_b_1",
+      "description": "city b visited at position 1"
+    },
+    {
+      "name": "x_b_2",
+      "description": "city b visited at position 2"
+    },
+    {
+      "name": "x_b_3",
+      "description": "city b visited at position 3"
+    },
+    {
+      "name": "x_c_0",
+      "description": "city c visited at position 0"
+    },
+    {
+      "name": "x_c_1",
+      "description": "city c visited at position 1"
+    },
+    {
+      "name": "x_c_2",
+      "description": "city c visited at position 2"
+    },
+    {
+      "name": "x_c_3",
+      "description": "city c visited at position 3"
+    },
+    {
+      "name": "x_d_0",
+      "description": "city d visited at position 0"
+    },
+    {
+      "name": "x_d_1",
+      "description": "city d visited at position 1"
+    },
+    {
+      "name": "x_d_2",
+      "description": "city d visited at position 2"
+    },
+    {
+      "name": "x_d_3",
+      "description": "city d visited at position 3"
+    }
+  ],
+  "objective": {
+    "direction": "minimize",
+    "linear_terms": [],
+    "quadratic_terms": [
+      {
+        "variable1": "x_a_0",
+        "variable2": "x_b_1",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_a_0",
+        "variable2": "x_c_1",
+        "coefficient": 3
+      },
+      {
+        "variable1": "x_a_0",
+        "variable2": "x_d_1",
+        "coefficient": 4
+      },
+      {
+        "variable1": "x_b_0",
+        "variable2": "x_a_1",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_b_0",
+        "variable2": "x_c_1",
+        "coefficient": 2
+      },
+      {
+        "variable1": "x_b_0",
+        "variable2": "x_d_1",
+        "coefficient": 5
+      },
+      {
+        "variable1": "x_c_0",
+        "variable2": "x_a_1",
+        "coefficient": 3
+      },
+      {
+        "variable1": "x_c_0",
+        "variable2": "x_b_1",
+        "coefficient": 2
+      },
+      {
+        "variable1": "x_c_0",
+        "variable2": "x_d_1",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_d_0",
+        "variable2": "x_a_1",
+        "coefficient": 4
+      },
+      {
+        "variable1": "x_d_0",
+        "variable2": "x_b_1",
+        "coefficient": 5
+      },
+      {
+        "variable1": "x_d_0",
+        "variable2": "x_c_1",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_a_1",
+        "variable2": "x_b_2",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_a_1",
+        "variable2": "x_c_2",
+        "coefficient": 3
+      },
+      {
+        "variable1": "x_a_1",
+        "variable2": "x_d_2",
+        "coefficient": 4
+      },
+      {
+        "variable1": "x_b_1",
+        "variable2": "x_a_2",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_b_1",
+        "variable2": "x_c_2",
+        "coefficient": 2
+      },
+      {
+        "variable1": "x_b_1",
+        "variable2": "x_d_2",
+        "coefficient": 5
+      },
+      {
+        "variable1": "x_c_1",
+        "variable2": "x_a_2",
+        "coefficient": 3
+      },
+      {
+        "variable1": "x_c_1",
+        "variable2": "x_b_2",
+        "coefficient": 2
+      },
+      {
+        "variable1": "x_c_1",
+        "variable2": "x_d_2",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_d_1",
+        "variable2": "x_a_2",
+        "coefficient": 4
+      },
+      {
+        "variable1": "x_d_1",
+        "variable2": "x_b_2",
+        "coefficient": 5
+      },
+      {
+        "variable1": "x_d_1",
+        "variable2": "x_c_2",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_a_2",
+        "variable2": "x_b_3",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_a_2",
+        "variable2": "x_c_3",
+        "coefficient": 3
+      },
+      {
+        "variable1": "x_a_2",
+        "variable2": "x_d_3",
+        "coefficient": 4
+      },
+      {
+        "variable1": "x_b_2",
+        "variable2": "x_a_3",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_b_2",
+        "variable2": "x_c_3",
+        "coefficient": 2
+      },
+      {
+        "variable1": "x_b_2",
+        "variable2": "x_d_3",
+        "coefficient": 5
+      },
+      {
+        "variable1": "x_c_2",
+        "variable2": "x_a_3",
+        "coefficient": 3
+      },
+      {
+        "variable1": "x_c_2",
+        "variable2": "x_b_3",
+        "coefficient": 2
+      },
+      {
+        "variable1": "x_c_2",
+        "variable2": "x_d_3",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_d_2",
+        "variable2": "x_a_3",
+        "coefficient": 4
+      },
+      {
+        "variable1": "x_d_2",
+        "variable2": "x_b_3",
+        "coefficient": 5
+      },
+      {
+        "variable1": "x_d_2",
+        "variable2": "x_c_3",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_a_3",
+        "variable2": "x_b_0",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_a_3",
+        "variable2": "x_c_0",
+        "coefficient": 3
+      },
+      {
+        "variable1": "x_a_3",
+        "variable2": "x_d_0",
+        "coefficient": 4
+      },
+      {
+        "variable1": "x_b_3",
+        "variable2": "x_a_0",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_b_3",
+        "variable2": "x_c_0",
+        "coefficient": 2
+      },
+      {
+        "variable1": "x_b_3",
+        "variable2": "x_d_0",
+        "coefficient": 5
+      },
+      {
+        "variable1": "x_c_3",
+        "variable2": "x_a_0",
+        "coefficient": 3
+      },
+      {
+        "variable1": "x_c_3",
+        "variable2": "x_b_0",
+        "coefficient": 2
+      },
+      {
+        "variable1": "x_c_3",
+        "variable2": "x_d_0",
+        "coefficient": 1
+      },
+      {
+        "variable1": "x_d_3",
+        "variable2": "x_a_0",
+        "coefficient": 4
+      },
+      {
+        "variable1": "x_d_3",
+        "variable2": "x_b_0",
+        "coefficient": 5
+      },
+      {
+        "variable1": "x_d_3",
+        "variable2": "x_c_0",
+        "coefficient": 1
+      }
+    ],
+    "constant": 0
+  },
+  "constraints": [
+    {
+      "id": "city_a_once",
+      "description": "city a appears in exactly one position",
+      "type": "hard",
+      "terms": [
+        {
+          "variable": "x_a_0",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_a_1",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_a_2",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_a_3",
+          "coefficient": 1
+        }
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "city_b_once",
+      "description": "city b appears in exactly one position",
+      "type": "hard",
+      "terms": [
+        {
+          "variable": "x_b_0",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_b_1",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_b_2",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_b_3",
+          "coefficient": 1
+        }
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "city_c_once",
+      "description": "city c appears in exactly one position",
+      "type": "hard",
+      "terms": [
+        {
+          "variable": "x_c_0",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_c_1",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_c_2",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_c_3",
+          "coefficient": 1
+        }
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "city_d_once",
+      "description": "city d appears in exactly one position",
+      "type": "hard",
+      "terms": [
+        {
+          "variable": "x_d_0",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_d_1",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_d_2",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_d_3",
+          "coefficient": 1
+        }
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "position_0_once",
+      "description": "position 0 holds exactly one city",
+      "type": "hard",
+      "terms": [
+        {
+          "variable": "x_a_0",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_b_0",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_c_0",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_d_0",
+          "coefficient": 1
+        }
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "position_1_once",
+      "description": "position 1 holds exactly one city",
+      "type": "hard",
+      "terms": [
+        {
+          "variable": "x_a_1",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_b_1",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_c_1",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_d_1",
+          "coefficient": 1
+        }
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "position_2_once",
+      "description": "position 2 holds exactly one city",
+      "type": "hard",
+      "terms": [
+        {
+          "variable": "x_a_2",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_b_2",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_c_2",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_d_2",
+          "coefficient": 1
+        }
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "position_3_once",
+      "description": "position 3 holds exactly one city",
+      "type": "hard",
+      "terms": [
+        {
+          "variable": "x_a_3",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_b_3",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_c_3",
+          "coefficient": 1
+        },
+        {
+          "variable": "x_d_3",
+          "coefficient": 1
+        }
+      ],
+      "operator": "==",
+      "rhs": 1
+    }
+  ],
+  "solver": {
+    "backend": "exact",
+    "top_k": 5
+  }
+}

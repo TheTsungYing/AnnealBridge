@@ -113,6 +113,13 @@ When to call each tool:
 Local backends are free and make no network request; remote ones spend
 vendor quota and need credentials, which is why they get the extra call.
 
+Three prompts (pick_subset, assign, schedule_shifts) walk through turning a
+request of one of those shapes into a document, each ending in a complete
+example.
+The resources under annealbridge://examples/ (knapsack, integer_knapsack,
+assignment, tsp) are complete example documents, and annealbridge://schema
+is the full problem JSON schema.
+
 Choosing solver.backend:
 - If the user named a backend, use it; it is never substituted.
 - Otherwise call recommend_backend and read the reasons: an exhaustive
@@ -324,8 +331,9 @@ def main(argv: Sequence[str] | None = None, prog: str = "annealbridge-mcp") -> N
     except SettingsError as exc:
         exit_on_settings_error(exc)
     reset_state(state)
-    # Ensure the tools are registered on `mcp` before serving.
-    import annealbridge.interfaces.mcp.tools  # noqa: F401
+    # Ensure the tools, prompts and resources are registered on `mcp`
+    # before serving (the package import registers all three).
+    import annealbridge.interfaces.mcp  # noqa: F401
 
     if args.transport == "streamable-http":
         mcp.run("streamable-http", host=args.host, port=args.port)

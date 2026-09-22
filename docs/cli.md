@@ -28,8 +28,9 @@ They all read the `ANNEALBRIDGE_*` environment
 configuration at all.
 
 The `examples/…` paths in the commands below are files in a repository
-checkout; the installed package does not ship them. Save any problem JSON
-locally and pass its path instead.
+checkout; an installed package has no such directory for the CLI to read
+(the MCP server serves the same four documents as resources). Save any
+problem JSON locally and pass its path instead.
 
 ## Global options
 

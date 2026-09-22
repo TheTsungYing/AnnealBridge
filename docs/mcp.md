@@ -3,9 +3,9 @@
 # MCP server
 
 This page covers the `annealbridge-mcp` server: how to install it, the four
-tools it exposes, how to configure Claude Desktop and other MCP hosts, the
-streamable-http transport, the MCP Inspector, and when an agent should call
-each tool.
+tools it exposes alongside its three prompts and five resources, how to
+configure Claude Desktop and other MCP hosts, the streamable-http transport,
+the MCP Inspector, and when an agent should call each tool.
 
 The server is a thin adapter. Each tool fetches the wired-up service, calls
 into the core, and returns the core's model — the same code path the
@@ -209,6 +209,10 @@ agent is told to present the top entries with one-line reasons and **ask**
 which to run, rather than to pick silently; either way the answer says which
 backend ran and why.
 
+The instructions also name the server's other two surfaces — the three
+[prompts](#prompts) and the [resources](#resources) under `annealbridge://`
+— so an agent that reads nothing else still learns they are there.
+
 A `problem` argument carrying a field the schema does not declare — at any
 level — is refused as a tool error naming the path, never dropped. See
 [Unknown fields are rejected](problem-format.md#unknown-fields-are-rejected).
@@ -390,6 +394,59 @@ Things worth knowing before calling it:
   than expected — a wide integer range on a heuristic backend, for example,
   can return a slightly sub-optimal value with `status: success`.
 
+## Prompts
+
+| Name | Title | For a request of the shape |
+| --- | --- | --- |
+| `pick_subset` | Pick a subset within a budget or capacity | which items to take within a budget, weight or capacity (a knapsack) |
+| `assign` | Assign people or jobs to seats, shifts or machines | who does what, or what goes where (an assignment) |
+| `schedule_shifts` | Schedule people to shifts | who works which shift, with coverage, workload limits and preferences (a roster) |
+
+Each takes one optional string argument, `request`: the user's own words. Given
+one, the rendered prompt opens with that text and the instruction to translate
+it; without one it is the guide alone, so a host can offer the prompt before
+the user has typed anything.
+
+What comes back is a single user message: which decisions become variables,
+what the objective and the constraints look like for that shape, which schema
+version to declare, which tools to call and in what order — followed by the
+smallest complete document of that shape, embedded in full. The guidance
+repeats what the [server instructions](#server-instructions) already say and
+adds no rule of its own; like them it names no configuration value and no
+limit. A test parses each embedded document, validates it against the schema
+and solves it on `exact`, so the example an agent copies is one that runs.
+
+A host that supports prompts — Claude Desktop, for one — lists them in its
+input menu. That makes them the one place a user sees what this server is for
+without reading a tool description: picking a prompt walks the agent from
+the user's sentence to a problem document of that everyday shape, which it
+then solves with the tools above.
+
+## Resources
+
+| URI | Contents |
+| --- | --- |
+| `annealbridge://examples/knapsack` | 0/1 knapsack: four binary variables, a maximized linear objective, one hard `<=` capacity constraint. Schema version `1.0` |
+| `annealbridge://examples/integer_knapsack` | Bounded integer knapsack: four integer variables (0..3), a hard capacity constraint and one soft constraint with a weight. Schema version `1.1` |
+| `annealbridge://examples/assignment` | Three workers to three tasks: one binary per pair, a minimized cost objective, six hard `== 1` constraints |
+| `annealbridge://examples/tsp` | Travelling salesman over four cities: a quadratic objective over city/position pairs with hard `== 1` constraints |
+| `annealbridge://schema` | The full `OptimizationProblem` JSON schema, a description on every field |
+
+All five are served as `application/json`.
+
+The four examples are the repository's [`examples/*.json`](../examples),
+shipped inside the package as data files because the repository directory
+never reaches an installed wheel. A test holds the two copies byte-for-byte
+equal, so the document an agent reads over MCP cannot drift from the file the
+README links to. Each is a complete, runnable document: read one instead of
+guessing at a shape the server instructions' minimal example does not cover.
+
+The schema resource is the same text `annealbridge export-schema` prints and
+the same object `get_optimization_capabilities` returns as
+`problem_json_schema` when called with `include_schema: true` — three ways to
+the one schema, so a host that can read resources need not spend a tool call
+on it.
+
 ## Claude Desktop (stdio)
 
 Add the server to `claude_desktop_config.json`. With uv installed this is the
@@ -482,8 +539,8 @@ Point it at `__init__.py`, not `server.py`. `mcp dev` loads its target by file
 path, which builds a *second* module object with its own server instance that
 the tools were never registered on — the Inspector would then list no tools
 at all, and a `:mcp` suffix does not change that. The package module imports
-the canonical server and its tools, so loading it by path reaches the one
-instance the four tools live on.
+the canonical server together with its tools, prompts and resources, so
+loading it by path reaches the one instance all of them live on.
 
 Alternatively, drive the installed entry point directly with the Node-based
 Inspector:
@@ -492,9 +549,10 @@ Inspector:
 npx @modelcontextprotocol/inspector annealbridge-mcp
 ```
 
-Either way the Inspector lists the four tools, shows their generated
-input/output schemas, and lets you submit a problem JSON by hand — the fastest
-way to see what an agent will see.
+Either way the Inspector lists the four tools, the three prompts and the five
+resources, shows the tools' generated input/output schemas, and lets you
+submit a problem JSON by hand, render a prompt and read a resource — the
+fastest way to see what an agent will see.
 
 ## Typical agent workflow
 
