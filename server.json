@@ -8,13 +8,13 @@
     "source": "github"
   },
   "websiteUrl": "https://pypi.org/project/annealbridge/",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "annealbridge",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "runtimeHint": "uvx",
       "runtimeArguments": [
         {

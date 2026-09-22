@@ -356,7 +356,7 @@ Ranks 3–5 are elided below; they continue the same pattern down to
   },
   "message": "exact proved optimality: rank 1 has objective 17 (maximize); 10 of 16 distinct candidates were feasible, 5 returned.",
   "elapsed_ms": 6.1,
-  "annealbridge_version": "0.2.1"
+  "annealbridge_version": "0.3.0"
 }
 ```
 

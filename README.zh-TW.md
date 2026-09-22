@@ -324,7 +324,7 @@ live 測試要自己指定才會跑（`pytest -m remote`）。不用 checkout �
 架構規則、設計原則與 pull request 檢查清單都在
 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-版本 0.2.1：問題契約（`1.0` / `1.1`）、八個 backend、CLI 與 MCP 工具都已
+版本 0.3.0：問題契約（`1.0` / `1.1`）、八個 backend、CLI 與 MCP 工具都已
 完成並有測試涵蓋。目前刻意不支援的項目列在
 [docs/limitations.md](docs/limitations.md)；變更紀錄見
 [CHANGELOG.md](CHANGELOG.md)。
