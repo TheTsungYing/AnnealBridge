@@ -1,6 +1,6 @@
 """Compiler interface (spec §13; 3a spec §14; 3b spec §13)."""
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -63,6 +63,37 @@ class ModelCompiler(Protocol):
         the output is ``int64``. Every value of the result is an integer
         within the business variable's bounds.
         """
+        ...
+
+
+class PreparedModel(Protocol):
+    """The hard-penalty-independent part of one problem's compile.
+
+    ``compile(hard_penalty)`` must return exactly what the compiler's own
+    ``compile(problem, hard_penalty)`` returns for the problem it was
+    prepared from, bit for bit, however many times and in whatever order it
+    is called: the prepared state is read, never changed.
+    """
+
+    def compile(self, hard_penalty: float | None) -> CompiledProblem:
+        """Finish the compile with ``hard_penalty`` as the hard-constraint lambda."""
+        ...
+
+
+@runtime_checkable
+class SupportsPrepare(Protocol):
+    """Optional compiler capability: compile in two stages.
+
+    ``prepare`` does every step that does not depend on the hard penalty
+    (integer and slack encodings, the objective, the soft penalties) once;
+    the returned :class:`PreparedModel` finishes a compile per penalty. A
+    compiler without it is simply compiled from scratch each time, with the
+    same result. The compiler knows nothing about why a caller compiles one
+    problem more than once.
+    """
+
+    def prepare(self, problem: OptimizationProblem) -> PreparedModel:
+        """Do the hard-penalty-independent part of compiling ``problem``."""
         ...
 
 

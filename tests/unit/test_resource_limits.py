@@ -192,7 +192,12 @@ class TestLimitIsCheckedBeforeCompile:
 
     @staticmethod
     def count_compile_calls(monkeypatch, compiler_class) -> list[int]:
-        """Wrap ``compiler_class.compile`` with a call counter."""
+        """Wrap ``compiler_class.compile`` (and ``prepare``, if any) with a call counter.
+
+        The service compiles a ``SupportsPrepare`` compiler through
+        ``prepare``, so counting ``compile`` alone would let the "refuses
+        without compiling" checks pass without looking.
+        """
         calls = [0]
         original = compiler_class.compile
 
@@ -201,6 +206,14 @@ class TestLimitIsCheckedBeforeCompile:
             return original(self, problem, hard_penalty)
 
         monkeypatch.setattr(compiler_class, "compile", counting)
+        original_prepare = getattr(compiler_class, "prepare", None)
+        if original_prepare is not None:
+
+            def counting_prepare(self, problem):
+                calls[0] += 1
+                return original_prepare(self, problem)
+
+            monkeypatch.setattr(compiler_class, "prepare", counting_prepare)
         return calls
 
     def test_bqm_path_refuses_without_compiling(self, monkeypatch):

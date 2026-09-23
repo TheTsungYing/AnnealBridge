@@ -180,7 +180,9 @@ one needs a very good reason in its description.
 6. **Each layer does one job.** No optimization logic in the CLI or MCP
    layer, no JSON parsing in a solver, no mutation in a validator.
 7. **No speculative abstractions.** Only `ModelCompiler`, `SolverBackend`
-   and `PenaltyStrategy` are interfaces; everything else is concrete code.
+   and `PenaltyStrategy` are interfaces (`SupportsPrepare` is an optional,
+   staged form of `ModelCompiler` that lets a retry skip the
+   penalty-independent compile work); everything else is concrete code.
 8. **Tests do not cheat.** No `skip` / `xfail` to hide a bug; scenario tests
    go through the full JSON → service → result path; MCP tests go through a
    real MCP client.

@@ -149,7 +149,7 @@ constraint with a rate below 1 does not imply a feasible candidate exists.
 | `feasible_samples` | integer | How many of those **deduplicated** candidates satisfied every hard constraint under independent re-validation. Never larger than `unique_samples`. |
 | `compiled_variables` | integer \| null | The compiled model's actual variable count (business variables plus slack and integer-encoding bits), as opposed to the estimate `validate` reports. |
 | `compiled_interactions` | integer \| null | The compiled model's quadratic terms: the BQM's interactions, or on the CQM path the objective's plus every constraint's. |
-| `compile_ms` | number \| null | Wall-clock milliseconds the compile stage took. |
+| `compile_ms` | number \| null | Wall-clock milliseconds the compile stage took. On the BQM path the first attempt's value includes the one-time, penalty-independent preparation that later attempts of the same solve reuse. |
 | `solve_ms` | number \| null | Wall-clock milliseconds the backend call took, network round-trips included on a remote backend. |
 | `validate_ms` | number \| null | Wall-clock milliseconds for decoding, deduplication, re-validation and ranking of the returned samples. |
 

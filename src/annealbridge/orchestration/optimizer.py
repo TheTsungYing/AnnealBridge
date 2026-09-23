@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from annealbridge.compiler import BQMCompiler, CQMCompiler
-from annealbridge.compiler.base import ModelCompiler
+from annealbridge.compiler.base import ModelCompiler, PreparedModel, SupportsPrepare
 from annealbridge.exceptions import (
     CompilationError,
     NonFiniteModelError,
@@ -121,6 +121,12 @@ class _AttemptState:
     ``on_progress`` and ``max_attempts`` carry the caller's progress callback
     to ``_solve_attempt`` without widening its signature; ``max_attempts``
     is set once the attempt budget is known.
+
+    ``prepared`` is the hard-penalty-independent part of the compile when
+    the compiler offers one (:class:`SupportsPrepare`): made by the first
+    attempt and reused by the retries, which only differ in the penalty.
+    It lives exactly as long as this state, one solve; nothing is cached
+    across solves.
     """
 
     attempts: list[SolveAttempt] = field(default_factory=list)
@@ -129,6 +135,7 @@ class _AttemptState:
     infeasibility: InfeasibilityDiagnostics | None = None
     on_progress: ProgressCallback | None = None
     max_attempts: int = 0
+    prepared: PreparedModel | None = None
 
     def emit(self, attempt: int, stage: Stage, backend_name: str) -> None:
         """Call the progress callback, if any, for a stage that is starting.
@@ -539,9 +546,20 @@ class OptimizationService:
 
     @staticmethod
     def _compile(
-        compiler: ModelCompiler, problem: OptimizationProblem, penalty: float | None
+        compiler: ModelCompiler,
+        problem: OptimizationProblem,
+        penalty: float | None,
+        state: _AttemptState,
     ) -> CompiledProblem:
         """``compiler.compile`` with every failure expressed as a CompilationError.
+
+        A compiler that offers :class:`SupportsPrepare` is prepared once per
+        solve (on the first attempt, so its time counts in that attempt's
+        ``compile_ms``) and each attempt finishes the compile with its own
+        penalty; by the protocol's contract the model is bit for bit what
+        ``compiler.compile(problem, penalty)`` returns. The check is on the
+        capability, never on a compiler's name; any other compiler is
+        compiled from scratch each attempt.
 
         No backend has been called yet, so whatever goes wrong here is a
         problem-side failure the caller must see as ``invalid_problem`` /
@@ -556,6 +574,10 @@ class OptimizationService:
         column is that backend's contract violation (review F-03).
         """
         try:
+            if isinstance(compiler, SupportsPrepare):
+                if state.prepared is None:
+                    state.prepared = compiler.prepare(problem)
+                return state.prepared.compile(penalty)
             return compiler.compile(problem, penalty)
         except CompilationError:
             raise
@@ -711,7 +733,7 @@ class OptimizationService:
             )
         state.emit(attempt, "compile", backend.name)
         compile_started = time.perf_counter()
-        compiled = self._compile(compiler, problem, penalty)
+        compiled = self._compile(compiler, problem, penalty, state)
         compile_ms = _elapsed_ms(compile_started)
         # §14 step 9 on the compiled model (slack included): the
         # final guarantee behind the estimate above. Never clamp,

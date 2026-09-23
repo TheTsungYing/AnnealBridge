@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declared minimum (`uv pip install --resolution lowest-direct`) and runs the
   suite against it, and a test now checks that the version quoted in both
   READMEs and in the `docs/output-format.md` example matches `pyproject.toml`.
+- A BQM retry no longer redoes the compile work that does not depend on the
+  hard penalty (integer and slack encoding, the objective, the soft
+  penalties): it is done once per solve and each retry only re-expands the
+  hard penalty terms, with a model bit for bit identical to a fresh compile.
+  How much a retry saves depends on the problem: measured on a 250-variable
+  dense quadratic objective with one-hot constraints, a retry's `compile_ms`
+  fell from about 53 ms to 5 ms; on a problem dominated by wide hard
+  constraints, about 20%. The first attempt's `compile_ms` now includes that
+  one-time preparation.
 
 ## [0.3.0] - 2026-09-22
 

@@ -135,6 +135,12 @@ Everything lives under `src/annealbridge/`.
 5. **Rank** the feasible solutions by `ranking_score` with deterministic
    tie-breaking, and keep the top `top_k`.
 6. **Retry** with a doubled hard penalty when nothing feasible was found.
+   Within one solve the compile work that does not depend on the hard
+   penalty (integer and slack encoding, the objective, the soft penalties) is
+   done once, through the compiler's optional `SupportsPrepare` stage, and a
+   retry only re-expands the hard penalty terms; the model is bit for bit
+   what a from-scratch compile at that penalty gives. Nothing is cached
+   across solves.
 
 `solve` also takes a keyword-only `on_progress` callback. It is called once
 with a `SolveProgress` as the compile, solve and validate stage of each attempt
@@ -200,7 +206,8 @@ crossing one of them, stop and ask rather than working around it.
 7. **No scaffolding for a future that has not arrived.** Exactly three
    abstractions earn their keep: `ModelCompiler`, `SolverBackend` and
    `PenaltyStrategy`. Everything else is written concretely — no factories, no
-   repository layer, no plugin loader.
+   repository layer, no plugin loader. (`SupportsPrepare` is an optional,
+   staged form of `ModelCompiler`, not a fourth abstraction.)
 8. **Tests are not to be worked around.** No `skip` or `xfail` to paper over a
    real bug. A scenario test must run the whole pipeline (JSON → service →
    result), not call an internal function and call itself an integration test.
