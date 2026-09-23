@@ -25,7 +25,7 @@ needs, and the rules the project holds itself to.
 | --- | --- |
 | [Architecture](architecture.md) | Core versus interfaces, the enforced import boundaries, the solve pipeline, and the design principles |
 | [Security model](security.md) | Remote opt-in, resource limits, credential redaction, and what is sent to a vendor |
-| [Testing and CI](testing.md) | How to run the suite, what each test directory covers, and the two CI workflows |
+| [Testing and CI](testing.md) | How to run the suite, what each test directory covers, and the three GitHub Actions workflows |
 | [Limitations](limitations.md) | What is not supported, and what is out of scope |
 
 ## Contributing

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Raised the minimum dependency versions to the lowest ones the test suite
+  actually passes against: `pydantic>=2.10`, `numpy>=2.0`, `dimod>=0.12.19`,
+  `dwave-samplers>=1.3`, `typer>=0.26`, `mcp>=2.1,<3` (the `mcp`, `all` and
+  `dev` extras) and `dwave-system>=1.26` (the `dwave` and `all` extras);
+  `pydantic-settings>=2.7` is unchanged. The previous floors were never
+  tested and did not hold: `dwave-system>=1.10` could not be resolved at all,
+  `dimod` 0.12.0–0.12.1 and `numpy` 1.24 (on Python 3.12) have no wheels and
+  need a compiler, pydantic before 2.10 warns about the `model_type` field on
+  import, typer before 0.26 warns under click 8.5 and breaks under click
+  8.2–8.4, numpy 1.x defaults to 32-bit integers on Windows, and `mcp` 2.0
+  lacks the stdio client API. An environment pinned below a new floor (for
+  example to numpy 1.x) has to upgrade that dependency.
+- CI now runs the test suite on Windows as well as Linux (Python 3.11 and
+  3.12 on both), adds a job that installs every direct dependency at its
+  declared minimum (`uv pip install --resolution lowest-direct`) and runs the
+  suite against it, and a test now checks that the version quoted in both
+  READMEs and in the `docs/output-format.md` example matches `pyproject.toml`.
+
 ## [0.3.0] - 2026-09-22
 
 ### Added

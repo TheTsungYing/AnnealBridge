@@ -39,31 +39,43 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+# The lower bounds below are the lowest versions the default test suite has been
+# run against (the CI "lowest-deps" job keeps them honest); older releases either
+# lack wheels, emit warnings on import, or break at runtime.
 dependencies = [
-    "pydantic>=2.0",
+    # Before 2.10 the `model_type` field trips pydantic's protected-namespace warning.
+    "pydantic>=2.10",
     # 2.7 is the first release exposing `NoDecode`, used by config/settings.py.
     "pydantic-settings>=2.7",
-    "dimod>=0.12",
-    "numpy>=1.24",
-    "dwave-samplers>=1.0",
-    "typer>=0.12",
+    # 0.12.19 is the first release importing cleanly under numpy 2.
+    "dimod>=0.12.19",
+    # numpy 1.x on Windows defaults to int32 where int64 is relied upon.
+    "numpy>=2.0",
+    # 1.3 is the first release supporting numpy 2.
+    "dwave-samplers>=1.3",
+    # 0.26 no longer depends on click; older typer breaks under newer click.
+    "typer>=0.26",
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp>=2,<3"]
-# 1.10 is the first release shipping `LeapHybridCQMSampler`.
-dwave = ["dwave-system>=1.10"]
+# 2.1 is the lowest release the MCP tests pass against (2.0 lacks the stdio
+# client API they use).
+mcp = ["mcp>=2.1,<3"]
+# 1.26 is the first release that resolves alongside dimod 0.12 and pulls a
+# dwave-cloud-client (>=0.13) that neither imports `requests` eagerly nor needs
+# `pkg_resources`.
+dwave = ["dwave-system>=1.26"]
 # GPU acceleration for the simulated_bifurcation backend (ANNEALBRIDGE_SB_DEVICE=cuda).
 # Deliberately not part of `all`: torch is hundreds of MB, and on Windows the
 # PyPI wheel is the CPU-only build -- the CUDA build comes from PyTorch's own
 # index (see docs/backends.md), which a pip extra cannot express.
 gpu = ["torch>=2.0"]
-all = ["mcp>=2,<3", "dwave-system>=1.10"]
+all = ["mcp>=2.1,<3", "dwave-system>=1.26"]
 # "pytest-anyio" does not exist as a real distribution (PyPI only has an empty
 # 0.0.0 placeholder); anyio ships its own pytest plugin, so depend on anyio.
 # ruff is capped to one minor series: a new minor can change rule behaviour and
 # turn CI red on its own.
-dev = ["pytest>=8.0", "anyio>=4", "mcp[cli]>=2,<3", "ruff>=0.16.7,<0.17"]
+dev = ["pytest>=8.0", "anyio>=4", "mcp[cli]>=2.1,<3", "ruff>=0.16.7,<0.17"]
 
 [project.urls]
 Homepage = "https://github.com/TheTsungYing/AnnealBridge"

@@ -105,20 +105,37 @@ re-recording the other is a failure rather than a silent gap.
 
 ## Continuous integration
 
-Two workflows live in `.github/workflows/`.
+Three workflows live in `.github/workflows/`: `ci.yml` on every push and pull
+request, `release.yml` for publishing, and `remote-live.yml` for the live
+vendor tests.
 
 ### `ci.yml` — every push and pull request
 
-Runs on `push` and `pull_request`. Three jobs:
+Runs on `push` and `pull_request`. Four jobs:
 
-- **Test** — installs `.[all,dev]` on Python 3.11 and 3.12 (matrix, without
-  fail-fast) and runs a plain `pytest`. No `-m` flag is passed, so the
-  project's own `-m "not remote"` applies: unit, scenarios, architecture, MCP
-  and remote-mock tests all run, and no vendor quota is touched. The workflow
+- **Test** — installs `.[all,dev]` on `ubuntu-latest` and `windows-latest`
+  with Python 3.11 and 3.12 (a four-way matrix, without fail-fast) and runs a
+  plain `pytest`. No `-m` flag is passed, so the project's own
+  `-m "not remote"` applies: unit, scenarios, architecture, MCP and
+  remote-mock tests all run, and no vendor quota is touched. The workflow
   therefore needs neither `DWAVE_API_TOKEN` nor `FUJITSU_DA_API_KEY`. Before
-  `pytest`, the job runs `ruff check .`, which checks only the F (Pyflakes)
-  and I (import sorting) rules; there is no formatter check. A lint failure
-  fails the job, but `pytest` still runs.
+  `pytest`, the Linux runs execute `ruff check .`, which checks only the F
+  (Pyflakes) and I (import sorting) rules; there is no formatter check. Its
+  result does not depend on the platform, so it runs on Linux only. A lint
+  failure fails the job, but `pytest` still runs.
+- **Lowest direct dependencies** — on `ubuntu-latest` with Python 3.11,
+  installs `.[all,dev]` with
+  `uv pip install --resolution lowest-direct --compile-bytecode`, so each
+  direct dependency is at the lower bound declared in `pyproject.toml`, prints
+  the versions actually installed, and runs the same `pytest`. This is the
+  guard that keeps the declared lower bounds honest. `--compile-bytecode` is
+  required: `uv` does not precompile by default, and invalid escape sequences
+  in older dependency releases would then raise a `SyntaxWarning` at import
+  time, which `filterwarnings = ["error"]` turns into an error. One limit:
+  the bounds are exercised as they resolve under `[all,dev]`, where `mcp`
+  raises `pydantic` and `anyio` to its own, higher lower bounds. The declared
+  floors of those two are therefore not what this job installs; the
+  core-only `pydantic` floor was verified locally when it was set.
 - **Minimal install** — installs the package with *no* extras and checks that
   the core still stands on its own: the solver registry imports and lists its
   backends, `annealbridge export-schema` works, and `annealbridge validate` /
@@ -137,6 +154,16 @@ Runs on `push` and `pull_request`. Three jobs:
   install hint; the `[mcp]` environment adds a stdio handshake and a real tool
   call. Where Minimal install proves the extras are genuinely optional, this
   job proves the distribution itself is complete and usable once installed.
+
+### `release.yml` — publishing
+
+Runs on a pushed `v*` tag, or by hand. It first refuses a tag that does not
+match the version in `pyproject.toml`, or a `server.json` whose versions
+disagree with it; then it builds the sdist and the wheel and publishes them to
+PyPI and to the MCP Registry through PyPI Trusted Publishing and GitHub OIDC,
+so no API token is stored. A manual run publishes to TestPyPI instead. The
+steps for cutting a release are in
+[CONTRIBUTING.md](../CONTRIBUTING.md#releasing).
 
 ### `remote-live.yml` — manual only
 
@@ -157,8 +184,8 @@ Secret handling is deliberately narrow:
   `workflow_dispatch` can only be started by someone with permission on the
   repository itself, so a fork cannot launch this workflow at all.
 
-Neither workflow contains a `printenv`, an environment dump, an `echo` of a
-secret or any other debug step that would print the environment. Keep it that
-way when editing them.
+None of the workflows contains a `printenv`, an environment dump, an `echo` of
+a secret or any other debug step that would print the environment. Keep it
+that way when editing them.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) before opening a pull request.

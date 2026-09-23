@@ -1,7 +1,10 @@
 # CI — spec §29
 #
-# An ordinary push / PR runs: a ruff lint (F and I rules only), then unit,
-# scenarios, architecture, mcp, remote_mock.
+# An ordinary push / PR runs: a ruff lint (F and I rules only, Linux only),
+# then unit, scenarios, architecture, mcp, remote_mock on Linux and Windows
+# with Python 3.11 and 3.12.
+# The lowest-deps job reruns the same tests with every direct dependency
+# pinned to the lower bound declared in pyproject.toml.
 # The package job additionally builds the sdist and the wheel and exercises the
 # installed distribution — not the checkout — in clean virtual environments on
 # Linux and Windows (2026-09-11 install verification, gap 4).
@@ -26,11 +29,12 @@ concurrency:
 
 jobs:
   test:
-    name: Test (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12"]
     steps:
       - name: Checkout
@@ -48,7 +52,10 @@ jobs:
         run: pip install -e ".[all,dev]"
 
       # Lint only: F (pyflakes) and I (import sorting); no formatter.
+      # Linux only: the result does not depend on the platform or the Python
+      # version, and running it once avoids duplicate annotations on the PR.
       - name: Lint (ruff)
+        if: runner.os == 'Linux'
         run: ruff check .
 
       # No -m here: the pyproject addopts = -m "not remote" applies, which
@@ -56,6 +63,47 @@ jobs:
       # Runs even if lint fails: lint never hides test results; job still fails.
       - name: Run tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pytest
+
+  # Guards the lower bounds declared in pyproject.toml: every direct
+  # dependency is installed at its declared minimum version, while indirect
+  # dependencies are resolved as usual (uv --resolution lowest-direct).
+  #
+  # Coverage limit: under [all,dev], mcp raises pydantic / anyio to its own
+  # higher lower bounds, so the declared floors of those two are not what this
+  # job installs (the core-only pydantic floor was verified locally).
+  lowest-deps:
+    name: Lowest direct dependencies (Python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+          cache-dependency-path: pyproject.toml
+
+      # Installed with pip rather than through a setup action, so the
+      # workflow takes on no further third-party action.
+      - name: Install uv
+        run: python -m pip install uv
+
+      # Not editable. --compile-bytecode is required: uv does not precompile
+      # by default, so invalid escape sequences in the source of old
+      # dependency releases would raise SyntaxWarning at import time, and the
+      # pyproject filterwarnings = ["error"] turns that into a collection
+      # error. pip precompiles on install, so the other jobs are unaffected.
+      - name: Install package with all extras at the lowest direct versions
+        run: uv pip install --system --resolution lowest-direct --compile-bytecode ".[all,dev]"
+
+      # Prints the versions actually selected, for the log.
+      - name: Show the resolved versions
+        run: uv pip freeze --system
+
+      - name: Run tests
         run: pytest
 
   minimal-install:
@@ -116,8 +164,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Python 3.12 only: the test job already covers 3.11 / 3.12 on Linux,
-        # what is new here is the packaging and the second operating system.
+        # Python 3.12 only: the test job already covers 3.11 / 3.12 on Linux
+        # and Windows, what is new here is the packaging itself.
         os: [ubuntu-latest, windows-latest]
     # One shell for both runners — the Windows runner ships Git Bash, so the
     # steps below do not need a second, PowerShell-flavoured copy.

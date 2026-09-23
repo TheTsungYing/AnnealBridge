@@ -20,7 +20,7 @@ The MCP server lives behind an extra:
 pip install "annealbridge[mcp]"
 ```
 
-That adds the `mcp>=2,<3` dependency. The core install (and the
+That adds the `mcp>=2.1,<3` dependency. The core install (and the
 `annealbridge` CLI) does not depend on `mcp` at all.
 
 With [uv](https://docs.astral.sh/uv/) there is nothing to install by hand:
