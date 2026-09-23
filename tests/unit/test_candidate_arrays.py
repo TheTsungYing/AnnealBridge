@@ -31,7 +31,7 @@ from annealbridge.orchestration import (
     evaluate_objective_batch,
     process_candidates,
 )
-from annealbridge.orchestration.optimizer import (
+from annealbridge.orchestration.candidates import (
     _lexsort,
     _pack_integer_rows,
     _pack_rows,

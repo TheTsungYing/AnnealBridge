@@ -6,7 +6,7 @@ import pytest
 
 from annealbridge.compiler import BQMCompiler
 from annealbridge.models import OptimizationProblem
-from annealbridge.orchestration.optimizer import evaluate_objective
+from annealbridge.orchestration.candidates import evaluate_objective
 from annealbridge.validation import tolerance, validate_solution
 
 # At magnitude 1 the hybrid tolerance is exactly the absolute floor, 1e-8.

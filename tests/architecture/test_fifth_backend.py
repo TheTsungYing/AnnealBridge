@@ -60,6 +60,8 @@ ITERATIONS_LIMIT = 1000.0
 # The files §13.1 requires to stay untouched when a backend is added.
 CORE_FILES_THE_FAKE_FLOWS_THROUGH = [
     "orchestration/optimizer.py",
+    "orchestration/candidates.py",
+    "orchestration/messages.py",
     "orchestration/limits.py",
     "orchestration/policy.py",
     "orchestration/routing.py",

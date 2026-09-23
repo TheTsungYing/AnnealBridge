@@ -23,7 +23,7 @@ import pytest
 
 from annealbridge.models import OptimizationProblem, SolverPreferences
 from annealbridge.orchestration import OptimizationService
-from annealbridge.orchestration.optimizer import evaluate_objective
+from annealbridge.orchestration.candidates import evaluate_objective
 from annealbridge.solvers import SolverRegistry
 from annealbridge.validation import validate_solution
 from tests.fakes.local_cqm_backend import FAKE_LOCAL_CQM_NAME, FakeLocalCQMBackend

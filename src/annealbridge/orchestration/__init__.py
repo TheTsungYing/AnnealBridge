@@ -1,8 +1,7 @@
 """Orchestration service (spec §28)."""
 
-from annealbridge.orchestration.optimizer import (
+from annealbridge.orchestration.candidates import (
     CandidateSet,
-    OptimizationService,
     ProcessedCandidates,
     deduplicate_samples,
     diagnose_infeasibility,
@@ -10,6 +9,7 @@ from annealbridge.orchestration.optimizer import (
     evaluate_objective_batch,
     process_candidates,
 )
+from annealbridge.orchestration.optimizer import OptimizationService
 from annealbridge.orchestration.policy import ExecutionPolicy
 from annealbridge.orchestration.progress import ProgressCallback, SolveProgress
 from annealbridge.orchestration.routing import REASON_DESCRIPTIONS, recommend

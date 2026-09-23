@@ -9,7 +9,7 @@ that it stays deterministic (no timings) run to run.
 
 from annealbridge.models import OptimizationProblem
 from annealbridge.orchestration import OptimizationService
-from annealbridge.orchestration.optimizer import _success_message
+from annealbridge.orchestration.messages import _success_message
 from tests.conftest import EXAMPLES_DIR
 
 

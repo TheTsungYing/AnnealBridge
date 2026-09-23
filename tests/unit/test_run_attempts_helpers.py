@@ -12,7 +12,7 @@ import pytest
 from annealbridge.compiler import BQMCompiler, CQMCompiler
 from annealbridge.models import Solution, SolveAttempt, SolverPreferences
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
-from annealbridge.orchestration.optimizer import (
+from annealbridge.orchestration.messages import (
     _exact_number,
     _infeasible_message,
     _success_message,

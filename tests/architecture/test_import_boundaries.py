@@ -263,6 +263,93 @@ def test_concrete_compilers_only_imported_by_optimizer() -> None:
     )
 
 
+# Candidate processing and result wording were split out of optimizer.py.
+# They work on the original problem and the raw solver output only, so they
+# must not know the compiler package at all — not even ``compiler.base``.
+COMPILER_FREE_ORCHESTRATION_FILES = [
+    "orchestration/candidates.py",
+    "orchestration/messages.py",
+]
+COMPILER_PACKAGE = "annealbridge.compiler"
+
+
+def _is_compiler_module(module: str) -> bool:
+    return module == COMPILER_PACKAGE or module.startswith(COMPILER_PACKAGE + ".")
+
+
+def _compiler_package_imports(tree: ast.AST, package: str):
+    """Yield ``(lineno, module)`` for every import reaching ``annealbridge.compiler``.
+
+    Covers ``import annealbridge.compiler[...]``, ``from annealbridge.compiler[...]
+    import ...``, ``from annealbridge import compiler`` and the relative forms
+    (resolved against ``package``), at module level or inside a function.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if _is_compiler_module(alias.name):
+                    yield node.lineno, alias.name
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                parts = package.split(".")
+                base = parts[: len(parts) - node.level + 1]
+                module = ".".join(base + ([node.module] if node.module else []))
+            else:
+                module = node.module or ""
+            if _is_compiler_module(module):
+                yield node.lineno, module
+            else:
+                for alias in node.names:
+                    if _is_compiler_module(f"{module}.{alias.name}"):
+                        yield node.lineno, f"{module}.{alias.name}"
+
+
+def test_candidates_and_messages_do_not_import_the_compiler() -> None:
+    violations: list[str] = []
+    for relative_to_src in COMPILER_FREE_ORCHESTRATION_FILES:
+        py_file = SRC_ROOT / relative_to_src
+        assert py_file.is_file(), f"{relative_to_src} is missing; rule would be vacuous"
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        for lineno, module in _compiler_package_imports(
+            tree, "annealbridge.orchestration"
+        ):
+            relative = py_file.relative_to(SRC_ROOT.parent.parent)
+            violations.append(f"{relative}:{lineno} -> {module}")
+    assert not violations, (
+        "candidate processing and result messages must not import the compiler "
+        "package:\n" + "\n".join(violations)
+    )
+
+
+def test_compiler_package_import_detector_recognises_every_form() -> None:
+    """Guard the detector itself so the rule above cannot silently go blind."""
+    source = (
+        "import annealbridge.compiler\n"
+        "import annealbridge.compiler.base as base\n"
+        "from annealbridge.compiler.base import ModelCompiler\n"
+        "from annealbridge import compiler\n"
+        "from .. import compiler\n"
+        "from ..compiler.bqm import BQMCompiler\n"
+        "def f():\n"
+        "    from annealbridge.compiler import CQMCompiler\n"
+        "from annealbridge import models\n"
+        "from annealbridge.compilers_elsewhere import x\n"
+        "from . import messages\n"
+    )
+    found = sorted(
+        _compiler_package_imports(ast.parse(source), "annealbridge.orchestration")
+    )
+    assert found == [
+        (1, "annealbridge.compiler"),
+        (2, "annealbridge.compiler.base"),
+        (3, "annealbridge.compiler.base"),
+        (4, "annealbridge.compiler"),
+        (5, "annealbridge.compiler"),
+        (6, "annealbridge.compiler.bqm"),
+        (8, "annealbridge.compiler"),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Phase 3b §4 / §26.2: the Fujitsu DA backend speaks HTTPS through the
 # standard library, so no new HTTP dependency may enter the package.
