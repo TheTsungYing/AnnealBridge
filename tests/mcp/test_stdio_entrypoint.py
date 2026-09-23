@@ -29,8 +29,8 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 from importlib import metadata
-from pathlib import Path
 
 import pytest
 from mcp import Client, StdioServerParameters
@@ -59,16 +59,27 @@ async def test_stdio_entrypoint_serves_the_four_tools():
     assert sorted(tool.name for tool in tools) == EXPECTED_TOOLS
 
 
-def _console_script() -> str:
-    """The ``annealbridge-mcp`` script generated next to this interpreter."""
-    script = shutil.which("annealbridge-mcp", path=str(Path(sys.executable).parent))
+def _installed_script(name: str) -> str:
+    """The console script ``name`` generated for this interpreter.
+
+    Looked up in the interpreter's scripts directory, not next to
+    ``sys.executable``: the two coincide in a virtual environment, but a
+    Windows base interpreter keeps ``python.exe`` at the prefix and its
+    scripts in ``Scripts\\`` (the CI Windows runners install that way)."""
+    scripts = sysconfig.get_path("scripts")
+    script = shutil.which(name, path=scripts)
     if script is None:
         pytest.fail(
-            "the annealbridge-mcp console script is missing next to "
-            f"{sys.executable}; reinstall the project with "
-            'pip install -e ".[all,dev]"'
+            f"the {name} console script is missing from {scripts} (the "
+            f"scripts directory of {sys.executable}); reinstall the project "
+            'with pip install -e ".[all,dev]"'
         )
     return script
+
+
+def _console_script() -> str:
+    """The ``annealbridge-mcp`` script generated for this interpreter."""
+    return _installed_script("annealbridge-mcp")
 
 
 async def test_console_script_serves_the_four_tools():
@@ -85,15 +96,8 @@ async def test_console_script_serves_the_four_tools():
 
 
 def _cli_script() -> str:
-    """The ``annealbridge`` script generated next to this interpreter."""
-    script = shutil.which("annealbridge", path=str(Path(sys.executable).parent))
-    if script is None:
-        pytest.fail(
-            "the annealbridge console script is missing next to "
-            f"{sys.executable}; reinstall the project with "
-            'pip install -e ".[all,dev]"'
-        )
-    return script
+    """The ``annealbridge`` script generated for this interpreter."""
+    return _installed_script("annealbridge")
 
 
 async def test_cli_subcommand_serves_the_four_tools():
