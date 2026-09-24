@@ -13,18 +13,25 @@ event loop and with it every other client of the server.
 
 import functools
 import logging
-from typing import Annotated
+import time
+from typing import Annotated, Any
 
 import anyio
 from mcp.server.mcpserver import Context
-from pydantic import Field
+from pydantic import Field, WrapValidator
 
 from annealbridge.interfaces.mcp.models import (
     OptimizationCapabilities,
     build_capabilities,
 )
 from annealbridge.interfaces.mcp.server import get_state, mcp
-from annealbridge.models import OptimizationProblem, SolveResult
+from annealbridge.interfaces.problem_input import (
+    invalid_recommendation_result,
+    invalid_solve_result,
+    invalid_validation_result,
+    parse_problem,
+)
+from annealbridge.models import OptimizationProblem, SolveError, SolveResult
 from annealbridge.orchestration import ProgressCallback, SolveProgress
 from annealbridge.validation import (
     BackendRecommendationResult,
@@ -32,6 +39,35 @@ from annealbridge.validation import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The ``problem`` argument as the tools declare it. The JSON schema a host
+# sees is exactly ``OptimizationProblem``'s — same ``$defs``, same
+# ``additionalProperties: false``, byte for byte what the bare annotation
+# publishes — but the wrap validator hands the tool the submitted value
+# without validating it. The SDK validates arguments before the tool runs
+# and turns a failure into a plain-text tool error; parsing inside the tool
+# instead (``parse_problem``) lets a document that does not fit the schema
+# come back as ``invalid_problem`` / ``valid: false`` with catalog codes,
+# the same shape as a semantic error. The value is therefore *raw* (a dict,
+# or whatever the host sent) until ``_parse`` has run.
+ProblemArgument = Annotated[
+    OptimizationProblem, WrapValidator(lambda value, _handler: value)
+]
+
+
+def _parse(tool: str, problem: Any) -> OptimizationProblem | list[SolveError]:
+    """``parse_problem``, logging a rejection by code and path only.
+
+    Never the submitted values: a document can carry anything a user typed.
+    """
+    parsed = parse_problem(problem)
+    if not isinstance(parsed, OptimizationProblem):
+        logger.info(
+            "Tool %r rejected the problem document: %s",
+            tool,
+            ", ".join(f"{error.code} at {error.path or '<document>'}" for error in parsed),
+        )
+    return parsed
 
 
 def _progress_reporter(ctx: Context) -> ProgressCallback:
@@ -120,7 +156,7 @@ async def get_optimization_capabilities(
 
 @mcp.tool()
 async def validate_optimization_problem(
-    problem: OptimizationProblem,
+    problem: ProblemArgument,
 ) -> ProblemValidationResult:
     """Check a structured optimization problem without solving it.
 
@@ -136,10 +172,13 @@ async def validate_optimization_problem(
     skipping this call never hides them; calling it first only saves the
     solve.
 
-    A field the schema does not declare is a tool error naming its path,
-    never ignored: check the schema (get_optimization_capabilities with
-    include_schema: true returns it as problem_json_schema) before inventing
-    one.
+    A document that does not fit the schema — a field the schema does not
+    declare (never ignored), a missing required field, a value of the wrong
+    type — comes back as valid: false with every such error at once, coded
+    UNKNOWN_FIELD, MISSING_FIELD or INVALID_FIELD_VALUE and naming its path.
+    Semantic errors are reported once the document fits the schema. Check the
+    schema (get_optimization_capabilities with include_schema: true returns
+    it as problem_json_schema) before inventing a field.
 
     The estimate follows the model type the chosen backend compiles to. On a
     bqm backend it counts the slack bits of every inequality constraint plus
@@ -147,11 +186,14 @@ async def validate_optimization_problem(
     lower_bound..upper_bound range costs more compiled variables. On a cqm
     backend integer variables are native and no encoding bits are counted.
     """
-    return await anyio.to_thread.run_sync(get_state().service.validate, problem)
+    parsed = _parse("validate_optimization_problem", problem)
+    if not isinstance(parsed, OptimizationProblem):
+        return invalid_validation_result(parsed)
+    return await anyio.to_thread.run_sync(get_state().service.validate, parsed)
 
 
 @mcp.tool()
-async def recommend_backend(problem: OptimizationProblem) -> BackendRecommendationResult:
+async def recommend_backend(problem: ProblemArgument) -> BackendRecommendationResult:
     """Rank the solver backends of this server for a given problem, without solving it.
 
     Advisory only: solve_optimization always uses problem.solver.backend exactly as
@@ -179,13 +221,21 @@ async def recommend_backend(problem: OptimizationProblem) -> BackendRecommendati
     compiles to cqm is never matched. A backend carrying the first is ranked
     ahead of its neighbours, one carrying the second behind them; neither changes
     which backends are usable.
+
+    A document that does not fit the schema (a field the schema does not
+    declare, a missing required field, a value of the wrong type) comes back
+    as valid: false with every such error at once, coded UNKNOWN_FIELD,
+    MISSING_FIELD or INVALID_FIELD_VALUE, and no ranking.
     """
-    return await anyio.to_thread.run_sync(get_state().service.recommend, problem)
+    parsed = _parse("recommend_backend", problem)
+    if not isinstance(parsed, OptimizationProblem):
+        return invalid_recommendation_result(parsed)
+    return await anyio.to_thread.run_sync(get_state().service.recommend, parsed)
 
 
 @mcp.tool()
 async def solve_optimization(
-    problem: OptimizationProblem, ctx: Context
+    problem: ProblemArgument, ctx: Context
 ) -> SolveResult:
     """Solve a structured binary or bounded-integer combinatorial optimization
     problem.
@@ -230,16 +280,23 @@ async def solve_optimization(
     validate_optimization_problem gives for this backend (an ignored seed or
     parameter, a wide integer range, a negligible soft weight, ...) followed
     by any raised during the run; read them before trusting a weaker answer
-    than expected. A field the schema does not declare is a tool error naming
-    its path, never ignored. If the user did not name a backend, say in the
-    answer which backend ran and why.
+    than expected. A document that does not fit the schema (a field the
+    schema does not declare, never ignored; a missing required field; a value
+    of the wrong type) comes back as status invalid_problem with every such
+    error at once, coded UNKNOWN_FIELD, MISSING_FIELD or INVALID_FIELD_VALUE
+    and naming its path; semantic errors follow once it fits. If the user did
+    not name a backend, say in the answer which backend ran and why.
     """
+    started = time.perf_counter()
+    parsed = _parse("solve_optimization", problem)
+    if not isinstance(parsed, OptimizationProblem):
+        return invalid_solve_result(parsed, started)
     state = get_state()
     # One progress notification as each stage of each attempt starts
     # ("attempt 2 of 3: solving on simulated_annealing"), for hosts that
     # asked for progress; see ``_progress_reporter``.
     return await anyio.to_thread.run_sync(
         functools.partial(
-            state.service.solve, problem, on_progress=_progress_reporter(ctx)
+            state.service.solve, parsed, on_progress=_progress_reporter(ctx)
         )
     )

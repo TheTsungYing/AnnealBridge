@@ -246,6 +246,28 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "could be encoded wrongly; rescale the unit of the coefficients or "
         "the variables, or tighten the bounds."
     ),
+    # Schema errors: the document does not fit the problem schema, so it
+    # never reaches the validator (interfaces/problem_input.py).
+    "UNKNOWN_FIELD": (
+        "The field is not part of the problem schema and unknown fields are "
+        "never ignored; remove it, or use the field the schema declares for "
+        "that purpose. Read the schema before inventing a field: "
+        "get_optimization_capabilities with include_schema true, the "
+        "annealbridge://schema resource, or annealbridge export-schema."
+    ),
+    "MISSING_FIELD": (
+        "A field the problem schema requires is absent; add it at the "
+        "reported path (the schema lists every required field: "
+        "get_optimization_capabilities with include_schema true, the "
+        "annealbridge://schema resource, or annealbridge export-schema)."
+    ),
+    "INVALID_FIELD_VALUE": (
+        "The value at the reported path has the wrong type or is not one of "
+        "the allowed values, as the message describes; replace it with a "
+        "value of the type the problem schema declares (numbers as JSON "
+        "numbers, not strings or booleans; an operator as one of the listed "
+        "symbols)."
+    ),
     # Compilation
     "COMPILATION_FAILED": (
         "The problem passed validation but could not be compiled into a "

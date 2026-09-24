@@ -1,19 +1,27 @@
-"""Error paths of the ``solve_optimization`` MCP tool, via a real client.
+"""Error paths of the problem tools over MCP, via a real client.
 
-These tests show that the two error channels are both observable through the
-MCP round trip and that they stay distinct:
+A problem the tools refuse comes back as a *structured result*
+(``result.is_error is False``), never as an SDK tool error, whichever layer
+refuses it:
 
-* an SDK *tool error* (``result.is_error is True``) for the type layer, i.e. a
-  payload Pydantic cannot even parse into ``OptimizationProblem``; and
-* a *structured status* (``result.is_error is False`` plus a ``status`` other
-  than ``"success"``) for the semantic layer, i.e. a well-typed problem that
-  the validator or the backend gate rejects.
+* the schema layer — a document that does not fit ``OptimizationProblem``
+  (an unknown field, a missing field, a value of the wrong type, a problem
+  that is not even an object) — is parsed inside the tool
+  (``interfaces/problem_input.py``) and answered with ``status:
+  invalid_problem`` (``valid: false`` for validate / recommend) carrying
+  ``UNKNOWN_FIELD``, ``MISSING_FIELD`` or ``INVALID_FIELD_VALUE`` with the
+  offending path, every such error at once;
+* the semantic layer — a well-typed problem the validator or the backend gate
+  rejects — keeps its own status and codes.
 
-A caller must therefore check both: a clean ``is_error`` does not mean the
-solve succeeded.
+A caller must therefore read ``status`` (or ``valid``): a clean ``is_error``
+does not mean the solve succeeded. The one remaining SDK tool error is a call
+without any ``problem`` argument at all, which the SDK refuses before the tool
+runs.
 """
 
 import copy
+import json
 
 import pytest
 from mcp import Client
@@ -71,26 +79,46 @@ async def test_remote_backend_is_refused_without_a_fallback(load_example):
     assert content["solutions"] == []
 
 
-async def test_wrong_type_in_payload_is_an_sdk_tool_error(load_example):
-    problem = copy.deepcopy(load_example("knapsack.json", backend="exact"))
-    problem["objective"]["linear_terms"][0]["coefficient"] = "abc"
-
-    async with Client(mcp) as client:
-        result = await client.call_tool("solve_optimization", {"problem": problem})
-
-    # Pydantic rejects the payload before the tool body runs, so this surfaces
-    # as a tool error rather than as a SolveResult.
-    assert result.is_error is True
-
-
-# --- 2026-09-09 review F-11: booleans and strings in numeric fields ---------
+# --- Schema errors: a document that does not fit the problem schema ---------
 #
-# Type errors and semantic errors keep using different channels: a payload
-# Pydantic cannot parse is an SDK *tool error* (the tool body never runs), a
-# well-typed but nonsensical problem is a structured ``invalid_problem``
-# result. F-11 does not move anything between the two channels — it only makes
-# sure the type-layer message names the offending field and says *why* it was
-# refused, so an agent can fix the payload without guessing.
+# Parsed inside the tool (interfaces/problem_input.py), so it comes back in the
+# same shape as a semantic error: ``is_error`` False, ``status:
+# invalid_problem`` for solve and ``valid: false`` for validate / recommend,
+# with catalog codes and the path of each offending field. The message is
+# pydantic's short description only: never the submitted value, never a
+# documentation URL.
+
+PROBLEM_TOOLS = (
+    "validate_optimization_problem",
+    "recommend_backend",
+    "solve_optimization",
+)
+
+
+async def _call(tool: str, arguments: dict):
+    async with Client(mcp) as client:
+        return await client.call_tool(tool, arguments)
+
+
+def _schema_errors(tool: str, result) -> list[dict]:
+    """The errors of a schema-error answer, after checking its envelope."""
+    assert result.is_error is False, result.content
+    content = result.structured_content
+    if tool == "solve_optimization":
+        assert content["status"] == "invalid_problem"
+        assert content["solutions"] == []
+        assert content["attempts"] == []
+        assert content["message"] == content["errors"][0]["message"]
+    else:
+        assert content["valid"] is False
+    if tool == "recommend_backend":
+        assert content["recommendations"] == []
+    for error in content["errors"]:
+        assert "input_value" not in error["message"]
+        assert "pydantic.dev" not in error["message"]
+        assert error["retryable"] is False
+        assert error["recommended_action"]
+    return content["errors"]
 
 
 def _set_path(problem: dict, path: str, value) -> dict:
@@ -107,7 +135,32 @@ def _set_path(problem: dict, path: str, value) -> dict:
     return problem
 
 
-@pytest.mark.parametrize("tool", ["validate_optimization_problem", "solve_optimization"])
+@pytest.mark.parametrize("tool", PROBLEM_TOOLS)
+async def test_wrong_type_in_payload_is_a_structured_invalid_field_value(
+    load_example, tool
+):
+    problem = copy.deepcopy(load_example("knapsack.json", backend="exact"))
+    problem["objective"]["linear_terms"][0]["coefficient"] = "SECRET_SENTINEL_123"
+
+    result = await _call(tool, {"problem": problem})
+
+    (error,) = _schema_errors(tool, result)
+    assert error["code"] == "INVALID_FIELD_VALUE"
+    assert error["path"] == "objective.linear_terms[0].coefficient"
+    # The submitted value is never echoed back, anywhere in the answer.
+    assert "SECRET_SENTINEL_123" not in json.dumps(result.structured_content)
+
+
+# --- 2026-09-09 review F-11: booleans and strings in numeric fields ---------
+#
+# F-11 made sure a boolean or a string in a numeric field is refused with a
+# message that names the field and says *why*, so an agent can fix the
+# payload without guessing. The refusal is now a structured
+# INVALID_FIELD_VALUE at the field's path instead of an SDK tool error; the
+# readable message is what F-11 guarantees and it must survive the move.
+
+
+@pytest.mark.parametrize("tool", PROBLEM_TOOLS)
 @pytest.mark.parametrize(
     "path, value, field, noun",
     [
@@ -125,33 +178,33 @@ def _set_path(problem: dict, path: str, value) -> dict:
         "top_k-string",
     ],
 )
-async def test_boolean_or_string_numeric_field_is_a_readable_tool_error(
+async def test_boolean_or_string_numeric_field_is_a_readable_invalid_field_value(
     load_example, tool, path, value, field, noun
 ):
-    """Type errors go through the SDK tool error, semantic ones through the
-    structured ``invalid_problem`` result; F-11 only guarantees the type-layer
-    message is readable — it adds no new structured channel."""
     problem = _set_path(
         copy.deepcopy(load_example("knapsack.json", backend="exact")), path, value
     )
 
-    async with Client(mcp) as client:
-        result = await client.call_tool(tool, {"problem": problem})
+    result = await _call(tool, {"problem": problem})
 
-    assert result.is_error is True
-    message = result.content[0].text
+    (error,) = _schema_errors(tool, result)
+    assert error["code"] == "INVALID_FIELD_VALUE"
+    assert error["path"] == path
+    message = error["message"]
     assert field in message
     assert noun in message
+    # pydantic's "Value error, " prefix is stripped.
+    assert not message.startswith("Value error")
 
 
 # --- Unknown fields (models/strict.py) ---------------------------------------
 #
-# Same channel as the type errors above: an invented field name is the
-# LLM caller's characteristic mistake, and dropping it silently would solve
-# a different problem. The SDK's message names the offending path.
+# An invented field name is the LLM caller's characteristic mistake, and
+# dropping it silently would solve a different problem. It is refused as
+# UNKNOWN_FIELD naming the offending path, at every level of the document.
 
 
-@pytest.mark.parametrize("tool", ["validate_optimization_problem", "solve_optimization"])
+@pytest.mark.parametrize("tool", PROBLEM_TOOLS)
 @pytest.mark.parametrize(
     "path, key",
     [
@@ -163,19 +216,59 @@ async def test_boolean_or_string_numeric_field_is_a_readable_tool_error(
     ],
     ids=["top-level", "objective", "term", "constraint", "solver"],
 )
-async def test_unknown_field_is_a_tool_error_naming_the_path(
+async def test_unknown_field_is_a_structured_unknown_field_naming_the_path(
     load_example, tool, path, key
 ):
     problem = copy.deepcopy(load_example("knapsack.json", backend="exact"))
-    _set_path(problem, f"{path}.{key}" if path else key, 1)
+    field_path = f"{path}.{key}" if path else key
+    _set_path(problem, field_path, 1)
 
-    async with Client(mcp) as client:
-        result = await client.call_tool(tool, {"problem": problem})
+    result = await _call(tool, {"problem": problem})
+
+    (error,) = _schema_errors(tool, result)
+    assert error["code"] == "UNKNOWN_FIELD"
+    assert error["path"] == field_path
+    assert error["message"] == "unknown field, not in the problem schema"
+
+
+@pytest.mark.parametrize("tool", PROBLEM_TOOLS)
+async def test_every_schema_error_comes_back_at_once(load_example, tool):
+    problem = copy.deepcopy(load_example("knapsack.json", backend="exact"))
+    del problem["objective"]
+    problem["constraints"][0]["operator"] = "<"
+    problem["not_a_field"] = 1
+
+    result = await _call(tool, {"problem": problem})
+
+    errors = _schema_errors(tool, result)
+    assert [(error["code"], error["path"]) for error in errors] == [
+        ("MISSING_FIELD", "objective"),
+        ("INVALID_FIELD_VALUE", "constraints[0].operator"),
+        ("UNKNOWN_FIELD", "not_a_field"),
+    ]
+
+
+@pytest.mark.parametrize("tool", PROBLEM_TOOLS)
+@pytest.mark.parametrize(
+    "problem", ["a knapsack please", [], None], ids=["string", "list", "null"]
+)
+async def test_a_problem_that_is_not_an_object_has_no_path(tool, problem):
+    result = await _call(tool, {"problem": problem})
+
+    (error,) = _schema_errors(tool, result)
+    assert error["code"] == "INVALID_FIELD_VALUE"
+    assert error["path"] is None
+    assert error["message"] == "the problem must be a JSON object"
+
+
+@pytest.mark.parametrize("tool", PROBLEM_TOOLS)
+async def test_a_call_without_the_problem_argument_is_still_an_sdk_tool_error(tool):
+    """The one edge case left on the SDK's channel: with no ``problem``
+    argument at all the SDK refuses the call before the tool body runs, so
+    there is nothing to parse and no structured result to return."""
+    result = await _call(tool, {})
 
     assert result.is_error is True
-    message = result.content[0].text
-    assert key in message
-    assert "not permitted" in message
 
 
 async def test_unknown_variable_is_a_structured_invalid_problem():
@@ -234,21 +327,30 @@ async def test_max_retries_over_the_local_ceiling_is_refused(load_example):
 async def test_non_finite_penalty_multiplier_never_reaches_the_solver(
     load_example, value
 ):
-    # Blocked by the MCP type layer, not by the validator: JSON has no
-    # representation for inf/nan, so the value arrives as null and the tool's
-    # argument model (`penalty_multiplier: float`) refuses to parse it. The
-    # solver-side guard (`allow_inf_nan=False` on the field, plus the
+    # Blocked by the schema layer, not by the validator: JSON has no
+    # representation for inf/nan, so the value arrives as null and parsing the
+    # document (`penalty_multiplier: float`) refuses it as INVALID_FIELD_VALUE.
+    # The solver-side guard (`allow_inf_nan=False` on the field, plus the
     # INVALID_SOLVER_PREFERENCE validator rule) covers the in-process callers
     # that bypass this transport; over MCP the request never gets that far.
+    # A spy backend under the requested name proves the solver never runs.
+    backend = FakeDeclaredBackend()
+    server.reset_state(
+        server.build_state_from_policy(
+            ExecutionPolicy(allow_remote=True, limits={FAKE_LIMIT_KEY: 1000}),
+            SolverRegistry({"simulated_annealing": backend}),
+        )
+    )
     problem = load_example(
-        "knapsack.json", backend="exact", penalty_multiplier=value
+        "knapsack.json", backend="simulated_annealing", penalty_multiplier=value
     )
 
-    async with Client(mcp) as client:
-        result = await client.call_tool("solve_optimization", {"problem": problem})
+    result = await _call("solve_optimization", {"problem": problem})
 
-    assert result.is_error is True
-    assert "penalty_multiplier" in result.content[0].text
+    (error,) = _schema_errors("solve_optimization", result)
+    assert error["code"] == "INVALID_FIELD_VALUE"
+    assert error["path"] == "solver.penalty_multiplier"
+    assert backend.solve_calls == 0
 
 
 # --- infeasibility diagnostics ----------------------------------------------

@@ -340,13 +340,15 @@ async def run_mcp_checks(problems: dict[str, dict]) -> None:
                 }
                 verify_solution(await call("solve_optimization", annealed))
 
-            with check("MCP unknown field rejected as a tool error"):
+            with check("MCP unknown field returned as structured invalid_problem"):
                 unknown = copy.deepcopy(knapsack)
                 unknown["unexpected_field"] = 1
-                rejected = await client.call_tool(
-                    "solve_optimization", {"problem": unknown}
-                )
-                assert rejected.is_error, "an unknown field was accepted"
+                rejected = await call("solve_optimization", unknown)
+                assert rejected["status"] == "invalid_problem", rejected["status"]
+                assert "UNKNOWN_FIELD" in [
+                    error["code"] for error in rejected["errors"]
+                ], "UNKNOWN_FIELD is not among the reported errors"
+                assert not rejected["solutions"], "an unknown field still returned solutions"
 
             with check("MCP semantic error returned as structured invalid_problem"):
                 ghost = copy.deepcopy(knapsack)

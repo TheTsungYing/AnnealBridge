@@ -14,8 +14,9 @@ principle 5 and the README's "no silent decisions" as badly as clamping a
 parameter would.
 
 A forbidden key surfaces on the type layer, like a boolean in a numeric
-field (2026-09-09 review F-11): the CLI exits 2 naming the path, the MCP
-server returns a tool error naming the path, and the published JSON Schema
+field (2026-09-09 review F-11): both interfaces report it as ``UNKNOWN_FIELD``
+naming the path (``interfaces/problem_input.py``) — the CLI exits 2, the MCP
+tools return ``invalid_problem`` / ``valid: false`` — and the published JSON Schema
 carries ``additionalProperties: false`` so a schema-aware host refuses the
 document before it is sent. Output models (solutions, results, capabilities)
 are built by our own code and keep pydantic's default.

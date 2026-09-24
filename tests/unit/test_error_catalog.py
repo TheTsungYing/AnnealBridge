@@ -74,6 +74,11 @@ EXPECTED_CODES = [
     "POSTPROCESS_LIMIT",
     "POSTPROCESS_LIMIT_REACHED",
     "PENALTY_OVERFLOW",
+    # Roadmap batch 5: schema errors, a document that does not fit the
+    # problem schema (interfaces/problem_input.py).
+    "UNKNOWN_FIELD",
+    "MISSING_FIELD",
+    "INVALID_FIELD_VALUE",
 ]
 
 # Codes whose guidance quotes an IR *contract constant* verbatim, as 3b spec
@@ -107,7 +112,7 @@ class TestRecommendedActions:
         assert set(RECOMMENDED_ACTIONS) == set(EXPECTED_CODES)
 
     def test_expected_codes_are_unique(self):
-        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 50
+        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 53
 
 
 class TestRetryableCodes:

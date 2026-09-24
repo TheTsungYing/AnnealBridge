@@ -136,7 +136,8 @@ Rules a first document most often breaks:
 - Only the fields the problem JSON schema declares exist
   (get_optimization_capabilities with include_schema: true returns it as
   problem_json_schema). A field the schema does not declare (at any level)
-  is rejected as a tool error naming its path; it is never ignored, so an
+  is rejected as UNKNOWN_FIELD naming its path, in an invalid_problem
+  (valid: false) result like any other error; it is never ignored, so an
   invented field can never silently change the problem.
 - An integer variable needs "type": "integer" with both lower_bound and
   upper_bound, and the document must then carry "version": "1.1".
