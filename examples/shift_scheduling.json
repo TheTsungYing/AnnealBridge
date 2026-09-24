@@ -1,0 +1,172 @@
+{
+  "version": "1.0",
+  "name": "shift_scheduling",
+  "description": "Roster 3 people (ann, ben, cal) onto 4 shifts over two days (mon_day, mon_night, tue_day, tue_night) minimizing total dislike. Every shift is covered by exactly one person, nobody works more than 2 shifts, and nobody works mon_night followed by tue_day. Dislike per shift (mon_day, mon_night, tue_day, tue_night): ann 2 5 2 5; ben 3 1 3 1; cal 5 2 1 3. Soft preference (weight 3): ben would rather not work mon_night. Optimum: ann=mon_day and tue_day, cal=mon_night, ben=tue_night with total dislike 7 and the preference honoured.",
+  "variables": [
+    {"name": "ann_mon_day", "type": "binary", "description": "Ann works Monday day (dislike 2)"},
+    {"name": "ann_mon_night", "type": "binary", "description": "Ann works Monday night (dislike 5)"},
+    {"name": "ann_tue_day", "type": "binary", "description": "Ann works Tuesday day (dislike 2)"},
+    {"name": "ann_tue_night", "type": "binary", "description": "Ann works Tuesday night (dislike 5)"},
+    {"name": "ben_mon_day", "type": "binary", "description": "Ben works Monday day (dislike 3)"},
+    {"name": "ben_mon_night", "type": "binary", "description": "Ben works Monday night (dislike 1)"},
+    {"name": "ben_tue_day", "type": "binary", "description": "Ben works Tuesday day (dislike 3)"},
+    {"name": "ben_tue_night", "type": "binary", "description": "Ben works Tuesday night (dislike 1)"},
+    {"name": "cal_mon_day", "type": "binary", "description": "Cal works Monday day (dislike 5)"},
+    {"name": "cal_mon_night", "type": "binary", "description": "Cal works Monday night (dislike 2)"},
+    {"name": "cal_tue_day", "type": "binary", "description": "Cal works Tuesday day (dislike 1)"},
+    {"name": "cal_tue_night", "type": "binary", "description": "Cal works Tuesday night (dislike 3)"}
+  ],
+  "objective": {
+    "direction": "minimize",
+    "linear_terms": [
+      {"variable": "ann_mon_day", "coefficient": 2},
+      {"variable": "ann_mon_night", "coefficient": 5},
+      {"variable": "ann_tue_day", "coefficient": 2},
+      {"variable": "ann_tue_night", "coefficient": 5},
+      {"variable": "ben_mon_day", "coefficient": 3},
+      {"variable": "ben_mon_night", "coefficient": 1},
+      {"variable": "ben_tue_day", "coefficient": 3},
+      {"variable": "ben_tue_night", "coefficient": 1},
+      {"variable": "cal_mon_day", "coefficient": 5},
+      {"variable": "cal_mon_night", "coefficient": 2},
+      {"variable": "cal_tue_day", "coefficient": 1},
+      {"variable": "cal_tue_night", "coefficient": 3}
+    ]
+  },
+  "constraints": [
+    {
+      "id": "mon_day_covered",
+      "description": "Monday day is worked by exactly one person",
+      "type": "hard",
+      "terms": [
+        {"variable": "ann_mon_day", "coefficient": 1},
+        {"variable": "ben_mon_day", "coefficient": 1},
+        {"variable": "cal_mon_day", "coefficient": 1}
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "mon_night_covered",
+      "description": "Monday night is worked by exactly one person",
+      "type": "hard",
+      "terms": [
+        {"variable": "ann_mon_night", "coefficient": 1},
+        {"variable": "ben_mon_night", "coefficient": 1},
+        {"variable": "cal_mon_night", "coefficient": 1}
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "tue_day_covered",
+      "description": "Tuesday day is worked by exactly one person",
+      "type": "hard",
+      "terms": [
+        {"variable": "ann_tue_day", "coefficient": 1},
+        {"variable": "ben_tue_day", "coefficient": 1},
+        {"variable": "cal_tue_day", "coefficient": 1}
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "tue_night_covered",
+      "description": "Tuesday night is worked by exactly one person",
+      "type": "hard",
+      "terms": [
+        {"variable": "ann_tue_night", "coefficient": 1},
+        {"variable": "ben_tue_night", "coefficient": 1},
+        {"variable": "cal_tue_night", "coefficient": 1}
+      ],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "ann_at_most_two_shifts",
+      "description": "Ann works at most 2 shifts",
+      "type": "hard",
+      "terms": [
+        {"variable": "ann_mon_day", "coefficient": 1},
+        {"variable": "ann_mon_night", "coefficient": 1},
+        {"variable": "ann_tue_day", "coefficient": 1},
+        {"variable": "ann_tue_night", "coefficient": 1}
+      ],
+      "operator": "<=",
+      "rhs": 2
+    },
+    {
+      "id": "ben_at_most_two_shifts",
+      "description": "Ben works at most 2 shifts",
+      "type": "hard",
+      "terms": [
+        {"variable": "ben_mon_day", "coefficient": 1},
+        {"variable": "ben_mon_night", "coefficient": 1},
+        {"variable": "ben_tue_day", "coefficient": 1},
+        {"variable": "ben_tue_night", "coefficient": 1}
+      ],
+      "operator": "<=",
+      "rhs": 2
+    },
+    {
+      "id": "cal_at_most_two_shifts",
+      "description": "Cal works at most 2 shifts",
+      "type": "hard",
+      "terms": [
+        {"variable": "cal_mon_day", "coefficient": 1},
+        {"variable": "cal_mon_night", "coefficient": 1},
+        {"variable": "cal_tue_day", "coefficient": 1},
+        {"variable": "cal_tue_night", "coefficient": 1}
+      ],
+      "operator": "<=",
+      "rhs": 2
+    },
+    {
+      "id": "ann_rest_after_mon_night",
+      "description": "Ann does not work Monday night followed by Tuesday day",
+      "type": "hard",
+      "terms": [
+        {"variable": "ann_mon_night", "coefficient": 1},
+        {"variable": "ann_tue_day", "coefficient": 1}
+      ],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "ben_rest_after_mon_night",
+      "description": "Ben does not work Monday night followed by Tuesday day",
+      "type": "hard",
+      "terms": [
+        {"variable": "ben_mon_night", "coefficient": 1},
+        {"variable": "ben_tue_day", "coefficient": 1}
+      ],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "cal_rest_after_mon_night",
+      "description": "Cal does not work Monday night followed by Tuesday day",
+      "type": "hard",
+      "terms": [
+        {"variable": "cal_mon_night", "coefficient": 1},
+        {"variable": "cal_tue_day", "coefficient": 1}
+      ],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "ben_prefers_no_mon_night",
+      "description": "Ben would rather not work Monday night",
+      "type": "soft",
+      "terms": [
+        {"variable": "ben_mon_night", "coefficient": 1}
+      ],
+      "operator": "<=",
+      "rhs": 0,
+      "weight": 3
+    }
+  ],
+  "solver": {
+    "backend": "exact"
+  }
+}

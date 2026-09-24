@@ -350,8 +350,91 @@ class TestValidate:
         assert result.exit_code == 2
         output = _output(result)
         assert "not a valid optimization problem" in output
-        assert "objective.cubic_terms: unknown field" in output
+        assert "[UNKNOWN_FIELD] objective.cubic_terms: unknown field" in output
+        # The catalog's recommended action points at the schema.
+        assert "recommended action:" in output
         assert "export-schema" in output
+
+    @pytest.mark.parametrize("command", ["validate", "solve", "recommend"])
+    def test_every_schema_error_is_listed_at_once_with_its_code(
+        self, tmp_path, command
+    ):
+        # interfaces/problem_input.py: the same catalog codes the MCP tools
+        # return, every schema error at once, each with its recommended action.
+        problem = json.loads(
+            (EXAMPLES_DIR / "knapsack.json").read_text(encoding="utf-8-sig")
+        )
+        del problem["objective"]
+        problem["constraints"][0]["operator"] = "<"
+        problem["foo"] = 1
+        path = tmp_path / "schema_errors.json"
+        path.write_text(json.dumps(problem))
+
+        result = runner.invoke(app, [command, str(path)])
+
+        assert result.exit_code == 2
+        output = _output(result)
+        assert f"Error: '{path}' is not a valid optimization problem." in output
+        assert "Schema errors (3):" in output
+        assert "[MISSING_FIELD] objective: Field required" in output
+        assert (
+            "[INVALID_FIELD_VALUE] constraints[0].operator: "
+            "Input should be '==', '<=' or '>='"
+        ) in output
+        assert "[UNKNOWN_FIELD] foo: unknown field, not in the problem schema" in output
+        # One action per error, on stderr (``_output`` may repeat stderr).
+        assert result.stderr.count("recommended action:") == 3
+        assert result.stdout == ""
+        # pydantic's own rendering never reaches the user.
+        assert "input_value" not in output
+        assert "pydantic.dev" not in output
+
+    def test_schema_error_never_echoes_the_submitted_value(self, tmp_path):
+        problem = json.loads(
+            (EXAMPLES_DIR / "knapsack.json").read_text(encoding="utf-8-sig")
+        )
+        problem["objective"]["linear_terms"][0]["coefficient"] = "SECRET_SENTINEL_123"
+        path = tmp_path / "leaky.json"
+        path.write_text(json.dumps(problem))
+
+        result = runner.invoke(app, ["validate", str(path)])
+
+        assert result.exit_code == 2
+        output = _output(result)
+        assert (
+            "[INVALID_FIELD_VALUE] objective.linear_terms[0].coefficient: "
+            "coefficient must be a number, not a string"
+        ) in output
+        assert "SECRET_SENTINEL_123" not in output
+
+    def test_a_document_that_is_not_an_object_exits_2_without_a_path(self, tmp_path):
+        path = tmp_path / "list.json"
+        path.write_text("[]")
+
+        result = runner.invoke(app, ["validate", str(path)])
+
+        assert result.exit_code == 2
+        assert (
+            "[INVALID_FIELD_VALUE]: the problem must be a JSON object"
+            in _output(result)
+        )
+
+    @pytest.mark.parametrize("command", ["validate", "solve", "recommend"])
+    def test_json_mode_keeps_stdout_empty_on_a_schema_error(self, tmp_path, command):
+        # Deliberately unchanged: a document that does not load is a usage
+        # error (exit 2, report on stderr), not a JSON result on stdout.
+        path = tmp_path / "unknown_field.json"
+        problem = json.loads(
+            (EXAMPLES_DIR / "knapsack.json").read_text(encoding="utf-8-sig")
+        )
+        problem["foo"] = 1
+        path.write_text(json.dumps(problem))
+
+        result = runner.invoke(app, [command, str(path), "--json"])
+
+        assert result.exit_code == 2
+        assert result.stdout == ""
+        assert "[UNKNOWN_FIELD] foo:" in _output(result)
 
     def test_unknown_backend_override_exits_2(self):
         result = runner.invoke(

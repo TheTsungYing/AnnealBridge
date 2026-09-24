@@ -31,6 +31,7 @@ DOCUMENTED_VERSIONS = [
     ("README.md", re.compile(r"^Version (\S+?):", re.MULTILINE)),
     ("README.zh-TW.md", re.compile(r"^版本 (\S+?)：", re.MULTILINE)),
     ("docs/output-format.md", re.compile(r'"annealbridge_version": "([^"]+)"')),
+    ("docs/cli.md", re.compile(r'"annealbridge_version": "([^"]+)"')),
 ]
 
 

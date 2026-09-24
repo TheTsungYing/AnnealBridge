@@ -3,7 +3,7 @@
 # MCP server
 
 This page covers the `annealbridge-mcp` server: how to install it, the four
-tools it exposes alongside its three prompts and five resources, how to
+tools it exposes alongside its three prompts and six resources, how to
 configure Claude Desktop and other MCP hosts, the streamable-http transport,
 the MCP Inspector, and when an agent should call each tool.
 
@@ -213,8 +213,20 @@ The instructions also name the server's other two surfaces — the three
 [prompts](#prompts) and the [resources](#resources) under `annealbridge://`
 — so an agent that reads nothing else still learns they are there.
 
-A `problem` argument carrying a field the schema does not declare — at any
-level — is refused as a tool error naming the path, never dropped. See
+A `problem` argument that does not fit the schema — a field the schema does
+not declare at any level (refused, never dropped), a missing required field,
+a value of the wrong type, or a `problem` that is not an object — is not a
+tool error. `validate_optimization_problem`, `recommend_backend` and
+`solve_optimization` parse the argument themselves and answer with a
+structured result, `valid: false` or `status: "invalid_problem"`, whose
+`errors` list every such field at once as `UNKNOWN_FIELD`, `MISSING_FIELD` or
+`INVALID_FIELD_VALUE` with its path — the same shape as the result for a
+semantic error, which follows once the document fits the schema. The
+published input schema is unchanged: still the full problem model with
+`additionalProperties: false`, so a schema-aware host may refuse such a
+document before sending it. Only a call with no `problem` argument at all is
+still refused by the MCP SDK as a tool error. See
+[Schema errors](errors.md#schema-errors) and
 [Unknown fields are rejected](problem-format.md#unknown-fields-are-rejected).
 
 ### `get_optimization_capabilities`
@@ -266,8 +278,10 @@ listed with `available: false` and the redacted failure as its
 Checks a problem without solving it.
 
 - **Input:** `problem`.
-- **Returns:** `ProblemValidationResult` — `valid`, all semantic errors (each
-  with a `recommended_action`), advisory warnings, the estimated compiled
+- **Returns:** `ProblemValidationResult` — `valid`, all errors (each with a
+  `recommended_action`: the semantic errors, or the
+  [schema errors](errors.md#schema-errors) of a document that does not fit the
+  schema), advisory warnings, the estimated compiled
   variable count, the objective scale, and the model type the chosen backend
   would compile to.
 - **When to call:** before `solve_optimization` when the target is a remote
@@ -435,6 +449,10 @@ adds no rule of its own; like them it names no configuration value and no
 limit. A test parses each embedded document, validates it against the schema
 and solves it on `exact`, so the example an agent copies is one that runs.
 
+Each shape also has fuller documents among the [resources](#resources):
+`pick_subset` the `knapsack` and `integer_knapsack` examples, `assign` the
+`assignment` example, and `schedule_shifts` the `shift_scheduling` example.
+
 A host that supports prompts — Claude Desktop, for one — lists them in its
 input menu. That makes them the one place a user sees what this server is for
 without reading a tool description: picking a prompt walks the agent from
@@ -449,16 +467,20 @@ then solves with the tools above.
 | `annealbridge://examples/integer_knapsack` | Bounded integer knapsack: four integer variables (0..3), a hard capacity constraint and one soft constraint with a weight. Schema version `1.1` |
 | `annealbridge://examples/assignment` | Three workers to three tasks: one binary per pair, a minimized cost objective, six hard `== 1` constraints |
 | `annealbridge://examples/tsp` | Travelling salesman over four cities: a quadratic objective over city/position pairs with hard `== 1` constraints |
+| `annealbridge://examples/shift_scheduling` | Three people onto four shifts: one binary per person/shift pair, a minimized dislike objective, hard `== 1` coverage per shift, hard `<= 2` shifts per person, a hard rest rule and one soft preference with a weight. Schema version `1.0` |
 | `annealbridge://schema` | The full `OptimizationProblem` JSON schema, a description on every field |
 
-All five are served as `application/json`.
+All six are served as `application/json`.
 
-The four examples are the repository's [`examples/*.json`](../examples),
-shipped inside the package as data files because the repository directory
-never reaches an installed wheel. A test holds the two copies byte-for-byte
-equal, so the document an agent reads over MCP cannot drift from the file the
-README links to. Each is a complete, runnable document: read one instead of
-guessing at a shape the server instructions' minimal example does not cover.
+The five examples are the repository's [`examples/*.json`](../examples),
+shipped inside the package as data files (`annealbridge/interfaces/examples/`)
+because the repository directory never reaches an installed wheel. They are
+the same files the CLI's [`annealbridge example`](cli.md#example) prints, so
+a core install without the `[mcp]` extra reads the same documents. A test
+holds the packaged and repository copies byte-for-byte equal, so the document
+an agent reads over MCP cannot drift from the file the README links to. Each
+is a complete, runnable document: read one instead of guessing at a shape the
+server instructions' minimal example does not cover.
 
 The schema resource is the same text `annealbridge export-schema` prints and
 the same object `get_optimization_capabilities` returns as
@@ -468,11 +490,24 @@ on it.
 
 ## Claude Desktop (stdio)
 
-Add the server to `claude_desktop_config.json`. With uv installed this is the
-whole configuration: `uvx` fetches the package the first time the host starts
-the server and reuses its cache afterwards — run the `--version` warm-up from
-[Installation](#installation) once first, so that fetch does not happen inside
-the host's start-up timeout. Configuration goes through `env`:
+Add the server to `claude_desktop_config.json`:
+
+| OS | Configuration file |
+| --- | --- |
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+
+**Settings → Developer → Edit Config** in the app opens the file, creating it
+if it does not exist yet. For the Microsoft Store (MSIX) build on Windows and
+for the Linux build, the official documentation does not state a location;
+consult the host's documentation, and use the Edit Config button to open the
+file the app actually reads. Source:
+<https://modelcontextprotocol.io/docs/develop/connect-local-servers>.
+
+With uv installed this is the whole configuration: `uvx` fetches the package
+the first time the host starts the server and reuses its cache afterwards —
+run the `--version` warm-up from [Installation](#installation) once first, so
+that fetch does not happen inside the host's start-up timeout. Configuration goes through `env`:
 
 ```json
 {
@@ -504,7 +539,8 @@ If you installed the package with pip instead, `"command"` is the
 
 On Windows the path is `C:\\path\\to\\venv\\Scripts\\annealbridge-mcp.exe`
 (escape the backslashes in JSON). Every value in an `env` block is a string,
-including booleans and numbers. Restart the host after editing the file.
+including booleans and numbers. After editing the file, quit Claude Desktop
+completely and start it again.
 
 ## Other MCP hosts
 
@@ -519,6 +555,27 @@ Claude Code registers the server from the command line:
 ```bash
 claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
 ```
+
+`--scope local|project|user` (default `local`) decides where the entry is
+stored: the `local` and `user` scopes in `~/.claude.json`
+(`%USERPROFILE%\.claude.json` on Windows), the `project` scope in `.mcp.json`
+at the project root. Source: <https://code.claude.com/docs/en/mcp>.
+
+Codex reads its servers from `[mcp_servers.<name>]` tables — `command`,
+`args` and `env` — in `~/.codex/config.toml`, or in the `.codex/config.toml`
+of a trusted project; `codex mcp add <name> -- <command>` adds one from the
+command line. The official documentation does not state the location on
+Windows; consult the host's documentation. The same command as the Claude
+Desktop configuration above:
+
+```toml
+[mcp_servers.annealbridge]
+command = "uvx"
+args = ["--from", "annealbridge[mcp]", "annealbridge-mcp"]
+env = { ANNEALBRIDGE_ALLOW_REMOTE = "false" }
+```
+
+Source: <https://developers.openai.com/codex/mcp>.
 
 ## Streamable HTTP
 
@@ -568,7 +625,7 @@ Inspector:
 npx @modelcontextprotocol/inspector annealbridge-mcp
 ```
 
-Either way the Inspector lists the four tools, the three prompts and the five
+Either way the Inspector lists the four tools, the three prompts and the six
 resources, shows the tools' generated input/output schemas, and lets you
 submit a problem JSON by hand, render a prompt and read a resource — the
 fastest way to see what an agent will see.

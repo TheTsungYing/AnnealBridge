@@ -117,8 +117,8 @@ Three prompts (pick_subset, assign, schedule_shifts) walk through turning a
 request of one of those shapes into a document, each ending in a complete
 example.
 The resources under annealbridge://examples/ (knapsack, integer_knapsack,
-assignment, tsp) are complete example documents, and annealbridge://schema
-is the full problem JSON schema.
+assignment, tsp, shift_scheduling) are complete example documents, and
+annealbridge://schema is the full problem JSON schema.
 
 Choosing solver.backend:
 - If the user named a backend, use it; it is never substituted.

@@ -13,6 +13,7 @@ from importlib.metadata import version
 import pytest
 from mcp import Client
 
+from annealbridge.interfaces.bundled_examples import example_names
 from annealbridge.interfaces.mcp import mcp, server
 from annealbridge.models import OptimizationProblem
 
@@ -43,6 +44,8 @@ async def test_instructions_reach_the_client():
     for prompt in ("pick_subset", "assign", "schedule_shifts"):
         assert prompt in instructions
     assert "annealbridge://examples/" in instructions
+    for name in example_names():
+        assert name in instructions
     assert "annealbridge://schema" in instructions
 
 

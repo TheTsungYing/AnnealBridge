@@ -139,6 +139,11 @@ jobs:
           annealbridge validate examples/knapsack.json
           annealbridge recommend examples/knapsack.json
 
+      # The shipped examples are package data of annealbridge.interfaces, not
+      # of the mcp subpackage, so the CLI can print them without the extra.
+      - name: CLI example works without optional dependencies
+        run: annealbridge example knapsack
+
       # 2026-09-11 install verification (gap 3): the core install ships the
       # annealbridge-mcp script but not the mcp dependency. It must report
       # the missing extra on stderr with exit code 2 — never a traceback,

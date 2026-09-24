@@ -43,6 +43,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the backend is called and listed as blocking by `recommend`. Warning code
   `POSTPROCESS_LIMIT_REACHED`: post-processing stopped at the evaluation
   budget or the step cap; at most one per solve, the status is unaffected.
+- `annealbridge example` lists the example problems shipped inside the
+  package, one name and title per line, and `annealbridge example <name>`
+  prints one to stdout byte for byte as the file holds it, so
+  `annealbridge example knapsack > problem.json` or
+  `annealbridge example knapsack | annealbridge solve -` works on any install,
+  a core one without extras included. An unknown name lists the available
+  ones on stderr and exits `2`. The command reads no `ANNEALBRIDGE_*`
+  setting. It prints the same files the MCP server serves as
+  `annealbridge://examples/<name>`. See the `example` section of
+  `docs/cli.md`.
+- `annealbridge capabilities --json` prints the structure the MCP tool
+  `get_optimization_capabilities` returns by default (`include_schema:
+  false`), field for field, with `problem_json_schema: null`; the schema
+  itself stays with `export-schema`. Without `--json` the table is unchanged.
+- `solve`, `validate` and `recommend` read the problem from stdin when
+  `PROBLEM_FILE` is `-`, decoded as UTF-8 with or without a byte-order mark;
+  every message about it names the source `<stdin>`.
+- A fifth example, `shift_scheduling` (`examples/shift_scheduling.json`):
+  three people onto four shifts, one binary per person/shift pair, a
+  minimized dislike objective, hard `== 1` coverage per shift, at most two
+  shifts per person, no Monday night followed by Tuesday day, and one soft
+  preference; the optimum has total dislike 7. It compiles to 21 variables,
+  so validating or solving it on `exact` adds an `EXACT_NEAR_LIMIT` warning.
+  The MCP server serves it as the new resource
+  `annealbridge://examples/shift_scheduling`, the fuller counterpart of the
+  `schedule_shifts` prompt, and now lists six resources.
 
 ### Changed
 
@@ -78,6 +104,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fell from about 53 ms to 5 ms; on a problem dominated by wide hard
   constraints, about 20%. The first attempt's `compile_ms` now includes that
   one-time preparation.
+- A problem document that does not fit the schema — a field the schema does
+  not declare, a missing required field, a value of the wrong type, a problem
+  that is not an object — is now reported with three new error codes,
+  `UNKNOWN_FIELD`, `MISSING_FIELD` and `INVALID_FIELD_VALUE` (not retryable),
+  every such error at once, each with its path in the validator's notation
+  (`constraints[0].terms[1].coefficient`) and a catalog recommended action;
+  the message never echoes the submitted value. Over MCP,
+  `validate_optimization_problem`, `recommend_backend` and
+  `solve_optimization` no longer answer such a document with a tool error
+  (`isError: true` and pydantic's text) but with a structured result shaped
+  like any semantic error: `status: "invalid_problem"`, or `valid: false`.
+  Their published input schema is byte for byte unchanged; only a call with
+  no `problem` argument at all is still an SDK tool error. On the CLI, exit
+  code `2` and an empty stdout under `--json` are unchanged, but stderr now
+  lists the errors as `[CODE] path: message` under `Schema errors (n):`, each
+  with its recommended action, instead of `path: message` lines. Semantic
+  errors are still reported only once the document fits the schema. See the
+  Schema errors section of `docs/errors.md`.
+- The shipped example files moved from the package data of
+  `annealbridge.interfaces.mcp` (`annealbridge/interfaces/mcp/examples/`) to
+  that of `annealbridge.interfaces` (`annealbridge/interfaces/examples/`), so
+  the CLI reads them without the `[mcp]` extra. The resource URIs and the
+  four existing files are byte for byte unchanged, but anything that read
+  the files by the old package path must switch to the new one.
+- `docs/mcp.md` now states where each host keeps its configuration: Claude
+  Desktop's `claude_desktop_config.json` on macOS and Windows (and the app's
+  Edit Config button for any other build), the `claude mcp add --scope`
+  locations of Claude Code, and Codex's `[mcp_servers.<name>]` tables in
+  `~/.codex/config.toml`, with a TOML entry for AnnealBridge; each with its
+  source. Both READMEs point at it from the MCP section.
 
 ## [0.3.0] - 2026-09-22
 

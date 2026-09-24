@@ -76,9 +76,10 @@ pip install "annealbridge[gpu]"       # + PyTorch，讓 simulated_bifurcation �
 
 裝好 [uv](https://docs.astral.sh/uv/) 之後，把 server 加進
 `claude_desktop_config.json`（或你的 host 對應的設定檔），然後重新啟動
-host。第一次啟動時 `uvx` 會把套件抓進它自己的快取環境；這次下載包含 numpy、
-dimod、dwave-samplers 等，可能要數十秒，久到 host 的啟動逾時會把 server 顯示
-成 disconnected。建議先在終端機跑一次：
+host；Claude Desktop、Claude Code 與 Codex 的設定檔位置見
+[docs/mcp.md](docs/mcp.md#claude-desktop-stdio)。第一次啟動時 `uvx` 會把套件
+抓進它自己的快取環境；這次下載包含 numpy、dimod、dwave-samplers 等，可能要
+數十秒，久到 host 的啟動逾時會把 server 顯示成 disconnected。建議先在終端機跑一次：
 
 ```bash
 uvx --from "annealbridge[mcp]" annealbridge-mcp --version
@@ -126,7 +127,7 @@ claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
 
 如果你的 host 會在輸入選單列出 prompts，其中三個──`pick_subset`、`assign`
 與 `schedule_shifts`──各自帶著 agent 把你自己的句子寫成一種日常請求類型的
-問題文件，再由它求解。server 同時提供 resources：`annealbridge://examples/` 底下的四個範例
+問題文件，再由它求解。server 同時提供 resources：`annealbridge://examples/` 底下的五個範例
 文件，以及 `annealbridge://schema` 的完整問題 schema，agent 可以直接讀完整
 範例或 schema，不必用猜的。
 
@@ -173,7 +174,7 @@ Optimality proven: yes
 
 `Elapsed` 是服務端量到的實際耗時，每次執行都不一樣。加上 `--json` 可以拿到
 完整的 `SolveResult`，`--backend simulated_annealing` 可以覆寫 backend，也
-可以試試 `validate`、`recommend`、`capabilities` 與 `export-schema`。見
+可以試試 `validate`、`recommend`、`capabilities`、`example` 與 `export-schema`。見
 [docs/cli.md](docs/cli.md)。
 
 ## 問題 JSON
@@ -224,11 +225,14 @@ Optimality proven: yes
 `annealbridge export-schema` 會印出 JSON Schema，agent 可以拿它來做結構化
 輸出。
 
-repository 裡有四個可直接執行的範例：[背包問題](examples/knapsack.json)、
-[指派問題](examples/assignment.json)、[TSP](examples/tsp.json) 與
-[整數背包問題](examples/integer_knapsack.json)。安裝後的 wheel 不會留下一個
-CLI 讀得到的 `examples/` 目錄，請從 checkout 或 GitHub 取得；MCP server 則以
-`annealbridge://examples/` 底下的 resources 提供同樣這四個文件。
+repository 裡有五個可直接執行的範例：[背包問題](examples/knapsack.json)、
+[指派問題](examples/assignment.json)、[TSP](examples/tsp.json)、
+[整數背包問題](examples/integer_knapsack.json) 與
+[排班問題](examples/shift_scheduling.json)。安裝好的套件也帶著同樣的檔案：
+`annealbridge example` 會列出它們，`annealbridge example knapsack > knapsack.json`
+可存下其中一個（或直接用 `annealbridge example knapsack | annealbridge solve -`
+接給 `solve`）；MCP server 則以 `annealbridge://examples/` 底下的 resources
+提供同樣這五個文件。
 
 ## 運作方式
 

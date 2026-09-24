@@ -6,6 +6,7 @@ No optimization logic lives here (spec §45).
 """
 
 import json
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Annotated, Optional, TypeVar, get_args
@@ -14,12 +15,19 @@ import typer
 from pydantic import BaseModel, ValidationError
 
 from annealbridge.config import SettingsError
+from annealbridge.interfaces.bundled_examples import (
+    EXAMPLES,
+    UnknownExampleError,
+    example_names,
+    example_text,
+)
 from annealbridge.interfaces.capabilities import BackendCapability, build_capabilities
 from annealbridge.interfaces.composition import (
     AppState,
     build_state,
     exit_on_settings_error,
 )
+from annealbridge.interfaces.problem_input import parse_problem
 from annealbridge.models import (
     OptimizationProblem,
     SolveError,
@@ -75,36 +83,54 @@ def _format_number(value: float) -> str:
     return f"{value:g}"
 
 
-def _load_problem(path: Path) -> OptimizationProblem:
-    """Load and parse a problem JSON file, exiting with a friendly error on failure."""
+# The problem-file argument that means "read the document from stdin".
+STDIN_ARGUMENT = "-"
+
+
+def _read_stdin() -> str:
+    """The whole of stdin as UTF-8 text, a leading BOM dropped.
+
+    Read as bytes and decoded here rather than through ``sys.stdin``'s text
+    layer, whose encoding follows the Windows console code page.
+    """
     try:
-        text = path.read_text(encoding="utf-8-sig")
+        return sys.stdin.buffer.read().decode("utf-8-sig")
     except OSError as exc:
-        typer.echo(f"Error: cannot read '{path}': {exc}", err=True)
+        typer.echo(f"Error: cannot read '<stdin>': {exc}", err=True)
         raise typer.Exit(code=2)
+    except UnicodeDecodeError as exc:
+        typer.echo(f"Error: '<stdin>' is not valid UTF-8: {exc}", err=True)
+        raise typer.Exit(code=2)
+
+
+def _load_problem(path: Path) -> OptimizationProblem:
+    """Load and parse a problem JSON file (``-`` for stdin), exiting with a
+    friendly error on failure."""
+    # What every message below names: the path, or ``<stdin>``.
+    source = str(path)
+    if source == STDIN_ARGUMENT:
+        source = "<stdin>"
+        text = _read_stdin()
+    else:
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            typer.echo(f"Error: cannot read '{source}': {exc}", err=True)
+            raise typer.Exit(code=2)
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        typer.echo(f"Error: '{path}' is not valid JSON: {exc}", err=True)
+        typer.echo(f"Error: '{source}' is not valid JSON: {exc}", err=True)
         raise typer.Exit(code=2)
-    try:
-        return OptimizationProblem.model_validate(data)
-    except ValidationError as exc:
-        typer.echo(f"Error: '{path}' is not a valid optimization problem:", err=True)
-        for err in exc.errors():
-            location = ".".join(str(part) for part in err["loc"])
-            if err["type"] == "extra_forbidden":
-                # The input models refuse unknown keys (models/strict.py):
-                # say so in the problem's own vocabulary and point at the
-                # schema, instead of pydantic's generic wording.
-                message = (
-                    "unknown field, not in the problem schema (see "
-                    "'annealbridge export-schema')"
-                )
-            else:
-                message = err["msg"]
-            typer.echo(f"  {location}: {message}", err=True)
-        raise typer.Exit(code=2)
+    parsed = parse_problem(data)
+    if isinstance(parsed, OptimizationProblem):
+        return parsed
+    # Schema errors (unknown field, missing field, wrong type) in the same
+    # catalog vocabulary the MCP tools return them in, all at once.
+    lines = [f"Error: '{source}' is not a valid optimization problem."]
+    _render_errors(parsed, lines, "Schema errors")
+    typer.echo("\n".join(lines), err=True)
+    raise typer.Exit(code=2)
 
 
 def _build_state() -> AppState:
@@ -268,7 +294,10 @@ def _render_human(problem: OptimizationProblem, result: SolveResult) -> str:
 # once. Each ``--json`` option keeps its own declaration: its help names the
 # result model that command prints.
 ProblemFileArgument = Annotated[
-    Path, typer.Argument(help="Path to an OptimizationProblem JSON file")
+    Path,
+    typer.Argument(
+        help="Path to an OptimizationProblem JSON file, or - to read it from stdin"
+    ),
 ]
 BackendOption = Annotated[
     Optional[str],
@@ -467,11 +496,56 @@ def _render_capabilities_table(backends: list[BackendCapability]) -> str:
 
 
 @app.command()
-def capabilities() -> None:
+def capabilities(
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=(
+                "Print the capabilities as JSON: the structure the MCP tool "
+                "get_optimization_capabilities returns, without the schema"
+            ),
+        ),
+    ] = False,
+) -> None:
     """List backends with availability, policy status and limits."""
     state = _build_state()
+    if json_output:
+        # The MCP tool's default view: problem_json_schema stays null, as
+        # ``export-schema`` already prints the schema on its own.
+        caps = build_capabilities(state.registry, state.policy, include_schema=False)
+        typer.echo(caps.model_dump_json(indent=2))
+        return
     caps = build_capabilities(state.registry, state.policy)
     typer.echo(_render_capabilities_table(caps.backends))
+
+
+@app.command()
+def example(
+    name: Annotated[
+        Optional[str],
+        typer.Argument(help="The example to print; omit to list them all"),
+    ] = None,
+) -> None:
+    """List the shipped example problems, or print one as JSON."""
+    if name is None:
+        width = max(len(entry.name) for entry in EXAMPLES)
+        for entry in EXAMPLES:
+            summary = entry.title.removeprefix("Example: ")
+            typer.echo(f"{entry.name:<{width}}  {summary}")
+        return
+    try:
+        text = example_text(name)
+    except UnknownExampleError:
+        typer.echo(
+            f"Error: unknown example '{name}'. "
+            f"Available: {', '.join(example_names())}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    # The file verbatim: written as bytes, so neither a trailing newline nor
+    # Windows newline translation is added, and it already ends in one.
+    typer.echo(text.encode("utf-8"), nl=False)
 
 
 @app.command("export-schema")

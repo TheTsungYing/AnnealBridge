@@ -1,7 +1,7 @@
-"""The five MCP resources, through a real client.
+"""The six MCP resources, through a real client.
 
 An agent reads a resource instead of guessing what a complete document looks
-like, so the four examples must be the repository's own ``examples/*.json``
+like, so the five examples must be the repository's own ``examples/*.json``
 — shipped inside the package because the repository directory never reaches
 an installed wheel — and the schema must be the one the CLI's
 ``export-schema`` prints. The drift guard below holds the two copies of each
@@ -17,19 +17,28 @@ from mcp import Client
 from mcp.shared.exceptions import MCPError
 from typer.testing import CliRunner
 
+from annealbridge.interfaces import bundled_examples
 from annealbridge.interfaces.cli.main import app
-from annealbridge.interfaces.mcp import mcp, resources
+from annealbridge.interfaces.mcp import mcp
 from annealbridge.models import OptimizationProblem
 from tests.conftest import EXAMPLES_DIR
 
 pytestmark = pytest.mark.anyio
 
-EXAMPLE_NAMES = ("knapsack", "integer_knapsack", "assignment", "tsp")
+EXAMPLE_NAMES = (
+    "knapsack",
+    "integer_knapsack",
+    "assignment",
+    "tsp",
+    "shift_scheduling",
+)
 EXAMPLE_URIS = tuple(f"annealbridge://examples/{name}" for name in EXAMPLE_NAMES)
 ALL_URIS = EXAMPLE_URIS + ("annealbridge://schema",)
 
-# The directory the resources read from, inside the installed package.
-PACKAGED_EXAMPLES = Path(resources.__file__).parent / "examples"
+# The directory the resources read from, inside the installed package: a
+# plain data directory of ``annealbridge.interfaces``, outside the ``mcp``
+# subpackage so a core-only install can read it too.
+PACKAGED_EXAMPLES = Path(bundled_examples.__file__).parent / "examples"
 
 runner = CliRunner()
 
@@ -42,7 +51,7 @@ async def _read(uri: str):
     return result.contents[0]
 
 
-async def test_the_five_resources_are_listed_with_their_metadata():
+async def test_the_six_resources_are_listed_with_their_metadata():
     async with Client(mcp) as client:
         listed = (await client.list_resources()).resources
 
@@ -54,12 +63,31 @@ async def test_the_five_resources_are_listed_with_their_metadata():
         assert resource.description
 
 
+async def test_example_resources_carry_the_registry_metadata():
+    # One source for name, title and description: the registry the CLI's
+    # ``example`` command lists from.
+    async with Client(mcp) as client:
+        listed = {
+            str(resource.uri): resource
+            for resource in (await client.list_resources()).resources
+        }
+
+    assert bundled_examples.example_names() == EXAMPLE_NAMES
+    for entry in bundled_examples.EXAMPLES:
+        resource = listed[f"annealbridge://examples/{entry.name}"]
+        assert resource.name == entry.name
+        assert resource.title == entry.title
+        assert resource.description == entry.description
+
+
 @pytest.mark.parametrize("name", EXAMPLE_NAMES)
 async def test_an_example_resource_is_the_shipped_file_verbatim(name):
     content = await _read(f"annealbridge://examples/{name}")
 
     assert content.mime_type == "application/json"
-    assert content.text == (EXAMPLES_DIR / f"{name}.json").read_text(encoding="utf-8")
+    # The file's bytes decoded, not read_text(): universal newlines would
+    # hide a CRLF copy that the resource then serves.
+    assert content.text == (EXAMPLES_DIR / f"{name}.json").read_bytes().decode("utf-8")
 
     payload = json.loads(content.text)
     problem = OptimizationProblem.model_validate(payload)
@@ -73,10 +101,15 @@ def test_the_packaged_example_has_not_drifted_from_the_repository_one(name):
     ).read_bytes()
 
 
-def test_the_package_ships_exactly_the_four_examples():
+def test_the_package_ships_exactly_the_five_examples():
     assert sorted(path.name for path in PACKAGED_EXAMPLES.glob("*.json")) == sorted(
         f"{name}.json" for name in EXAMPLE_NAMES
     )
+
+
+def test_the_old_mcp_examples_directory_is_gone():
+    mcp_package = Path(bundled_examples.__file__).parent / "mcp"
+    assert not (mcp_package / "examples").exists()
 
 
 async def test_the_schema_resource_is_what_export_schema_prints():

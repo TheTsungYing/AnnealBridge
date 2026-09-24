@@ -9,6 +9,7 @@ subprocess.
 """
 
 import builtins
+import importlib
 import sys
 
 import pytest
@@ -163,3 +164,38 @@ def test_a_different_missing_dependency_is_not_swallowed(
         mcp_entrypoint.main()
 
     assert excinfo.value.name == "anyio"
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["annealbridge.interfaces.problem_input", "annealbridge.interfaces.cli.main"],
+)
+def test_the_cli_and_its_problem_parser_import_without_mcp_or_anyio(
+    monkeypatch: pytest.MonkeyPatch, module: str
+) -> None:
+    """Roadmap batch 5: the CLI parses a problem document through
+    ``interfaces/problem_input.py``, shared with the MCP tools. That module
+    lives outside the ``mcp`` subpackage precisely so a core-only install
+    (no ``mcp``, no ``anyio``) can still import it and the CLI."""
+    _forget_mcp_modules(monkeypatch)
+    for name in (
+        "annealbridge.interfaces.problem_input",
+        "annealbridge.interfaces.cli",
+        "annealbridge.interfaces.cli.main",
+    ):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    # Re-importing rebinds these attributes of the parent package; have
+    # monkeypatch put the original module objects back afterwards.
+    import annealbridge.interfaces as interfaces
+
+    for attribute in ("problem_input", "cli"):
+        monkeypatch.setattr(
+            interfaces, attribute, getattr(interfaces, attribute, None), raising=False
+        )
+    monkeypatch.setitem(sys.modules, "mcp", None)
+    monkeypatch.setitem(sys.modules, "anyio", None)
+
+    imported = importlib.import_module(module)
+
+    assert imported.__name__ == module
+    assert MCP_INTERFACE_PACKAGE not in sys.modules

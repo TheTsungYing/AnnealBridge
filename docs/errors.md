@@ -26,6 +26,9 @@ Errors and warnings share one shape.
 
 Validation collects **all** errors in one pass, so a caller sees every problem
 with the document at once rather than fixing them one round-trip at a time.
+The one exception is the boundary between the two layers: a document that does
+not fit the schema is reported with every schema error at once, and its
+semantic errors follow once it does — see [Schema errors](#schema-errors).
 
 ## Errors by status
 
@@ -37,8 +40,15 @@ reported with.
 
 No backend is invoked and no quota is spent. Fix the document and resubmit.
 
+The first three codes are schema errors: the document does not fit the problem
+schema, so it never became a problem the validator could check (see
+[Schema errors](#schema-errors)). Their recommended action is quoted in full.
+
 | Code | What it means | Recommended action (summary) |
 | --- | --- | --- |
+| `UNKNOWN_FIELD` | The document carries a field the problem schema does not declare, at any level. Unknown fields are refused, never dropped: an invented field could otherwise silently change the problem. | The field is not part of the problem schema and unknown fields are never ignored; remove it, or use the field the schema declares for that purpose. Read the schema before inventing a field: get_optimization_capabilities with include_schema true, the annealbridge://schema resource, or annealbridge export-schema. |
+| `MISSING_FIELD` | A field the problem schema requires is absent, for example `objective` or a variable's `name`. | A field the problem schema requires is absent; add it at the reported path (the schema lists every required field: get_optimization_capabilities with include_schema true, the annealbridge://schema resource, or annealbridge export-schema). |
+| `INVALID_FIELD_VALUE` | A value has the wrong type or is not one of the allowed values — a string or a boolean in a numeric field, an operator outside `==` / `<=` / `>=`, an unknown backend name — or the problem itself is not a JSON object (then `path` is `null`). | The value at the reported path has the wrong type or is not one of the allowed values, as the message describes; replace it with a value of the type the problem schema declares (numbers as JSON numbers, not strings or booleans; an operator as one of the listed symbols). |
 | `NO_VARIABLES` | The problem declares no variables, so there is nothing to optimize. | Declare at least one variable. |
 | `UNKNOWN_VARIABLE` | A term references a variable that is not declared. | Add the variable, or correct the name in the term. |
 | `DUPLICATE_VARIABLE` | The same variable name is declared more than once. | Remove the duplicate declarations. |
@@ -129,6 +139,74 @@ CONCURRENCY_LIMIT   REMOTE_TIMEOUT   REMOTE_SOLVER_ERROR   REMOTE_BUSY
 Every other error is deterministic: resubmitting it unchanged will fail the
 same way. No warning is ever retryable.
 
+## Schema errors
+
+Before the validator can check a problem, the submitted document has to parse
+into the problem model. A document that does not — a field the schema does not
+declare, a missing required field, a value of the wrong type or outside the
+allowed values, or a problem that is not a JSON object at all — is reported
+with the three schema codes `UNKNOWN_FIELD`, `MISSING_FIELD` and
+`INVALID_FIELD_VALUE`. The CLI and the MCP server parse the document the same
+way, so they report the same codes for the same document.
+
+- **All at once.** Every schema error in the document is listed in one
+  answer, each with its own `path` in the validator's notation
+  (`constraints[0].terms[1].coefficient`); the path is `null` only when the
+  problem itself is not an object. The name of an undeclared field that is
+  not a plain identifier is written as a JSON string in brackets
+  (`solver[""]`, `["a.b"]`), so it cannot pose as further path segments.
+- **Schema before semantics.** Schema errors and semantic errors are never
+  reported together: until the document fits the schema there is no problem
+  for the validator to check. Fix the schema errors and resubmit; a semantic
+  error such as `UNKNOWN_VARIABLE` then shows up on the next call.
+- **No input values.** Unlike most messages on this page, a schema error's
+  message is only a short description of what was expected
+  (`coefficient must be a number, not a string`,
+  `Input should be '==', '<=' or '>='`). It never echoes the submitted value
+  and never links to external documentation, since a document can carry
+  anything a user typed.
+
+Over MCP, `validate_optimization_problem`, `recommend_backend` and
+`solve_optimization` return schema errors as a structured result, not as a
+tool error: `solve_optimization` answers `status: "invalid_problem"` with no
+backend, no solutions and the first error's text as `message`, exactly the
+shape of any other `invalid_problem` result; the other two answer
+`valid: false` with the errors and nothing estimated or ranked. An invented
+`objective.cubic_terms` block, for example, comes back as this entry of
+`errors`:
+
+```json
+{
+  "code": "UNKNOWN_FIELD",
+  "path": "objective.cubic_terms",
+  "message": "unknown field, not in the problem schema",
+  "retryable": false,
+  "recommended_action": "The field is not part of the problem schema and unknown fields are never ignored; remove it, or use the field the schema declares for that purpose. Read the schema before inventing a field: get_optimization_capabilities with include_schema true, the annealbridge://schema resource, or annealbridge export-schema."
+}
+```
+
+The one exception is a call that carries no `problem` argument at all: the MCP
+SDK refuses it before the tool runs, so it comes back as a plain SDK tool error
+(`isError: true`) rather than a result.
+
+On the CLI, `solve`, `validate` and `recommend` exit `2` and print the schema
+errors to stderr in the same `[CODE] path: message` layout as every other error
+block, each followed by its recommended action; with `--json`, stdout stays
+empty:
+
+```console
+$ annealbridge validate broken.json
+Error: 'broken.json' is not a valid optimization problem.
+
+Schema errors (3):
+  [MISSING_FIELD] objective: Field required
+    recommended action: A field the problem schema requires is absent; add it at the reported path (...)
+  [INVALID_FIELD_VALUE] constraints[0].operator: Input should be '==', '<=' or '>='
+    recommended action: The value at the reported path has the wrong type or is not one of the allowed values, ...
+  [UNKNOWN_FIELD] foo: unknown field, not in the problem schema
+    recommended action: The field is not part of the problem schema and unknown fields are never ignored; ...
+```
+
 ## Warning codes
 
 Warnings never block. They appear in `ProblemValidationResult.warnings` and in
@@ -217,7 +295,8 @@ Exit code `2` covers three situations:
 - the input file cannot be read, is not valid JSON, or is not a valid
   optimization problem document (a schema error, as opposed to a semantic
   one — a wrong type, a missing required field, or a field the schema does
-  not declare, reported as `<path>: unknown field`);
+  not declare, each listed as `[CODE] path: message` with the codes of
+  [Schema errors](#schema-errors));
 - `--backend` (available on `solve` and `validate` only) names a backend
   that is not one of the known names;
 - an `ANNEALBRIDGE_*` environment variable holds an illegal value. The message

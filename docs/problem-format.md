@@ -19,7 +19,8 @@ rejected document produces, see [Errors and warnings](errors.md).
 
 A 0/1 knapsack with a capacity of 10 — the reduced form of
 [examples/knapsack.json](../examples/knapsack.json), a file in a repository
-checkout (the MCP server also serves it as `annealbridge://examples/knapsack`):
+checkout (an installed package prints it with `annealbridge example knapsack`,
+and the MCP server serves it as `annealbridge://examples/knapsack`):
 
 ```json
 {
@@ -103,7 +104,8 @@ solver, and no network call or quota is ever spent on one.
 
 Numeric fields refuse a boolean or a string rather than coercing it: `true` is
 a flag and `"10"` is text, so either one in a coefficient, a right-hand side, a
-weight or a count is a schema error. An integer is still accepted where a float
+weight or a count is a schema error (`INVALID_FIELD_VALUE`, with a message such
+as `coefficient must be a number, not a boolean`). An integer is still accepted where a float
 is expected (`2` → `2.0`), and an integral float where an integer is expected
 (`10.0` → `10`).
 
@@ -118,16 +120,25 @@ the server would solve a *different* problem that passes every check. The
 published JSON Schema carries `additionalProperties: false` on every object
 for the same reason.
 
-On the CLI this is exit code `2`:
+It is reported as `UNKNOWN_FIELD`, one of the three
+[schema error](errors.md#schema-errors) codes, alongside `MISSING_FIELD` and
+the `INVALID_FIELD_VALUE` a boolean in a numeric field gets; every schema
+error in the document is listed at once. On the CLI this is exit code `2`:
 
 ```console
 $ annealbridge solve problem.json
-Error: 'problem.json' is not a valid optimization problem:
-  objective.cubic_terms: unknown field, not in the problem schema (see 'annealbridge export-schema')
+Error: 'problem.json' is not a valid optimization problem.
+
+Schema errors (1):
+  [UNKNOWN_FIELD] objective.cubic_terms: unknown field, not in the problem schema
+    recommended action: The field is not part of the problem schema and unknown fields are never ignored; remove it, or use the field the schema declares for that purpose. Read the schema before inventing a field: get_optimization_capabilities with include_schema true, the annealbridge://schema resource, or annealbridge export-schema.
 ```
 
-Over MCP it is a tool error (not a `SolveResult`) whose text names the same
-path, in the same channel as a boolean in a numeric field.
+Over MCP it is a structured result, not a tool error: `status:
+"invalid_problem"` from `solve_optimization` and `valid: false` from
+`validate_optimization_problem` and `recommend_backend`, with the same code,
+path and recommended action in `errors`. Semantic errors — an undeclared
+variable, say — are reported once the document fits the schema.
 
 ## Variables
 
@@ -559,7 +570,10 @@ Only these four values are ever forwarded to Fujitsu; `num_reads`,
 
 ## Bundled examples
 
-Four ready-to-run problems ship with the repository.
+Five ready-to-run problems ship with the repository, and inside the
+installed package as well: `annealbridge example` lists them and
+`annealbridge example <name>` prints one (see [CLI](cli.md#example)), and the
+MCP server serves the same files as `annealbridge://examples/<name>`.
 
 - [examples/knapsack.json](../examples/knapsack.json) — 0/1 knapsack, 4 items,
   capacity 10, one hard `<=` constraint. Global optimum selects items A and C
@@ -576,8 +590,18 @@ Four ready-to-run problems ship with the repository.
   two of B and C combined, weight 3). The unique global optimum is
   `item_a=0, item_b=1, item_c=1, item_d=3` with value 34; `annealbridge
   validate` reports 15 compiled variables on the BQM path.
+- [examples/shift_scheduling.json](../examples/shift_scheduling.json) — 3
+  people × 4 shifts over two days, one binary per person/shift pair,
+  minimizing total dislike. Hard constraints: every shift covered by exactly
+  one person (`== 1`), nobody on more than 2 shifts (`<= 2`), and nobody on
+  Monday night followed by Tuesday day (`<= 1`); one soft preference (Ben
+  would rather not work Monday night, weight 3). The global optimum,
+  ann=mon_day and tue_day, cal=mon_night, ben=tue_night, has total dislike 7
+  with the preference honoured. It compiles to 21 variables on the BQM path,
+  close enough to the `exact` limit that validating or solving it on `exact`
+  adds an `EXACT_NEAR_LIMIT` warning.
 
-All four declare a local backend; try `--backend simulated_annealing` to
+All five declare a local backend; try `--backend simulated_annealing` to
 compare against `exact` (simulated annealing is heuristic — without a fixed
 `seed` and enough `num_reads` it may return a feasible but sub-optimal integer
 knapsack). With remote execution configured, `--backend leap_hybrid_cqm` runs

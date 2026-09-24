@@ -50,6 +50,15 @@ from contextlib import contextmanager
 from pathlib import Path
 
 EXAMPLE_FILES = ("knapsack.json", "integer_knapsack.json")
+# The examples the wheel ships as package data, in the order
+# ``annealbridge example`` lists them.
+BUNDLED_EXAMPLES = [
+    "knapsack",
+    "integer_knapsack",
+    "assignment",
+    "tsp",
+    "shift_scheduling",
+]
 MCP_TOOLS = [
     "get_optimization_capabilities",
     "recommend_backend",
@@ -169,6 +178,19 @@ def run(command: list[str], *, code: int = 0) -> subprocess.CompletedProcess[str
     return result
 
 
+def run_bytes(
+    command: list[str], *, stdin: bytes | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    """``run`` without text decoding: stdout exactly as the process wrote it,
+    so no newline translation hides a byte the command added or dropped."""
+    result = subprocess.run(command, input=stdin, capture_output=True, timeout=120)
+    assert result.returncode == 0, (
+        f"{command[0]} {' '.join(command[1:])} exited {result.returncode}, "
+        f"expected 0; stderr: {result.stderr.decode('utf-8', 'replace').strip()}"
+    )
+    return result
+
+
 def verify_solution(result: dict, expected: float | None = None) -> None:
     assert result["status"] == "success", f"status was {result['status']}: {result}"
     assert result["solutions"], "no solutions returned"
@@ -212,6 +234,23 @@ def run_common_checks(cli: str) -> str:
 
     with check("CLI validate"):
         assert json_cli("validate", "knapsack.json", "--json")["valid"]
+
+    with check("CLI validate reads the problem from stdin"):
+        piped = run_bytes(
+            [cli, "validate", "-", "--json"],
+            stdin=Path("knapsack.json").read_bytes(),
+        )
+        assert json.loads(piped.stdout)["valid"]
+
+    with check("CLI example lists the shipped examples"):
+        listed = run([cli, "example"]).stdout.splitlines()
+        assert [line.split()[0] for line in listed] == BUNDLED_EXAMPLES, listed
+
+    with check("CLI example prints the shipped file byte for byte"):
+        printed = run_bytes([cli, "example", "knapsack"]).stdout
+        assert printed == Path("knapsack.json").read_bytes(), (
+            "annealbridge example knapsack differs from the shipped knapsack.json"
+        )
 
     with check("CLI recommend"):
         recommendations = json_cli("recommend", "knapsack.json", "--json")
@@ -289,6 +328,7 @@ async def run_mcp_checks(problems: dict[str, dict]) -> None:
                     "annealbridge://examples/assignment",
                     "annealbridge://examples/integer_knapsack",
                     "annealbridge://examples/knapsack",
+                    "annealbridge://examples/shift_scheduling",
                     "annealbridge://examples/tsp",
                     "annealbridge://schema",
                 ]

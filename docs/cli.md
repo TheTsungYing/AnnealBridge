@@ -2,7 +2,7 @@
 
 # Command-line interface
 
-This page documents the `annealbridge` command: its six subcommands, their
+This page documents the `annealbridge` command: its seven subcommands, their
 options and output, and the exit codes a script can rely on. The CLI is
 installed by the core package — no extra required, though `mcp` needs the
 `[mcp]` extra to do anything.
@@ -10,7 +10,7 @@ installed by the core package — no extra required, though `mcp` needs the
 It is a presentation layer only. It parses arguments, loads the problem JSON,
 calls the service, and formats the result; no optimization logic lives in it.
 
-The six commands, as `annealbridge --help` describes them (the real output
+The seven commands, as `annealbridge --help` describes them (the real output
 is rendered in Rich panels; only the text is shown here):
 
 ```text
@@ -18,19 +18,21 @@ is rendered in Rich panels; only the text is shown here):
   validate       Validate an optimization problem without solving it.
   recommend      Rank the backends for a problem without solving it.
   capabilities   List backends with availability, policy status and limits.
+  example        List the shipped example problems, or print one as JSON.
   export-schema  Print the OptimizationProblem JSON schema.
   mcp            Run the MCP server (needs the "mcp" extra; same options as
                  annealbridge-mcp).
 ```
 
 They all read the `ANNEALBRIDGE_*` environment
-([Configuration](configuration.md)) except `export-schema`, which needs no
-configuration at all.
+([Configuration](configuration.md)) except `example` and `export-schema`,
+which need no configuration at all.
 
 The `examples/…` paths in the commands below are files in a repository
-checkout; an installed package has no such directory for the CLI to read
-(the MCP server serves the same four documents as resources). Save any
-problem JSON locally and pass its path instead.
+checkout. An installed package carries the same documents:
+`annealbridge example knapsack > knapsack.json` saves one locally, and
+`annealbridge example knapsack | annealbridge solve -` runs it without a file
+(see [`example`](#example) and [The problem file](#the-problem-file)).
 
 ## Global options
 
@@ -46,6 +48,24 @@ annealbridge --version
 `--version` is answered before any command runs, so it reads no
 `ANNEALBRIDGE_*` setting and works even when one of them holds an invalid
 value.
+
+## The problem file
+
+`solve`, `validate` and `recommend` take a `PROBLEM_FILE` argument: the path
+of an `OptimizationProblem` JSON document, or `-` to read the document from
+stdin. Either way it is decoded as UTF-8, with or without a byte-order mark.
+Every message about a document read from stdin names it `<stdin>`:
+
+```console
+$ annealbridge example knapsack | annealbridge validate -
+Problem:   knapsack
+Backend:   exact  (model type: bqm)
+Valid:     yes
+Estimated compiled variables: 8
+Objective scale: 31
+$ echo 'nojson' | annealbridge validate -
+Error: '<stdin>' is not valid JSON: Expecting value: line 1 column 1 (char 0)
+```
 
 ## `solve`
 
@@ -243,12 +263,16 @@ touches the remote backends. See
 Show which backends are installed, permitted and under what limits.
 
 ```bash
-annealbridge capabilities
+annealbridge capabilities [--json]
 ```
 
-No options. It performs **no network I/O**, so it is safe to run before any
-credential is configured — availability is judged from the installed extras
-and the environment alone.
+| Option | Meaning |
+| --- | --- |
+| `--json` | Print the capabilities as JSON instead of the table (see below) |
+
+It performs **no network I/O**, so it is safe to run before any credential is
+configured — availability is judged from the installed extras and the
+environment alone.
 
 The listing below is from a core install without the `dwave` extra. With
 dwave-system installed but no credentials configured, the three D-Wave rows
@@ -286,6 +310,107 @@ fujitsu_da             no         no       yes     max_time=300s, max_remote_ret
 
 Run it after each setup step in [Backends](backends.md#d-wave-setup) to
 confirm the change took effect.
+
+`--json` prints the structure the MCP tool `get_optimization_capabilities`
+returns by default (`include_schema: false`), field for field: the schema
+versions, the supported variable types, constraint operators and objective
+terms, whether inequalities need integer coefficients, one entry per backend
+(availability, policy, seeding, limits and a description), and the package
+version. `problem_json_schema` is always `null` here; `export-schema` prints
+the schema on its own. Abridged:
+
+```console
+$ annealbridge capabilities --json
+{
+  "schema_version": "1.1",
+  "schema_versions": [
+    "1.0",
+    "1.1"
+  ],
+  "supported_variable_types": [
+    "binary",
+    "integer"
+  ],
+  "supported_constraint_operators": [
+    "==",
+    "<=",
+    ">="
+  ],
+  "supported_objective_terms": [
+    "linear",
+    "quadratic"
+  ],
+  "inequality_requires_integer_coefficients": true,
+  "backends": [
+    {
+      "name": "exact",
+      "available": true,
+      "enabled": true,
+      "unavailable_reason": null,
+      "remote": false,
+      "heuristic": false,
+      "exhaustive": true,
+      "supports_seed": false,
+      "seed_min": null,
+      "seed_max": null,
+      "returns_multiple_samples": true,
+      "limits": {
+        "max_variables": 24,
+        "max_local_retries": 10,
+        "max_top_k": 1000
+      },
+      "description": "Local exhaustive solver enumerating every assignment; proves optimality and infeasibility but only suits small problems."
+    },
+    ...
+  ],
+  "problem_json_schema": null,
+  "annealbridge_version": "0.3.0"
+}
+```
+
+Without `--json` the output is the table above. The fields are described under
+[`get_optimization_capabilities`](mcp.md#get_optimization_capabilities).
+
+## `example`
+
+List the example problems shipped inside the package, or print one.
+
+```bash
+annealbridge example [NAME]
+```
+
+No options, no configuration read, no network I/O. Without a name it lists
+the examples, one line each:
+
+```console
+$ annealbridge example
+knapsack          0/1 knapsack
+integer_knapsack  bounded integer knapsack with a soft constraint
+assignment        assignment (workers to tasks)
+tsp               travelling salesman over four cities
+shift_scheduling  shift scheduling (people to shifts)
+```
+
+With a name it prints that example's JSON to stdout exactly as the file holds
+it, byte for byte, so it can be saved or piped straight into another command:
+
+```bash
+annealbridge example knapsack > problem.json
+annealbridge example shift_scheduling | annealbridge solve -
+```
+
+An unknown name lists the available ones on stderr and exits `2`:
+
+```console
+$ annealbridge example nope
+Error: unknown example 'nope'. Available: knapsack, integer_knapsack, assignment, tsp, shift_scheduling
+```
+
+The files are package data (`annealbridge/interfaces/examples/`), so the
+command works on a core install without any extra. They are the same files
+the MCP server serves as the resources `annealbridge://examples/<name>`, and
+byte-for-byte copies of the repository's `examples/` directory; see
+[Bundled examples](problem-format.md#bundled-examples).
 
 ## `export-schema`
 
@@ -328,19 +453,42 @@ suits you; a hand-written host configuration is shorter with
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Success: `solve` returned `status: "success"`, `validate` found the problem valid, `recommend` produced a ranking, `capabilities` / `export-schema` completed, or `--version` printed the version |
+| `0` | Success: `solve` returned `status: "success"`, `validate` found the problem valid, `recommend` produced a ranking, `capabilities` / `example` / `export-schema` completed, or `--version` printed the version |
 | `1` | A domain answer that is not success: a non-`success` `SolveResult` (including `infeasible`), or an invalid problem from `validate` / `recommend` |
 | `2` | The command could not run at all |
 
-Exit `2` covers three distinct situations, and all three print to stderr:
+Exit `2` covers four distinct situations, and all four print to stderr:
 
-- **The input file cannot be used** — unreadable, not valid JSON, or not a
-  valid `OptimizationProblem` document (each schema error is listed):
+- **The input file (or stdin) cannot be used** — unreadable, not valid JSON,
+  or not a valid `OptimizationProblem` document:
 
   ```console
   $ annealbridge solve nope.json
   Error: cannot read 'nope.json': [Errno 2] No such file or directory: 'nope.json'
   ```
+
+  A document that does not fit the schema lists every schema error at once,
+  each as `[CODE] path: message` with the same `UNKNOWN_FIELD`,
+  `MISSING_FIELD` and `INVALID_FIELD_VALUE` codes the MCP tools return, and
+  its recommended action (see [Schema errors](errors.md#schema-errors)).
+  The message never echoes the submitted value, and with `--json` stdout
+  stays empty:
+
+  ```console
+  $ annealbridge validate broken.json
+  Error: 'broken.json' is not a valid optimization problem.
+
+  Schema errors (3):
+    [MISSING_FIELD] objective: Field required
+      recommended action: A field the problem schema requires is absent; add it at the reported path (...)
+    [INVALID_FIELD_VALUE] constraints[0].operator: Input should be '==', '<=' or '>='
+      recommended action: The value at the reported path has the wrong type or is not one of the allowed values, ...
+    [UNKNOWN_FIELD] foo: unknown field, not in the problem schema
+      recommended action: The field is not part of the problem schema and unknown fields are never ignored; ...
+  ```
+
+  Semantic errors (an undeclared variable, say) are reported, with exit `1`,
+  once the document fits the schema.
 
 - **`--backend` names a backend that does not exist** (`solve` and `validate`
   only):
@@ -349,6 +497,9 @@ Exit `2` covers three distinct situations, and all three print to stderr:
   $ annealbridge solve examples/knapsack.json --backend nope
   Error: unknown backend 'nope' (expected one of 'simulated_annealing', 'exact', 'tabu', 'simulated_bifurcation', 'dwave_qpu', 'leap_hybrid_bqm', 'leap_hybrid_cqm', 'fujitsu_da')
   ```
+
+- **`example` names an example that does not exist** (shown under
+  [`example`](#example)).
 
 - **An `ANNEALBRIDGE_*` setting holds an invalid value**, or a registered
   backend declares a limit key the policy has no value for. The message names
@@ -366,12 +517,14 @@ The CLI and the MCP server are two adapters over one core. Both build their
 service through the same composition root — settings → policy → registry →
 service — and each command is a one-line delegation:
 
-| CLI command | Service call | MCP tool |
+| CLI command | Service call | MCP counterpart |
 | --- | --- | --- |
 | `solve` | `OptimizationService.solve()` | `solve_optimization` |
 | `validate` | `OptimizationService.validate()` | `validate_optimization_problem` |
 | `recommend` | `OptimizationService.recommend()` | `recommend_backend` |
-| `capabilities` | shared capabilities view | `get_optimization_capabilities` |
+| `capabilities` | shared capabilities view | `get_optimization_capabilities` (`--json` is its default output) |
+| `example` | shared registry of shipped examples | resources `annealbridge://examples/<name>` |
+| `export-schema` | `OptimizationProblem` JSON schema | resource `annealbridge://schema`, or `include_schema: true` |
 
 So the CLI and an agent always see the same answer for the same problem and
 the same environment. That makes the CLI the natural way to debug what an
@@ -380,3 +533,8 @@ agent is getting: run `annealbridge validate --json` or
 the result is byte-comparable with the tool's structured output. The
 architecture that guarantees this is described in
 [Architecture](architecture.md).
+
+A core install without the `[mcp]` extra therefore still reaches what an
+agent reads — the examples, the capabilities and the schema. Only the MCP
+server has progress notifications during a solve and the three
+[prompts](mcp.md#prompts).

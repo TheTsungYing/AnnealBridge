@@ -80,8 +80,10 @@ and on Windows the wheel PyPI serves is the CPU-only build, so a CUDA run needs
 
 With [uv](https://docs.astral.sh/uv/) installed, add the server to
 `claude_desktop_config.json` (or your host's equivalent) and restart the
-host. The first run fetches the package into `uvx`'s own cached environment;
-that download — numpy, dimod, dwave-samplers and the rest — can take tens of
+host; where Claude Desktop, Claude Code and Codex keep that configuration is
+listed in [docs/mcp.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/mcp.md#claude-desktop-stdio).
+The first run fetches the package into `uvx`'s own cached environment; that
+download — numpy, dimod, dwave-samplers and the rest — can take tens of
 seconds, long enough for a host's start-up timeout to show the server as
 disconnected. Warm the cache once in a terminal first:
 
@@ -137,7 +139,7 @@ run rather than to decide for you.
 If your host lists prompts in its input menu, three of them — `pick_subset`,
 `assign` and `schedule_shifts` — walk the agent from your own sentence to a
 problem document of that everyday shape, which it then solves. The server
-also serves resources: the four
+also serves resources: the five
 example documents under `annealbridge://examples/` and the full problem
 schema at `annealbridge://schema`, so an agent can read a complete example or
 the schema itself instead of guessing.
@@ -188,8 +190,8 @@ Optimality proven: yes
 
 `Elapsed` is the service's own wall clock and varies from run to run. Add
 `--json` for the full `SolveResult`, `--backend simulated_annealing` to
-override the backend, or try `validate`, `recommend`, `capabilities` and
-`export-schema`. See [docs/cli.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/cli.md).
+override the backend, or try `validate`, `recommend`, `capabilities`,
+`example` and `export-schema`. See [docs/cli.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/cli.md).
 
 ## The problem JSON
 
@@ -240,14 +242,17 @@ solver preferences are described in
 `annealbridge export-schema` prints the JSON Schema an agent can use for
 structured output.
 
-Four ready-to-run examples live in the repository —
+Five ready-to-run examples live in the repository —
 [knapsack](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/knapsack.json),
 [assignment](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/assignment.json),
-[TSP](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/tsp.json) and
-[integer knapsack](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/integer_knapsack.json).
-An installed wheel leaves no `examples/` directory for the CLI to read, so
-take them from a checkout or from GitHub; the MCP server serves the same four
-documents as the resources under `annealbridge://examples/`.
+[TSP](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/tsp.json),
+[integer knapsack](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/integer_knapsack.json) and
+[shift scheduling](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/shift_scheduling.json).
+The installed package carries the same files: `annealbridge example` lists
+them and `annealbridge example knapsack > knapsack.json` saves one (or pipe it
+straight in with `annealbridge example knapsack | annealbridge solve -`); the
+MCP server serves the same five documents as the resources under
+`annealbridge://examples/`.
 
 ## How it works
 
