@@ -199,6 +199,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same seed.
 - The shard pool of `simulated_annealing` and `tabu` names its worker
   threads `annealbridge-shard_<n>`, so they can be told apart in a thread dump.
+- A failed shard of `simulated_annealing` or `tabu` in a solve with neither
+  `solver.wall_clock_limit_seconds` nor a `CancelToken` (a library or CLI
+  solve) is now handled like one in an interruptible solve: the shards not yet
+  started are skipped, and the `SOLVER_ERROR` is reported only after the
+  shards already running have ended, instead of at once with those shards
+  left finishing in the background. No shard thread outlives the solve, and
+  its concurrency slot is no longer freed while they still use CPUs. The
+  report can come later by up to one shard per worker (25 reads; see the
+  overrun table in `docs/backends.md`). Successful results, seeded or not,
+  are unchanged.
 
 ### Fixed
 

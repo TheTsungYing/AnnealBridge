@@ -36,6 +36,14 @@ def _shard_sampleset(shard: int, rows: int = 1) -> dimod.SampleSet:
     )
 
 
+def shard_threads() -> list[str]:
+    return [
+        thread.name
+        for thread in threading.enumerate()
+        if thread.name.startswith(SHARD_THREAD_PREFIX)
+    ]
+
+
 class _RecordingExecutor(ThreadPoolExecutor):
     """A real pool that records its size and every ``shutdown`` call."""
 
@@ -189,11 +197,56 @@ class TestRunShards:
         # The backend wraps this; run_shards itself must not translate it.
         assert type(exc_info.value) is RuntimeError
         assert str(exc_info.value) == "shard exploded"
-        # And the pool is gone before the exception leaves: shut down without
-        # waiting for the shards that are still queued. Batch 6 (J): only
-        # run_shards_interruptible waits for running shards on a failure;
-        # this uninterruptible path keeps raising at once.
-        assert executor_record["shutdown"] == [(False, True)]
+        # And the pool is gone before the exception leaves: the queued shards
+        # are cancelled and the running ones waited for, exactly as in
+        # run_shards_interruptible (this path used to shut down without
+        # waiting, leaving running shards to finish in the background).
+        assert executor_record["shutdown"] == [(True, True)]
+        assert shard_threads() == []
+
+    def test_a_failure_waits_for_the_running_shard_and_skips_the_rest(self):
+        # Shard 1 is running (and slow) when shard 0 fails; ``map`` sees
+        # shard 0's failure first, so without waiting the exception would
+        # leave while shard 1 still runs.
+        called: list[int] = []
+        ended: dict[int, float] = {}
+        shard_one_running = threading.Event()
+        lock = threading.Lock()
+
+        def run(shard: int) -> dimod.SampleSet:
+            with lock:
+                called.append(shard)
+            if shard == 0:
+                assert shard_one_running.wait(timeout=10)
+                raise RuntimeError("shard exploded")
+            if shard == 1:
+                shard_one_running.set()
+                time.sleep(0.3)
+                ended[shard] = time.perf_counter()
+            return _shard_sampleset(shard)
+
+        with pytest.raises(RuntimeError, match="shard exploded"):
+            run_shards(run, count=6, workers=2)
+        caught = time.perf_counter()
+
+        assert 1 in ended and ended[1] < caught
+        # Shards 2..5 had not started when shard 0 failed: never run.
+        assert sorted(called) == [0, 1]
+        assert shard_threads() == []
+
+    def test_a_sequential_failure_runs_no_later_shard(self):
+        called: list[int] = []
+
+        def run(shard: int) -> dimod.SampleSet:
+            called.append(shard)
+            if shard == 1:
+                raise RuntimeError("shard exploded")
+            return _shard_sampleset(shard)
+
+        with pytest.raises(RuntimeError, match="shard exploded"):
+            run_shards(run, count=5, workers=1)
+
+        assert called == [0, 1]
 
     def test_a_successful_run_shuts_the_pool_down(self, executor_record):
         run_shards(_shard_sampleset, count=4, workers=2)

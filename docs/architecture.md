@@ -188,9 +188,10 @@ no `Interrupt` exists and the solve runs exactly as it did before the feature.
 The `Interrupt` is polled, never pushed: nothing is stopped from outside, so
 every thread a solve with an `Interrupt` starts has returned before it does —
 also when a shard fails, which then stops the shards not yet started and
-waits for the running ones. (Without an `Interrupt` a failed shard keeps the
-original behaviour: the failure is reported at once and shards already
-running finish in the background.)
+waits for the running ones. A solve without an `Interrupt` handles a failed
+shard the same way, so the failure is reported only after the shards already
+running have ended, and the solve's concurrency slot is released with none of
+them still using a CPU.
 
 - **Service checkpoints** — before each attempt, after compiling, after the
   backend returns, before every post-processing start and step, and after the

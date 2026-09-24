@@ -560,8 +560,8 @@ class TestRunShardsInterruptibleFailure:
         with pytest.raises(RuntimeError, match="shard exploded"):
             run_shards_interruptible(run, 6, 2, lambda: False)
 
-        # The interruptible path waits; tests/unit/test_sharding.py pins
-        # that the uninterruptible run_shards still does not: (False, True).
+        # Waits, as the uninterruptible run_shards does too (pinned in
+        # tests/unit/test_sharding.py).
         assert record["shutdown"] == [(True, True)]
         assert record["thread_name_prefix"] == SHARD_THREAD_PREFIX
 

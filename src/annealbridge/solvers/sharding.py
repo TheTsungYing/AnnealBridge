@@ -95,8 +95,14 @@ def run_shards(
 
     ``run`` is called with the shard index and returns that shard's sample
     set; the merged row order is the shard order, whatever the worker count.
+
+    Every worker thread has returned when this does: a failed shard makes
+    the shards not yet started return at once, and the failure is raised
+    only after the shards already running have ended.
     """
-    return dimod.concatenate(_map_shards(run, count, workers))
+    # With no stop, a shard is only skipped after another one failed, and
+    # the failure is then raised; a return therefore has every sample set.
+    return dimod.concatenate(_run_guarded(run, count, workers, _never_stop))
 
 
 def run_shards_interruptible(
@@ -116,12 +122,31 @@ def run_shards_interruptible(
     :func:`run_shards`'s.
 
     Every worker thread has returned when this does, on every path: a stop
-    only makes the remaining shards return at once, and a failed shard
-    makes the ones not yet started return at once too, and the failure is
-    raised only after the shards already running have ended. (The
-    uninterruptible :func:`run_shards` keeps its original behaviour of
-    raising at once and leaving running shards to finish in the
-    background.)
+    only makes the remaining shards return at once, and a failure is
+    handled exactly as in :func:`run_shards`.
+    """
+    samplesets = _run_guarded(run, count, workers, should_stop)
+    ran = [sampleset for sampleset in samplesets if sampleset is not None]
+    merged = dimod.concatenate(ran) if ran else None
+    return merged, len(ran) < count
+
+
+def _never_stop() -> bool:
+    return False
+
+
+def _run_guarded(
+    run: Callable[[int], dimod.SampleSet],
+    count: int,
+    workers: int,
+    should_stop: Callable[[], bool],
+) -> list[dimod.SampleSet | None]:
+    """Every shard's sample set, or None for a shard skipped before it started.
+
+    A shard is skipped when ``should_stop`` is true or another shard has
+    already failed. The check sits between shards only: a started ``run``
+    is never handed anything new, so a seeded shard samples exactly as it
+    would alone.
     """
     failed = threading.Event()
 
@@ -134,23 +159,18 @@ def run_shards_interruptible(
             failed.set()
             raise
 
-    samplesets = _map_shards(guarded, count, workers, wait_on_failure=True)
-    ran = [sampleset for sampleset in samplesets if sampleset is not None]
-    merged = dimod.concatenate(ran) if ran else None
-    return merged, len(ran) < count
+    return _map_shards(guarded, count, workers)
 
 
 def _map_shards(
     run: Callable[[int], _T],
     count: int,
     workers: int,
-    *,
-    wait_on_failure: bool = False,
 ) -> list[_T]:
     """``[run(0), ..., run(count - 1)]``, ``workers`` shards at a time.
 
-    On a failure the shards not yet started are cancelled; running ones are
-    waited for only with ``wait_on_failure``.
+    On a failure the shards not yet started are cancelled and the running
+    ones are waited for, so no worker thread outlives the call.
     """
     if workers == 1:
         return [run(shard) for shard in range(count)]
@@ -164,10 +184,10 @@ def _map_shards(
         # the same as a sequential run.
         results = list(executor.map(run, range(count)))
     except BaseException:
-        # A failed shard fails the solve. The uninterruptible path does not
-        # wait for the rest (its original behaviour); the interruptible one
-        # does, so no thread outlives the call.
-        executor.shutdown(wait=wait_on_failure, cancel_futures=True)
+        # A failed shard fails the solve, but only once the shards already
+        # running have ended: the service then releases the solve's
+        # concurrency slot with no shard of it still using a CPU.
+        executor.shutdown(wait=True, cancel_futures=True)
         raise
     executor.shutdown(wait=True)
     return results

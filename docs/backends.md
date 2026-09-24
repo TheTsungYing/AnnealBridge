@@ -625,9 +625,11 @@ holding a `CancelToken` (see
 [Architecture](architecture.md#library-use-without-the-interfaces)). Both are
 polled at checkpoints; nothing is ever stopped from outside, so every thread a
 solve started has returned by the time it does — on the normal, the
-interrupted and the failed path alike. (A solve with neither a limit nor a
-token runs as before; there, a failed shard is reported at once and the
-shards already running finish in the background.)
+interrupted and the failed path alike. A solve with neither a limit nor a
+token runs as before, except that a failed shard is handled the same way:
+the shards not yet started are skipped and the failure is reported once the
+shards already running have ended, which can take as long as the overrun in
+the table below.
 
 Whether a backend can stop part-way is the `supports_interrupt` capability,
 reported by the capabilities view. The service decides from that flag alone,
