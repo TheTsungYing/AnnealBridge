@@ -13,7 +13,8 @@ from annealbridge.models import SolverCapabilities
 
 # Built-in limit key → the policy field that carries its value. The first
 # four are the Phase 2 fields kept as the compatibility layer (spec §11.1);
-# the rest were added by the 2026-09-09 review (F-02 / F-07) in the same
+# the rest were added by the 2026-09-09 review (F-02 / F-07) and batch 4
+# (G, the two ``postprocess_*`` keys) in the same
 # shape (``max_<key>`` field, ``ANNEALBRIDGE_MAX_<KEY>`` env). Every key
 # has exactly one source, so ``limits`` refuses all of them; third-party
 # backends only ever add keys to ``limits``.
@@ -27,6 +28,8 @@ COMPATIBILITY_LIMIT_FIELDS: dict[str, str] = {
     "local_retries": "max_local_retries",
     "remote_retries": "max_remote_retries",
     "top_k": "max_top_k",
+    "postprocess_candidates": "max_postprocess_candidates",
+    "postprocess_evaluations": "max_postprocess_evaluations",
 }
 
 
@@ -79,6 +82,12 @@ class ExecutionPolicy(BaseModel):
     max_local_retries: int = Field(default=10, ge=0)
     max_remote_retries: int = Field(default=3, ge=0)
     max_top_k: int = Field(default=1000, ge=1)
+    # Batch 4 (G), postprocess spec 2026-09-23 §6: service-level ceilings
+    # on the opt-in post-processing, checked only when it is requested on
+    # a non-exhaustive backend. ``postprocess_evaluations`` is a count of
+    # move evaluations per attempt, deterministic unlike a wall clock.
+    max_postprocess_candidates: int = Field(default=100, ge=1)
+    max_postprocess_evaluations: int = Field(default=20_000_000, ge=1)
     enabled_backends: set[str] | None = None   # None = all registry backends
     # Generic limits keyed by the names backends declare in their
     # ``parameter_limits`` (spec §11). Every value is finite and > 0; the
@@ -150,6 +159,13 @@ class ExecutionPolicy(BaseModel):
         retries_key = self.retries_limit_key(capabilities)
         result[f"max_{retries_key}"] = self.limit(retries_key)
         result["max_top_k"] = self.limit("top_k")
+        # Post-processing never runs on an exhaustive backend (it has every
+        # assignment already), so its ceilings are not reported there.
+        if not capabilities.exhaustive:
+            result["max_postprocess_candidates"] = self.limit("postprocess_candidates")
+            result["max_postprocess_evaluations"] = self.limit(
+                "postprocess_evaluations"
+            )
         return result
 
     @staticmethod

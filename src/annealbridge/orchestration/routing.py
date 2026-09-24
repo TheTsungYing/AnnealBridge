@@ -24,6 +24,7 @@ from annealbridge.orchestration.limits import (
     exact_variable_limit_error,
     gate_errors,
     no_compiler_error,
+    postprocess_limit_errors,
     preference_limit_errors,
     select_model_type,
 )
@@ -192,6 +193,7 @@ def _assess(
     if gate is not None:
         blocking.extend(gate[2])
     blocking.extend(preference_limit_errors(caps, problem.solver, policy))
+    blocking.extend(postprocess_limit_errors(problem, caps, policy))
 
     # Same rule as solve/validate (§16.1), so the estimate describes the
     # path the problem would actually take on this backend.

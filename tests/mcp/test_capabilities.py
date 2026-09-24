@@ -147,7 +147,8 @@ async def test_limits_come_from_policy():
     content = (await _get_capabilities()).structured_content
     by_name = {backend["name"]: backend for backend in content["backends"]}
     # Every backend also carries the two service-level ceilings of spec
-    # §11.4: the retry ceiling chosen by the ``remote`` flag, then top_k.
+    # §11.4: the retry ceiling chosen by the ``remote`` flag, then top_k;
+    # every non-exhaustive backend then the two post-processing ceilings.
     assert by_name["exact"]["limits"] == {
         "max_variables": 24,
         "max_local_retries": 10,
@@ -158,33 +159,45 @@ async def test_limits_come_from_policy():
         "max_annealing_time_us": 2000.0,
         "max_remote_retries": 3,
         "max_top_k": 1000,
+        "max_postprocess_candidates": 100,
+        "max_postprocess_evaluations": 20_000_000,
     }
     assert by_name["leap_hybrid_bqm"]["limits"] == {
         "max_time_seconds": 300,
         "max_remote_retries": 3,
         "max_top_k": 1000,
+        "max_postprocess_candidates": 100,
+        "max_postprocess_evaluations": 20_000_000,
     }
     assert by_name["leap_hybrid_cqm"]["limits"] == {
         "max_time_seconds": 300,
         "max_remote_retries": 3,
         "max_top_k": 1000,
+        "max_postprocess_candidates": 100,
+        "max_postprocess_evaluations": 20_000_000,
     }
     assert by_name["fujitsu_da"]["limits"] == {
         "max_time_seconds": 300,
         "max_remote_retries": 3,
         "max_top_k": 1000,
+        "max_postprocess_candidates": 100,
+        "max_postprocess_evaluations": 20_000_000,
     }
     assert by_name["simulated_annealing"]["limits"] == {
         "max_local_reads": 100000,
         "max_sweeps": 100000,
         "max_local_retries": 10,
         "max_top_k": 1000,
+        "max_postprocess_candidates": 100,
+        "max_postprocess_evaluations": 20_000_000,
     }
     # ``tabu`` takes no sweeps, so it declares no sweep ceiling either.
     assert by_name["tabu"]["limits"] == {
         "max_local_reads": 100000,
         "max_local_retries": 10,
         "max_top_k": 1000,
+        "max_postprocess_candidates": 100,
+        "max_postprocess_evaluations": 20_000_000,
     }
     # Simulated bifurcation's sweeps are its integration steps, so it is
     # capped under the same two local keys as the annealer; its own
@@ -195,6 +208,8 @@ async def test_limits_come_from_policy():
         "max_sweeps": 100000,
         "max_local_retries": 10,
         "max_top_k": 1000,
+        "max_postprocess_candidates": 100,
+        "max_postprocess_evaluations": 20_000_000,
     }
 
 

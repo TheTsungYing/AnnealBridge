@@ -145,6 +145,11 @@ Rules a first document most often breaks:
   hard constraints must not carry one.
 - Leave solver.penalty_multiplier at its default: hard-constraint penalties
   are managed by the server.
+- solver.postprocess is off ("none") by default. "repair_local_search"
+  repairs and locally improves the best few samples on this server's CPU,
+  which often helps a heuristic backend whose samples are infeasible or far
+  from optimal, at some extra solve time; every such solution is
+  re-validated and marked by its source field.
 
 A minimal complete problem (maximize value under a weight limit):
 """

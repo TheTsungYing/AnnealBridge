@@ -171,6 +171,11 @@ def _render_human(problem: OptimizationProblem, result: SolveResult) -> str:
         lines.append(
             f"  soft violation score:  {_format_number(best.soft_violation_score)}"
         )
+        # Only a post-processing product is called out: "solver" is the
+        # value every solve without solver.postprocess returns, so the
+        # default report stays exactly as it was.
+        if best.source != "solver":
+            lines.append(f"  source:  {best.source} (post-processing)")
         for name in sorted(best.variables):
             lines.append(f"  {name} = {best.variables[name]}")
 
@@ -204,6 +209,19 @@ def _render_human(problem: OptimizationProblem, result: SolveResult) -> str:
                 f"unique={attempt.unique_samples}, "
                 f"feasible={attempt.feasible_samples}"
             )
+            stats = attempt.postprocess
+            if stats is not None:
+                stopped = (
+                    f", stopped at: {', '.join(stats.limit_reached)}"
+                    if stats.limit_reached
+                    else ""
+                )
+                lines.append(
+                    f"    post-processing: selected={stats.candidates_selected}, "
+                    f"repaired={stats.repair_succeeded}/{stats.repair_attempted}, "
+                    f"improved={stats.local_search_improved}/"
+                    f"{stats.local_search_started}{stopped}"
+                )
         proven = "yes" if result.infeasibility_proven else "no"
         lines.append(f"Infeasibility proven: {proven}")
         if result.infeasibility is not None:

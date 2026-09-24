@@ -40,7 +40,7 @@ The outcome of `solve_optimization` / `annealbridge solve`.
 | `errors` | array of [SolveError](#solveerror) | Structured failures. Empty on success. |
 | `warnings` | array of [SolveError](#solveerror) | Non-blocking advice, same structure as an error: the warnings `validate` gives for this backend, then any raised during the run. Present whatever the `status`, except `invalid_problem`. |
 | `metadata` | [SolverExecutionMetadata](#solverexecutionmetadata) \| null | Sanitized execution facts. Present whenever an attempt actually completed, local backends included; `null` when the request failed before any solve finished. |
-| `message` | string \| null | Human-readable one-line summary of the result. On `success`: which backend produced it, whether optimality is proven, the rank-1 objective with its direction (and its soft violation when non-zero), how many distinct candidates the attempt saw, how many were feasible and how many are returned, and the attempt number when a retry produced it. On `infeasible`: why nothing feasible was found. On a failure: the first error's message. Deterministic — it never contains timings. `null` when there is nothing to add. |
+| `message` | string \| null | Human-readable one-line summary of the result. On `success`: which backend produced it, whether optimality is proven, the rank-1 objective with its direction (and its soft violation when non-zero), how many distinct candidates the attempt saw, how many were feasible and how many are returned, the attempt number when a retry produced it, and — with post-processing on — how many feasible assignments it added and, when rank 1 is one of them, its `source`. On `infeasible`: why nothing feasible was found. On a failure: the first error's message. Deterministic — it never contains timings. `null` when there is nothing to add. |
 | `elapsed_ms` | number \| null | Wall-clock milliseconds measured by the service from entering `solve` to returning, problem validation and any wait for a concurrency slot included. Present whatever the `status`. Unrelated to `metadata.timing_us`, which is what a vendor reports about its own side. |
 | `annealbridge_version` | string \| null | The installed package version that produced the result (`"unknown"` outside an installed distribution). |
 
@@ -74,8 +74,9 @@ in the way.
 | `objective_value` | number | The objective recomputed from the original problem, including its `constant`. |
 | `soft_violation_score` | number | `Σ weight × violation²` over **all** soft constraints, recomputed by the validator from the exact residual. The feasibility tolerance is deliberately not applied here, so this equals the soft energy the solver minimized. |
 | `ranking_score` | number | `objective_value + soft_violation_score` when minimizing, `objective_value − soft_violation_score` when maximizing. The sort key. |
-| `energy` | number \| null | The compiled model's energy. Debugging only. |
-| `sample_count` | integer | How many rows of this attempt's raw solver output carried this business assignment, before deduplication. Not a confidence measure: on an exhaustive backend every business assignment is enumerated once per combination of the slack and integer-encoding bits, so the count only reflects how many internal variables the compiled model happened to have. |
+| `energy` | number \| null | The compiled model's energy. Debugging only. `null` when the backend reported none, and for an assignment post-processing produced (`source` other than `"solver"`): there is no compiled sample behind it, and no energy is computed for it. |
+| `sample_count` | integer | How many rows of this attempt's raw solver output carried this business assignment, before deduplication. Not a confidence measure: on an exhaustive backend every business assignment is enumerated once per combination of the slack and integer-encoding bits, so the count only reflects how many internal variables the compiled model happened to have. `0` for an assignment post-processing produced (`source` other than `"solver"`): the solver never returned it. |
+| `source` | `"solver"` \| `"repaired"` \| `"local_search"` \| `"repaired_local_search"` | Where the assignment came from. `solver`: returned by the backend — always, unless [`solver.postprocess`](problem-format.md#post-processing) is on. `repaired`: an infeasible solver sample greedily repaired to feasibility. `local_search`: a feasible solver sample improved by local search. `repaired_local_search`: repaired, then improved by local search. An assignment the solver also returned is always `solver`. Every source is re-validated and ranked alike. |
 | `hard_constraints_satisfied` | boolean | Always `true` for a returned solution — only feasible candidates are ranked. |
 | `constraint_evaluations` | array of [ConstraintEvaluation](#constraintevaluation) | One entry per constraint, hard and soft. |
 
@@ -146,12 +147,14 @@ constraint with a rate below 1 does not imply a feasible candidate exists.
 | `penalty` | number \| null | The hard-constraint penalty λ used for this attempt. `null` on a path whose compiler uses no hard penalty (the CQM path). |
 | `samples_received` | integer | Rows the backend returned. |
 | `unique_samples` | integer | Distinct business assignments among those rows, **after decoding and deduplication** — the candidate count everything downstream works on. |
-| `feasible_samples` | integer | How many of those **deduplicated** candidates satisfied every hard constraint under independent re-validation. Never larger than `unique_samples`. |
+| `feasible_samples` | integer | How many of those **deduplicated** candidates satisfied every hard constraint under independent re-validation. Never larger than `unique_samples`. Counts solver samples only: with post-processing on, `solutions` may also hold assignments counted in `postprocess.feasible_added`, so it can be longer than this number. |
 | `compiled_variables` | integer \| null | The compiled model's actual variable count (business variables plus slack and integer-encoding bits), as opposed to the estimate `validate` reports. |
 | `compiled_interactions` | integer \| null | The compiled model's quadratic terms: the BQM's interactions, or on the CQM path the objective's plus every constraint's. |
 | `compile_ms` | number \| null | Wall-clock milliseconds the compile stage took. On the BQM path the first attempt's value includes the one-time, penalty-independent preparation that later attempts of the same solve reuse. |
 | `solve_ms` | number \| null | Wall-clock milliseconds the backend call took, network round-trips included on a remote backend. |
-| `validate_ms` | number \| null | Wall-clock milliseconds for decoding, deduplication, re-validation and ranking of the returned samples. |
+| `validate_ms` | number \| null | Wall-clock milliseconds for decoding, deduplication, re-validation and ranking of the returned samples — post-processing outputs included in the ranking, the post-processing itself excluded. |
+| `postprocess` | [PostprocessStats](#postprocessstats) \| null | What post-processing did in this attempt. `null` when `solver.postprocess` is `"none"` (the default) or the backend is exhaustive; an object whenever it ran, even on an attempt that received no samples (every count is then `0`). |
+| `postprocess_ms` | number \| null | Wall-clock milliseconds post-processing took: selection, repair and local search, plus re-validating what it produced. Separate from `validate_ms`, never overlapping it. `null` when post-processing did not run. |
 
 An attempt is recorded even when it produced nothing feasible, so the retry
 ladder is visible: attempt 2 carries double attempt 1's penalty.
@@ -159,13 +162,36 @@ ladder is visible: attempt 2 carries double attempt 1's penalty.
 Both sample counts are post-deduplication, so they can be compared with the
 returned list directly: `len(solutions)` smaller than the last attempt's
 `feasible_samples` means the list was truncated to `solver.top_k`, not that
-candidates were lost.
+candidates were lost. Both count the solver's own samples only; with
+post-processing on, the assignments it added are counted in
+`postprocess.feasible_added` instead.
 
-The three `*_ms` timings are the service's own clock around each stage and
-are measured for every backend, local ones included. They vary from run to
-run and are the only fields of a result that do; `elapsed_ms` on the result
-covers all attempts plus validation and bookkeeping, so it is never smaller
-than their sum.
+The `*_ms` timings are the service's own clock around each stage. The first
+three are measured for every backend, local ones included; `postprocess_ms`
+only when post-processing ran. They vary from run to run and are the only
+fields of a result that do; `elapsed_ms` on the result covers all attempts
+plus validation and bookkeeping, so it is never smaller than their sum.
+
+### PostprocessStats
+
+What the opt-in post-processing did in one attempt (see
+[Post-processing](problem-format.md#post-processing)). Every count is
+deterministic for a given set of solver samples.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `candidates_selected` | integer | Distinct solver samples post-processing started from, best first by total hard violation and then by ranking cost; at most `solver.postprocess_candidates`. Fewer when the attempt had fewer distinct samples, or when the evaluation budget ran out first. |
+| `repair_attempted` | integer | Selected samples that were infeasible and went to repair. |
+| `repair_succeeded` | integer | Repairs that reached an assignment the re-validation judged feasible. |
+| `local_search_started` | integer | Feasible assignments — selected feasible samples plus successful repairs — local search started from. A starting point already searched from in the same attempt is not searched again. |
+| `local_search_improved` | integer | Local searches that moved to a strictly better ranking cost. |
+| `new_candidates` | integer | Distinct assignments post-processing added that the solver had not returned in this attempt. |
+| `feasible_added` | integer | How many of `new_candidates` are feasible under re-validation. They are ranked together with the solver's feasible samples. |
+| `limit_reached` | array of `"evaluations"` \| `"steps"` | The ceilings post-processing stopped at: `evaluations`, the per-attempt move-evaluation budget `ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS`, and `steps`, the fixed per-assignment step cap. Empty when it ran to completion; a non-empty list also raises the `POSTPROCESS_LIMIT_REACHED` warning. |
+
+Post-processing only ever adds candidates to one attempt's pool; it never
+merges attempts, never changes `unique_samples`, `feasible_samples` or the
+`infeasibility` diagnostics, and never uses the solver's energy.
 
 ### ConstraintEvaluation
 
@@ -281,6 +307,7 @@ Ranks 3–5 are elided below; they continue the same pattern down to
       "ranking_score": 17.0,
       "energy": -17.0,
       "sample_count": 16,
+      "source": "solver",
       "hard_constraints_satisfied": true,
       "constraint_evaluations": [
         {
@@ -308,6 +335,7 @@ Ranks 3–5 are elided below; they continue the same pattern down to
       "ranking_score": 16.0,
       "energy": -16.0,
       "sample_count": 16,
+      "source": "solver",
       "hard_constraints_satisfied": true,
       "constraint_evaluations": [
         {
@@ -334,7 +362,9 @@ Ranks 3–5 are elided below; they continue the same pattern down to
       "compiled_interactions": 28,
       "compile_ms": 1.2,
       "solve_ms": 3.4,
-      "validate_ms": 0.8
+      "validate_ms": 0.8,
+      "postprocess": null,
+      "postprocess_ms": null
     }
   ],
   "infeasibility_proven": false,

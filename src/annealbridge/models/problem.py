@@ -204,6 +204,33 @@ class SolverPreferences(InputModel):
             "ignored on exhaustive backends and on the CQM path."
         ),
     )
+    # Batch 4 (G), postprocess spec 2026-09-23: opt-in repair and
+    # feasibility-preserving local search over the original variables. A
+    # plain string rather than an options block, so the validator's
+    # option-block rule (block name == backend name) never applies to it.
+    postprocess: Literal["none", "repair_local_search"] = Field(
+        default="none",
+        description=(
+            "Post-processing of each attempt's samples, off by default. "
+            '"repair_local_search" takes the best postprocess_candidates '
+            "distinct samples, greedily repairs the infeasible ones and moves "
+            "the feasible ones to a local optimum by single-variable steps and "
+            "pair moves inside shared hard constraints (e.g. a swap within a "
+            "one-hot group). Every produced assignment is re-validated against "
+            "the original problem and marked by Solution.source; it costs "
+            "local CPU time only. Ignored, with PARAMETER_IGNORED, on an "
+            "exhaustive backend."
+        ),
+    )
+    postprocess_candidates: Count = Field(
+        default=10,
+        description=(
+            "How many distinct samples per attempt post-processing starts "
+            "from, best first. Must be positive and at most the server's "
+            "max_postprocess_candidates; ignored (with PARAMETER_IGNORED "
+            'when non-default) while postprocess is "none".'
+        ),
+    )
     # Finite only (2026-09-09 review F-08): ``nan`` would silently disable
     # every hard penalty and ``inf`` would break the compiled model.
     penalty_multiplier: Quantity = Field(

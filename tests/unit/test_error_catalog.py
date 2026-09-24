@@ -69,6 +69,10 @@ EXPECTED_CODES = [
     "SB_VARIABLE_LIMIT",
     "RETRY_LIMIT",
     "TOP_K_LIMIT",
+    # Batch 4 (G), postprocess spec 2026-09-23 §6: the post-processing
+    # ceiling (refusal) and the budget-reached warning.
+    "POSTPROCESS_LIMIT",
+    "POSTPROCESS_LIMIT_REACHED",
     "PENALTY_OVERFLOW",
 ]
 
@@ -103,7 +107,7 @@ class TestRecommendedActions:
         assert set(RECOMMENDED_ACTIONS) == set(EXPECTED_CODES)
 
     def test_expected_codes_are_unique(self):
-        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 48
+        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 50
 
 
 class TestRetryableCodes:

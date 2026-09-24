@@ -73,6 +73,21 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "top_k exceeds the server's limit on returned solutions; lower "
         "top_k. The server never clamps values silently."
     ),
+    # Batch 4 (G), postprocess spec 2026-09-23 §6.
+    "POSTPROCESS_LIMIT": (
+        "Post-processing would exceed a server ceiling: either "
+        "postprocess_candidates is above max_postprocess_candidates, or a "
+        "single neighbourhood scan of this problem already exceeds "
+        "max_postprocess_evaluations; lower postprocess_candidates, set "
+        "postprocess to none, or reduce the problem. The server never clamps "
+        "values silently."
+    ),
+    "POSTPROCESS_LIMIT_REACHED": (
+        "Post-processing stopped at a ceiling before finishing; the returned "
+        "solutions are still re-validated, but more search might improve "
+        "them. Lower postprocess_candidates, or ask the operator to raise "
+        "max_postprocess_evaluations."
+    ),
     "PENALTY_OVERFLOW": (
         "The hard-constraint penalty left the floating-point range before a "
         "feasible solution was found, so the retry ladder stopped; lower "

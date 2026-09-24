@@ -107,8 +107,48 @@ def _success_message(
             f"candidates were feasible, {len(solutions)} returned."
         )
     on_attempt = f" on attempt {attempt.attempt}" if attempt.attempt > 1 else ""
+    # Batch 4 (G): the counts above are the solver's own; say what
+    # post-processing added and where rank 1 came from, so the numbers
+    # still add up for a reader (postprocess spec §5).
+    postprocessed = ""
+    if attempt.postprocess is not None and attempt.postprocess.feasible_added:
+        postprocessed += (
+            f"; post-processing added {attempt.postprocess.feasible_added} "
+            f"feasible assignment(s)"
+        )
+    if best.source != "solver":
+        postprocessed += f"; rank 1 was produced by post-processing ({best.source})"
     return (
         f"{backend} found {attempt.unique_samples} distinct candidates "
         f"({attempt.feasible_samples} feasible), {len(solutions)} "
-        f"returned{on_attempt}: {objective}; optimality is not proven."
+        f"returned{on_attempt}: {objective}{postprocessed}; optimality is "
+        f"not proven."
     )
+
+
+def _postprocess_limit_warnings(
+    reached: list[tuple[int, list[str]]],
+) -> list[SolveError]:
+    """At most one POSTPROCESS_LIMIT_REACHED for the whole solve (spec §6).
+
+    ``reached`` lists ``(attempt, limit names)`` for every attempt whose
+    post-processing stopped at a ceiling; empty means no warning.
+    """
+    if not reached:
+        return []
+    ceilings = {
+        "evaluations": "the max_postprocess_evaluations budget",
+        "steps": "the per-assignment step cap",
+    }
+    detail = "; ".join(
+        f"attempt {attempt}: " + ", ".join(ceilings[name] for name in names)
+        for attempt, names in reached
+    )
+    return [
+        catalog_error(
+            "POSTPROCESS_LIMIT_REACHED",
+            f"Post-processing stopped at a ceiling before finishing ({detail}); "
+            "every returned solution is still re-validated against the "
+            "original problem",
+        )
+    ]

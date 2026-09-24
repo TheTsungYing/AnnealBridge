@@ -64,7 +64,7 @@ when any of them is broken. The full list of rules:
 | Compiler never imports penalty | `compiler/` importing `annealbridge.penalty` |
 | Orchestration knows no concrete backend | `orchestration/` importing `solvers.exact`, `solvers.simulated_annealing`, `solvers.tabu`, `solvers.simulated_bifurcation`, `solvers.dwave_qpu`, `solvers.leap_hybrid_bqm`, `solvers.leap_hybrid_cqm` or `solvers.fujitsu_da` |
 | Concrete compilers have one importer | `BQMCompiler` / `CQMCompiler` (in any import form) imported by an orchestration file other than `orchestration/optimizer.py`, which is where the default compiler list is assembled |
-| Candidate and message code knows no compiler | `orchestration/candidates.py` or `orchestration/messages.py` importing anything from `annealbridge.compiler`, `compiler.base` included |
+| Candidate, message and post-processing code knows no compiler | `orchestration/candidates.py`, `orchestration/messages.py` or `orchestration/postprocess.py` importing anything from `annealbridge.compiler`, `compiler.base` included |
 | No third-party HTTP client | `requests`, `httpx` or `aiohttp` imported anywhere in the package, at module level or inside a function |
 | No backend-name constants | A string constant whose *whole* value is a shipped backend name, appearing in `orchestration/`, `validation/`, `interfaces/capabilities.py`, `interfaces/mcp/tools.py` or `interfaces/cli/main.py` |
 | A new backend plugs in by declaration alone | A fake backend registered next to the built-ins that cannot be routed, limited, warned about, recommended and redacted purely from its own declaration |
@@ -92,6 +92,7 @@ service, the validator, the capabilities view, the policy limits, the
 recommendation ranking and the credential redaction all handle it from its
 declaration alone — then asserts that `orchestration/optimizer.py`,
 `orchestration/candidates.py`, `orchestration/messages.py`,
+`orchestration/postprocess.py`,
 `orchestration/limits.py`, `orchestration/policy.py`, `orchestration/routing.py`,
 `interfaces/capabilities.py`, `validation/problem_validator.py` and
 `solvers/metadata.py` never mention its name, its error code or its
@@ -108,7 +109,7 @@ Everything lives under `src/annealbridge/`.
 | `penalty/` | The penalty strategy: objective scale, penalty scale, initial penalty and the doubling ladder |
 | `compiler/` | The BQM compiler (slack and integer encoding), the CQM compiler, and the `decode` step that folds encoding bits back into integer values |
 | `solvers/` | The eight solver backends, the registry, the `SolverBackend` protocol, the read sharding the two `dwave-samplers` backends share (`solvers/sharding.py` — not a backend), and metadata sanitisation / redaction |
-| `orchestration/` | `OptimizationService`, `ExecutionPolicy`, model-type routing, candidate arrays (`candidates.py`), result messages (`messages.py`), progress events |
+| `orchestration/` | `OptimizationService`, `ExecutionPolicy`, model-type routing, candidate arrays (`candidates.py`), opt-in post-processing over the business variables (`postprocess.py`), result messages (`messages.py`), progress events |
 | `config/` | `ServerSettings` (the `ANNEALBRIDGE_*` environment) — importable by the interfaces only |
 | `interfaces/` | `capabilities.py` and `composition.py` shared by both adapters, plus `cli/` and `mcp/` |
 

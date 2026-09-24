@@ -226,7 +226,8 @@ class TestLimitsFor:
 
         # The declared keys come first; the two service-level ceilings added
         # by the 2026-09-09 review (retries by the ``remote`` flag, then
-        # top_k) close every backend's view.
+        # top_k) follow, and the two post-processing ceilings (batch 4 G)
+        # close every non-exhaustive backend's view.
         assert limits == {
             "exact": {
                 "max_variables": 24,
@@ -238,6 +239,8 @@ class TestLimitsFor:
                 "max_sweeps": 100000,
                 "max_local_retries": 10,
                 "max_top_k": 1000,
+                "max_postprocess_candidates": 100,
+                "max_postprocess_evaluations": 20_000_000,
             },
             # ``tabu`` declares only a read ceiling: its sampler takes no
             # sweeps, so no sweep key is published for it.
@@ -245,6 +248,8 @@ class TestLimitsFor:
                 "max_local_reads": 100000,
                 "max_local_retries": 10,
                 "max_top_k": 1000,
+                "max_postprocess_candidates": 100,
+                "max_postprocess_evaluations": 20_000_000,
             },
             # ``simulated_bifurcation`` reads sweeps as integration steps,
             # so it is capped under both local keys, like the annealer.
@@ -254,27 +259,37 @@ class TestLimitsFor:
                 "max_sweeps": 100000,
                 "max_local_retries": 10,
                 "max_top_k": 1000,
+                "max_postprocess_candidates": 100,
+                "max_postprocess_evaluations": 20_000_000,
             },
             "dwave_qpu": {
                 "max_reads": 1000,
                 "max_annealing_time_us": 2000.0,
                 "max_remote_retries": 3,
                 "max_top_k": 1000,
+                "max_postprocess_candidates": 100,
+                "max_postprocess_evaluations": 20_000_000,
             },
             "leap_hybrid_bqm": {
                 "max_time_seconds": 300,
                 "max_remote_retries": 3,
                 "max_top_k": 1000,
+                "max_postprocess_candidates": 100,
+                "max_postprocess_evaluations": 20_000_000,
             },
             "leap_hybrid_cqm": {
                 "max_time_seconds": 300,
                 "max_remote_retries": 3,
                 "max_top_k": 1000,
+                "max_postprocess_candidates": 100,
+                "max_postprocess_evaluations": 20_000_000,
             },
             "fujitsu_da": {
                 "max_time_seconds": 300,
                 "max_remote_retries": 3,
                 "max_top_k": 1000,
+                "max_postprocess_candidates": 100,
+                "max_postprocess_evaluations": 20_000_000,
             },
         }
         # Key order feeds the CLI table, so it is pinned too.
@@ -283,17 +298,23 @@ class TestLimitsFor:
             "max_annealing_time_us",
             "max_remote_retries",
             "max_top_k",
+            "max_postprocess_candidates",
+            "max_postprocess_evaluations",
         ]
         assert list(limits["simulated_annealing"]) == [
             "max_local_reads",
             "max_sweeps",
             "max_local_retries",
             "max_top_k",
+            "max_postprocess_candidates",
+            "max_postprocess_evaluations",
         ]
         assert list(limits["tabu"]) == [
             "max_local_reads",
             "max_local_retries",
             "max_top_k",
+            "max_postprocess_candidates",
+            "max_postprocess_evaluations",
         ]
         assert list(limits["simulated_bifurcation"]) == [
             "max_variables",
@@ -301,6 +322,8 @@ class TestLimitsFor:
             "max_sweeps",
             "max_local_retries",
             "max_top_k",
+            "max_postprocess_candidates",
+            "max_postprocess_evaluations",
         ]
 
     def test_values_follow_the_policy(self):
@@ -329,17 +352,23 @@ class TestLimitsFor:
             "max_sweeps": 300,
             "max_local_retries": 2,
             "max_top_k": 50,
+            "max_postprocess_candidates": 100,
+            "max_postprocess_evaluations": 20_000_000,
         }
         assert policy.limits_for(registry.get("dwave_qpu").capabilities) == {
             "max_reads": 10,
             "max_annealing_time_us": 123.5,
             "max_remote_retries": 1,
             "max_top_k": 50,
+            "max_postprocess_candidates": 100,
+            "max_postprocess_evaluations": 20_000_000,
         }
         assert policy.limits_for(registry.get("leap_hybrid_bqm").capabilities) == {
             "max_time_seconds": 30,
             "max_remote_retries": 1,
             "max_top_k": 50,
+            "max_postprocess_candidates": 100,
+            "max_postprocess_evaluations": 20_000_000,
         }
 
     def test_hybrid_cqm_style_declaration_yields_one_time_limit(self):
@@ -364,6 +393,8 @@ class TestLimitsFor:
             "max_time_seconds": 300,
             "max_remote_retries": 3,
             "max_top_k": 1000,
+            "max_postprocess_candidates": 100,
+            "max_postprocess_evaluations": 20_000_000,
         }
 
     def test_custom_declared_key_is_reported_from_limits(self):
@@ -383,6 +414,8 @@ class TestLimitsFor:
             "max_iterations": 100000.0,
             "max_remote_retries": 3,
             "max_top_k": 1000,
+            "max_postprocess_candidates": 100,
+            "max_postprocess_evaluations": 20_000_000,
         }
 
     def test_remote_with_num_reads_but_no_declaration_has_only_service_limits(self):
@@ -395,6 +428,8 @@ class TestLimitsFor:
         assert ExecutionPolicy().limits_for(caps) == {
             "max_remote_retries": 3,
             "max_top_k": 1000,
+            "max_postprocess_candidates": 100,
+            "max_postprocess_evaluations": 20_000_000,
         }
 
 

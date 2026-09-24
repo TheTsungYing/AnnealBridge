@@ -243,6 +243,9 @@ agent 產生一個 `OptimizationProblem`：binary 或有界整數變數、線性
    回報的 energy；
 5. 把可行解**排名**，回傳前 K 名，並附上每條限制式的評估結果。
 
+另有預設關閉的 `solver.postprocess`，可在排名前於原始變數上修補並局部改善
+最好的幾個樣本；它產生的解同樣重新驗證，並以每個解的 `source` 標示來源。
+
 agent 永遠不必寫 QUBO 矩陣、penalty 權重、slack 變數或整數編碼，而且每一
 步都能在沒有 AI、沒有網路、沒有廠商帳號的情況下測試。
 

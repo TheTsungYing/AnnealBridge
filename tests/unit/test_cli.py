@@ -16,6 +16,7 @@ from annealbridge.models import (
     HardViolationRate,
     InfeasibilityDiagnostics,
     OptimizationProblem,
+    PostprocessStats,
     Solution,
     SolveAttempt,
     SolveError,
@@ -855,3 +856,113 @@ class TestRenderHumanErrorsAndWarnings:
 
         assert "Warnings (1):" in text
         assert "[PENALTY_CAPPED]: penalty hit the ceiling" in text
+
+
+class TestRenderPostprocess:
+    """Postprocess spec 2026-09-23: the report names a post-processed rank 1
+    and summarises each infeasible attempt's post-processing; a solve that
+    leaves it off reads exactly as before."""
+
+    @staticmethod
+    def _problem() -> OptimizationProblem:
+        return OptimizationProblem.model_validate_json(
+            (EXAMPLES_DIR / "knapsack.json").read_text(encoding="utf-8")
+        )
+
+    def _success(self, source: str) -> str:
+        result = SolveResult(
+            status="success",
+            backend="simulated_annealing",
+            objective_direction="maximize",
+            solutions=[
+                Solution(
+                    rank=1,
+                    variables={"x": 1},
+                    objective_value=3.0,
+                    soft_violation_score=0.0,
+                    ranking_score=3.0,
+                    energy=None,
+                    sample_count=0,
+                    source=source,
+                    hard_constraints_satisfied=True,
+                    constraint_evaluations=[],
+                )
+            ],
+            attempts=[],
+        )
+        return _render_human(self._problem(), result)
+
+    def _infeasible(self, postprocess: PostprocessStats | None) -> str:
+        result = SolveResult(
+            status="infeasible",
+            backend="simulated_annealing",
+            objective_direction="maximize",
+            solutions=[],
+            attempts=[
+                SolveAttempt(
+                    attempt=1,
+                    penalty=62.0,
+                    samples_received=10,
+                    unique_samples=4,
+                    feasible_samples=0,
+                    postprocess=postprocess,
+                    postprocess_ms=None if postprocess is None else 1.5,
+                )
+            ],
+            message="No feasible solution found",
+        )
+        return _render_human(self._problem(), result)
+
+    @staticmethod
+    def _stats(limit_reached: list[str]) -> PostprocessStats:
+        return PostprocessStats(
+            candidates_selected=4,
+            repair_attempted=4,
+            repair_succeeded=0,
+            local_search_started=0,
+            local_search_improved=0,
+            new_candidates=0,
+            feasible_added=0,
+            limit_reached=limit_reached,
+        )
+
+    @pytest.mark.parametrize(
+        "source", ["repaired", "local_search", "repaired_local_search"]
+    )
+    def test_a_post_processed_rank_1_names_its_source(self, source):
+        lines = self._success(source).splitlines()
+
+        line = f"  source:  {source} (post-processing)"
+        assert line in lines
+        # Right after the scores, before the variable listing.
+        assert lines[lines.index(line) - 1] == "  soft violation score:  0"
+        assert lines[lines.index(line) + 1] == "  x = 1"
+
+    def test_a_solver_rank_1_prints_no_source_line(self):
+        text = self._success("solver")
+
+        assert "source:" not in text
+        assert "post-processing" not in text
+
+    def test_an_infeasible_attempt_summarises_its_post_processing(self):
+        lines = self._infeasible(self._stats([])).splitlines()
+        attempt = "  attempt 1: penalty=62, samples=10, unique=4, feasible=0"
+
+        assert lines[lines.index(attempt) + 1] == (
+            "    post-processing: selected=4, repaired=0/4, improved=0/0"
+        )
+
+    def test_the_summary_names_the_ceilings_it_stopped_at(self):
+        text = self._infeasible(self._stats(["evaluations", "steps"]))
+
+        assert (
+            "    post-processing: selected=4, repaired=0/4, improved=0/0, "
+            "stopped at: evaluations, steps"
+        ) in text.splitlines()
+
+    def test_without_post_processing_the_attempt_line_stands_alone(self):
+        lines = self._infeasible(None).splitlines()
+        attempt = "  attempt 1: penalty=62, samples=10, unique=4, feasible=0"
+
+        assert not any("post-processing" in line for line in lines)
+        assert lines[lines.index(attempt) + 1] == "Infeasibility proven: no"

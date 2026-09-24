@@ -266,9 +266,12 @@ def test_concrete_compilers_only_imported_by_optimizer() -> None:
 # Candidate processing and result wording were split out of optimizer.py.
 # They work on the original problem and the raw solver output only, so they
 # must not know the compiler package at all — not even ``compiler.base``.
+# Post-processing (batch 4 G) works on the decoded business variables only
+# and must never reach slack or encoding bits, so the same rule holds.
 COMPILER_FREE_ORCHESTRATION_FILES = [
     "orchestration/candidates.py",
     "orchestration/messages.py",
+    "orchestration/postprocess.py",
 ]
 COMPILER_PACKAGE = "annealbridge.compiler"
 

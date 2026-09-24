@@ -264,6 +264,10 @@ constraints. Nothing else. AnnealBridge then, deterministically:
 5. **ranks** the feasible solutions and returns the top *K* with
    per-constraint evaluations.
 
+An opt-in `solver.postprocess` step can also repair and locally improve the
+best samples in the original variables before ranking; what it produces is
+re-validated like any other candidate and marked by each solution's `source`.
+
 The agent never writes a QUBO matrix, a penalty weight, a slack variable or
 an integer encoding, and every step is testable without an AI, a network or a
 vendor account.

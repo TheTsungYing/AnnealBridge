@@ -34,6 +34,9 @@ ENV_SUFFIXES = [
     "MAX_LOCAL_RETRIES",
     "MAX_REMOTE_RETRIES",
     "MAX_TOP_K",
+    # Batch 4 (G): the two post-processing ceilings.
+    "MAX_POSTPROCESS_CANDIDATES",
+    "MAX_POSTPROCESS_EVALUATIONS",
     # The local samplers' worker counts: speed knobs, not policy limits.
     "SA_WORKERS",
     "TABU_WORKERS",

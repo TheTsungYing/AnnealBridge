@@ -62,6 +62,7 @@ CORE_FILES_THE_FAKE_FLOWS_THROUGH = [
     "orchestration/optimizer.py",
     "orchestration/candidates.py",
     "orchestration/messages.py",
+    "orchestration/postprocess.py",
     "orchestration/limits.py",
     "orchestration/policy.py",
     "orchestration/routing.py",
@@ -158,6 +159,9 @@ class TestCapabilitiesView:
             f"max_{FAKE_LIMIT_KEY}": ITERATIONS_LIMIT,
             "max_remote_retries": 3,
             "max_top_k": 1000,
+            # Not exhaustive, so the post-processing ceilings follow.
+            "max_postprocess_candidates": 100,
+            "max_postprocess_evaluations": 20_000_000,
         }
         assert entry.available is True
         assert entry.enabled is True

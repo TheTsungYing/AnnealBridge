@@ -108,8 +108,11 @@ Soft constraints: 0 violations
 ```
 
 What the report shows depends on `status`. `success` prints the best solution
-as above; `infeasible` prints one line per attempt (penalty, samples received,
-unique samples, feasible samples) and whether infeasibility was *proven*;
+as above, plus a `source:` line when `solver.postprocess` is on and the best
+solution came from post-processing rather than from the solver; `infeasible`
+prints one line per attempt (penalty, samples received, unique samples,
+feasible samples) — followed, when post-processing ran in that attempt, by a
+line summarising it — and whether infeasibility was *proven*;
 `invalid_problem`, `resource_limit_exceeded`, `backend_unavailable`,
 `configuration_error` and `solver_error` print their structured errors as
 `[CODE] path: message`, each with its recommended action. Warnings, when there
@@ -255,13 +258,13 @@ read `(D-Wave credentials not configured)` instead.
 $ annealbridge capabilities
 Backend                Available  Enabled  Remote  Limits
 exact                  yes        yes      no      max_variables=24, max_local_retries=10, max_top_k=1000
-simulated_annealing    yes        yes      no      max_local_reads=100000, max_sweeps=100000, max_local_retries=10, max_top_k=1000
-tabu                   yes        yes      no      max_local_reads=100000, max_local_retries=10, max_top_k=1000
-simulated_bifurcation  yes        yes      no      max_variables=10000, max_local_reads=100000, max_sweeps=100000, max_local_retries=10, max_top_k=1000
-dwave_qpu              no         no       yes     max_reads=1000, max_annealing_time_us=2000, max_remote_retries=3, max_top_k=1000  (dwave-system not installed)
-leap_hybrid_bqm        no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000  (dwave-system not installed)
-leap_hybrid_cqm        no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000  (dwave-system not installed)
-fujitsu_da             no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000  (Fujitsu DA API key not configured)
+simulated_annealing    yes        yes      no      max_local_reads=100000, max_sweeps=100000, max_local_retries=10, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000
+tabu                   yes        yes      no      max_local_reads=100000, max_local_retries=10, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000
+simulated_bifurcation  yes        yes      no      max_variables=10000, max_local_reads=100000, max_sweeps=100000, max_local_retries=10, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000
+dwave_qpu              no         no       yes     max_reads=1000, max_annealing_time_us=2000, max_remote_retries=3, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000  (dwave-system not installed)
+leap_hybrid_bqm        no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000  (dwave-system not installed)
+leap_hybrid_cqm        no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000  (dwave-system not installed)
+fujitsu_da             no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000  (Fujitsu DA API key not configured)
 ```
 
 - **Available** — the backend can run: its optional dependency is installed
@@ -277,7 +280,9 @@ fujitsu_da             no         no       yes     max_time=300s, max_remote_ret
   guaranteed `REMOTE_DISABLED`.
 - **Limits** — the ceilings this backend's requests are checked against,
   resolved from the current `ANNEALBRIDGE_*` environment. These are the same
-  numbers `get_optimization_capabilities` reports to an agent.
+  numbers `get_optimization_capabilities` reports to an agent. The two
+  post-processing ceilings are absent from `exact`: post-processing never runs
+  on an exhaustive backend.
 
 Run it after each setup step in [Backends](backends.md#d-wave-setup) to
 confirm the change took effect.

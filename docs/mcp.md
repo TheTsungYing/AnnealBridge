@@ -396,10 +396,18 @@ Things worth knowing before calling it:
 - On an `infeasible` result, read `infeasibility` to learn which candidate came
   closest to feasibility and how often each hard constraint was violated,
   instead of reporting only that nothing was found.
+- `solver.postprocess: "repair_local_search"` is off by default. It repairs
+  and locally improves the best samples of each attempt in the original
+  variables, on this machine, before ranking; each solution's `source` says
+  whether the solver or post-processing produced it, and
+  `attempts[].postprocess` what it did. It costs local CPU time, not quota,
+  and is ignored on an exhaustive backend. See
+  [Post-processing](problem-format.md#post-processing).
 - Whatever the `status`, `warnings` holds the same advisory warnings
   `validate_optimization_problem` gives for that backend (`SEED_IGNORED`,
   `PARAMETER_IGNORED`, `LARGE_INTEGER_RANGE`, `SOFT_WEIGHT_SMALL`, ...),
-  followed by any warning raised during the run (`REMOTE_RETRIES_DISABLED`).
+  followed by any warning raised during the run (`REMOTE_RETRIES_DISABLED`,
+  `POSTPROCESS_LIMIT_REACHED`).
   Skipping `validate` therefore never hides them; only an `invalid_problem`
   result carries none. Read them before trusting an answer that looks weaker
   than expected — a wide integer range on a heuristic backend, for example,

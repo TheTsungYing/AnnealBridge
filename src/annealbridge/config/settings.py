@@ -92,6 +92,10 @@ class ServerSettings(BaseSettings):
     max_local_retries: int = Field(default=10, ge=0)
     max_remote_retries: int = Field(default=3, ge=0)
     max_top_k: int = Field(default=1000, ge=1)
+    # Batch 4 (G): post-processing ceilings; same defaults and bounds as
+    # ExecutionPolicy.
+    max_postprocess_candidates: int = Field(default=100, ge=1)
+    max_postprocess_evaluations: int = Field(default=20_000_000, ge=1)
     # Shards the ``simulated_annealing`` backend samples at once; ``None``
     # detects the CPUs available to the process. A speed knob handed to the
     # registry by the composition root, not a policy limit: it never changes

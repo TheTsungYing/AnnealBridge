@@ -693,6 +693,27 @@ def _ignored_parameters(
             else "is exhaustive, so a retry can never surface new samples"
         )
         ignored.append(("max_retries", reason))
+    # Batch 4 (G), postprocess spec §2-§3: post-processing is skipped on an
+    # exhaustive backend (it already has every assignment), and its sample
+    # count means nothing while it is off. One warning per cause: on an
+    # exhaustive backend the count is not warned about separately.
+    if solver.postprocess != "none" and caps.exhaustive:
+        ignored.append(
+            (
+                "postprocess",
+                "is exhaustive and already returns every assignment, so there "
+                "is nothing to repair or improve",
+            )
+        )
+    elif not _is_default(solver, "postprocess_candidates") and (
+        solver.postprocess == "none"
+    ):
+        ignored.append(
+            (
+                "postprocess_candidates",
+                "runs no post-processing while solver.postprocess is none",
+            )
+        )
     return ignored
 
 
@@ -1191,6 +1212,12 @@ def _check_solver_preferences(
         ("num_reads", solver.num_reads, solver.num_reads <= 0, "must be > 0"),
         ("num_sweeps", solver.num_sweeps, solver.num_sweeps <= 0, "must be > 0"),
         ("max_retries", solver.max_retries, solver.max_retries < 0, "must be >= 0"),
+        (
+            "postprocess_candidates",
+            solver.postprocess_candidates,
+            solver.postprocess_candidates <= 0,
+            "must be > 0",
+        ),
         # Finiteness re-checked here (F-08): the schema already rejects
         # NaN / inf, but a model built without validation must not slip a
         # ``nan`` penalty through (``nan <= 0`` is False).

@@ -401,6 +401,8 @@ The `solver` block is optional; every field has a default.
 | `seed` | integer \| null | `null` | Random seed. A backend that does not support seeding raises the `SEED_IGNORED` warning. A backend that declares a seed range — its own sampler's rule, so it differs per backend (`simulated_annealing`: `0`–`2147483647`; `tabu` and `simulated_bifurcation`: `0`–`4294967295`) — refuses a seed outside it with `INVALID_SOLVER_PREFERENCE`. |
 | `top_k` | integer > 0 | `5` | Maximum number of ranked solutions to return. Bounded by policy (`TOP_K_LIMIT`). |
 | `max_retries` | integer >= 0 | `3` | Additional attempts with a doubled hard penalty when no feasible solution was found. Bounded by policy (`RETRY_LIMIT`). |
+| `postprocess` | `"none"` \| `"repair_local_search"` | `"none"` | Opt-in post-processing of each attempt's samples in the original variables: repair the infeasible ones, then move the feasible ones to a local optimum. Runs locally; ignored on an exhaustive backend. See [Post-processing](#post-processing). |
+| `postprocess_candidates` | integer > 0 | `10` | How many distinct samples per attempt post-processing starts from, best first. Bounded by policy (`POSTPROCESS_LIMIT`) while `postprocess` is on; ignored while it is `"none"`. |
 | `penalty_multiplier` | finite number > 0 | `2.0` | Multiplier applied to `penalty_scale` for the first attempt. |
 | `simulated_bifurcation` | object \| null | `null` | Options for the `simulated_bifurcation` backend. |
 | `dwave_qpu` | object \| null | `null` | Options for the `dwave_qpu` backend. |
@@ -416,10 +418,100 @@ and is **never silently clamped**. The ceilings are configured through
 A parameter the chosen backend cannot use is not an error: it raises the
 `PARAMETER_IGNORED` warning (for example `num_sweeps` on a backend that takes
 no sweeps, `penalty_multiplier` / `max_retries` on the CQM path, which
-applies no hard penalty, or `max_retries` on an exhaustive backend such as
-`exact`, where a retry can never surface new samples). Filling in an option
-block that does not belong to the selected backend raises the same warning.
-Only a non-default value triggers it.
+applies no hard penalty, `max_retries` on an exhaustive backend such as
+`exact`, where a retry can never surface new samples, `postprocess` on an
+exhaustive backend, or `postprocess_candidates` while `postprocess` is
+`"none"`). Filling in an option block that does not belong to the selected
+backend raises the same warning. Only a non-default value triggers it.
+
+### Post-processing
+
+`"postprocess": "repair_local_search"` adds one step to every attempt, after
+the samples are decoded and re-validated and before they are ranked. It works
+on the business variables only — never on slack bits, encoding bits or the
+hard penalty — and always runs on this machine, so on a remote backend it
+spends CPU time here and no vendor quota.
+
+1. **Select.** The attempt's distinct samples are ordered by their total hard
+   violation (`Σ violation_amount` over the hard constraints, the same total
+   the [infeasibility diagnostics](output-format.md#closestcandidate) use),
+   then by ranking cost, then by the order the solver returned them. The first
+   `postprocess_candidates` are taken.
+2. **Repair** each selected infeasible sample by greedy descent: every step
+   applies the move that most reduces the total hard violation, until the
+   assignment is feasible. A repair that finds no move that reduces it, or
+   reaches its step cap, is abandoned; the original sample stays a candidate.
+3. **Local search** from each selected feasible sample and each successful
+   repair: every step applies the move that most improves the ranking cost
+   among the moves that keep every hard constraint satisfied, until no move
+   improves it (a local optimum) or the step cap is reached. Every step stays
+   feasible, so the point reached is kept either way.
+
+A move changes one variable by ±1 inside its bounds (a flip, for a binary
+variable), or two variables by ±1 each when both appear with a non-zero
+coefficient in the same hard constraint — which covers a swap inside a
+one-hot group and trading one item for another in a knapsack. A problem
+without hard constraints only gets single-variable moves. Each repair and each
+local search takes at most `4 · n` steps, `n` being the number of variables.
+The search is deterministic — no random numbers, fixed tie-breaking, ceilings
+that count evaluations rather than time — so with the same solver samples it
+always produces the same assignments.
+
+Every assignment it produces joins that attempt's candidates and is
+re-validated and ranked exactly like a solver sample; the solver's energy
+plays no part. A produced assignment is marked by
+[`Solution.source`](output-format.md#solution), with `energy: null` and
+`sample_count: 0`; one the solver also returned stays `source: "solver"`.
+Rank 1 may therefore be an assignment the solver never returned. What the step
+did in each attempt is in [`attempts[].postprocess`](output-format.md#postprocessstats).
+
+- **Off by default.** With `"none"` nothing runs and every solution carries
+  `source: "solver"`. A non-default `postprocess_candidates` then raises
+  `PARAMETER_IGNORED` and is not checked against any ceiling.
+- **Ignored on an exhaustive backend.** `exact` already returns every
+  assignment, so there is nothing to repair or improve: `solver.postprocess`
+  raises `PARAMETER_IGNORED` (and `postprocess_candidates` no separate
+  warning), `attempts[].postprocess` stays `null`, and no ceiling is checked.
+  The decision follows the backend's `exhaustive` capability, not its name.
+- **A successful repair ends the retries.** With post-processing on, an
+  attempt counts as feasible when a repair produced a feasible assignment even
+  though none of the solver's samples was feasible, so no retry with a doubled
+  penalty follows. With it off, retries behave exactly as before. Solutions
+  always come from a single attempt; attempts are never merged.
+- **Ceilings.** `postprocess_candidates` above
+  `ANNEALBRIDGE_MAX_POSTPROCESS_CANDIDATES` (default `100`) is refused with
+  `resource_limit_exceeded` / `POSTPROCESS_LIMIT` before anything runs. Each
+  scan of the moves around one assignment is charged the elementary
+  evaluations it performs, `2·(n + z) + 4·(p + s)`: `n` variables, `z`
+  non-zero constraint coefficients, `p` variable pairs that share a hard
+  constraint and `s` the sum over constraints of `k·(k−1)/2` for a constraint
+  over `k` variables (the rows a pair move re-evaluates). Each attempt is
+  also charged once for setting the pair moves up: for every such pair, the
+  constraint entries of both variables. Both are charged against a
+  per-attempt budget of `ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS` (default
+  `20000000`, a few seconds of CPU), so the budget bounds time and scratch
+  memory alike, dense constraints included. A problem whose setup plus a
+  single scan already exceeds the budget is
+  refused the same way before solving. Both refusals come from `solve`, and
+  `recommend` lists them as blocking; `validate` does not check them. A budget
+  that runs out part-way stops post-processing without failing the solve:
+  what was finished is kept, a repair still in progress is dropped, a local
+  search in progress keeps its current (feasible) point, and the
+  `POSTPROCESS_LIMIT_REACHED` warning says so. The step cap is reported the
+  same way (whenever a repair or local search uses all its steps, even if the
+  last one happened to reach a local optimum). The budget applies to each attempt separately, so with retries the
+  total can reach the number of attempts times the budget.
+
+Known limitations:
+
+- An integer variable only ever moves by ±1 per step. With a wide range, the
+  `4 · n` step cap can end a repair before it reaches feasibility, or a local
+  search before it reaches a local optimum.
+- Permutation constraints, as in a TSP (every city once, every position once),
+  need at least four variables changed together to go from one feasible
+  assignment to another. No move changes more than two, so local search
+  cannot improve a feasible tour at all and only spends time.
+- A local optimum is not a proof: `optimality_proven` stays `false`.
 
 ### Backend option blocks
 

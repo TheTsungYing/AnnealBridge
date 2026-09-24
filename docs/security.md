@@ -43,7 +43,13 @@ credentials: all three have to be true before a remote backend runs. See
   `ANNEALBRIDGE_SB_MAX_VARIABLES` is the matching bound on *memory* for
   `simulated_bifurcation`, which holds the couplings as a dense `N × N`
   matrix: an over-limit problem is refused with `SB_VARIABLE_LIMIT` before
-  anything is allocated, never clamped.
+  anything is allocated, never clamped. The opt-in post-processing, which runs
+  on this machine whatever the backend, is bounded by
+  `ANNEALBRIDGE_MAX_POSTPROCESS_CANDIDATES` and by a per-attempt count of move
+  evaluations, `ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS`: an over-limit
+  request is refused with `POSTPROCESS_LIMIT` before solving, and a budget
+  that runs out part-way stops the search with a `POSTPROCESS_LIMIT_REACHED`
+  warning rather than running on.
 - **The penalty ladder cannot run away.** A hard penalty that would have to
   double past the floating-point range stops with a structured
   `PENALTY_OVERFLOW` error instead of a solver error, and no backend is ever

@@ -43,6 +43,7 @@ from annealbridge.orchestration.limits import (
     exact_variable_limit_error,
     gate_errors,
     no_compiler_error,
+    postprocess_limit_errors,
     preference_limit_errors,
     read_preference,
     select_model_type,
@@ -50,9 +51,11 @@ from annealbridge.orchestration.limits import (
 from annealbridge.orchestration.messages import (
     _BudgetCut,
     _infeasible_message,
+    _postprocess_limit_warnings,
     _success_message,
 )
 from annealbridge.orchestration.policy import ExecutionPolicy
+from annealbridge.orchestration.postprocess import PostprocessRequest
 from annealbridge.orchestration.progress import (
     ProgressCallback,
     SolveProgress,
@@ -105,6 +108,9 @@ class _AttemptPlan:
     variable_limit: float | int
     budget: _AttemptBudget
     initial_penalty: float | None
+    # Batch 4 (G): None unless post-processing was asked for and the backend
+    # is not exhaustive (postprocess spec §3).
+    postprocess: PostprocessRequest | None = None
 
 
 @dataclass
@@ -136,6 +142,9 @@ class _AttemptState:
     on_progress: ProgressCallback | None = None
     max_attempts: int = 0
     prepared: PreparedModel | None = None
+    # ``(attempt, limit names)`` of every attempt whose post-processing
+    # stopped at a ceiling; folded into one warning (postprocess spec §6).
+    postprocess_limits: list[tuple[int, list[str]]] = field(default_factory=list)
 
     def emit(self, attempt: int, stage: Stage, backend_name: str) -> None:
         """Call the progress callback, if any, for a stage that is starting.
@@ -629,7 +638,10 @@ class OptimizationService:
                 direction,
                 [no_compiler_error(backend.name, backend.capabilities)],
             )
-        preference_errors = self._preference_limit_errors(backend, problem.solver)
+        preference_errors = [
+            *self._preference_limit_errors(backend, problem.solver),
+            *postprocess_limit_errors(problem, backend.capabilities, self._policy),
+        ]
         if preference_errors:
             return self._failure(
                 "resource_limit_exceeded",
@@ -696,11 +708,24 @@ class OptimizationService:
                 scale_source,
                 penalty,
             )
+        # Postprocess spec §3: an exhaustive backend already returned every
+        # assignment, so there is nothing to repair or improve (the
+        # validator warns PARAMETER_IGNORED); decided by the flag, never by
+        # the backend's name.
+        postprocess = None
+        if problem.solver.postprocess != "none" and not backend.capabilities.exhaustive:
+            postprocess = PostprocessRequest(
+                candidates=problem.solver.postprocess_candidates,
+                max_evaluations=int(
+                    self._policy.required_limit("postprocess_evaluations")
+                ),
+            )
         return _AttemptPlan(
             compiler=compiler,
             variable_limit=variable_limit,
             budget=budget,
             initial_penalty=penalty,
+            postprocess=postprocess,
         )
 
     def _solve_attempt(
@@ -791,13 +816,19 @@ class OptimizationService:
         validate_started = time.perf_counter()
         decoded = compiler.decode(compiled, raw)
         processed = process_candidates(
-            problem, decoded, frozenset(), problem.solver.top_k
+            problem, decoded, frozenset(), problem.solver.top_k, plan.postprocess
         )
         solutions = processed.solutions
         unique_samples = processed.unique_samples
         feasible_samples = processed.feasible_samples
         state.infeasibility = processed.infeasibility
-        validate_ms = _elapsed_ms(validate_started)
+        # Post-processing runs inside the candidate pipeline but is timed on
+        # its own, so the two windows never overlap (postprocess spec §5).
+        validate_ms = _elapsed_ms(validate_started) - (processed.postprocess_ms or 0.0)
+        if processed.postprocess is not None and processed.postprocess.limit_reached:
+            state.postprocess_limits.append(
+                (attempt, list(processed.postprocess.limit_reached))
+            )
         current = SolveAttempt(
             attempt=attempt,
             penalty=penalty,
@@ -809,6 +840,8 @@ class OptimizationService:
             compile_ms=compile_ms,
             solve_ms=solve_ms,
             validate_ms=validate_ms,
+            postprocess=processed.postprocess,
+            postprocess_ms=processed.postprocess_ms,
         )
         state.attempts.append(current)
         logger.info(
@@ -840,6 +873,7 @@ class OptimizationService:
                 solutions=solutions,
                 attempts=state.attempts,
                 optimality_proven=optimality_proven,
+                warnings=_postprocess_limit_warnings(state.postprocess_limits),
                 metadata=raw.metadata,
                 message=_success_message(
                     backend.name, direction, optimality_proven, current, solutions
@@ -902,7 +936,10 @@ class OptimizationService:
                 attempts=state.attempts,
                 infeasibility_proven=proven,
                 infeasibility=state.infeasibility,
-                warnings=warnings,
+                warnings=[
+                    *warnings,
+                    *_postprocess_limit_warnings(state.postprocess_limits),
+                ],
                 # Timing/usage facts from the last attempt still matter to
                 # the caller (e.g. quota spent on a remote solve).
                 metadata=state.last_metadata,

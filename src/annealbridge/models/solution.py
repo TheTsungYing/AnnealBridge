@@ -93,6 +93,12 @@ class ValidationResult(BaseModel):
     )
 
 
+# Batch 4 (G), postprocess spec 2026-09-23 §5.
+SolutionSource = Literal[
+    "solver", "repaired", "local_search", "repaired_local_search"
+]
+
+
 class Solution(BaseModel):
     """A ranked feasible business solution."""
 
@@ -135,7 +141,9 @@ class Solution(BaseModel):
             "The compiled model's energy, which includes hard penalties, "
             "slack terms and encoding bits. For debugging only: it never "
             "feeds feasibility, the objective or the ranking. Null when the "
-            "backend reported none."
+            "backend reported none, and for an assignment post-processing "
+            "produced (source other than solver), which has no compiled "
+            "sample behind it."
         )
     )
     sample_count: int = Field(
@@ -145,8 +153,22 @@ class Solution(BaseModel):
             "measure: on an exhaustive backend every business assignment is "
             "enumerated once per combination of the slack and "
             "integer-encoding bits, so the count only reflects how many "
-            "internal variables the compiled model happened to have."
+            "internal variables the compiled model happened to have. Zero "
+            "for an assignment post-processing produced (source other than "
+            "solver): the solver never returned it."
         )
+    )
+    source: SolutionSource = Field(
+        default="solver",
+        description=(
+            "Where this assignment came from. solver: returned by the backend "
+            "(always, unless solver.postprocess is on). repaired: an "
+            "infeasible solver sample greedily repaired to feasibility. "
+            "local_search: a feasible solver sample improved by local search. "
+            "repaired_local_search: repaired, then improved by local search. "
+            "Every source is re-validated against the original problem "
+            "alike; an assignment the solver also returned is always solver."
+        ),
     )
     hard_constraints_satisfied: bool = Field(
         description=(
@@ -243,6 +265,57 @@ class InfeasibilityDiagnostics(BaseModel):
     )
 
 
+class PostprocessStats(BaseModel):
+    """What post-processing did in one attempt (postprocess spec §5)."""
+
+    candidates_selected: int = Field(
+        description=(
+            "Distinct solver samples post-processing started from, best "
+            "first by hard violation then ranking cost; at most "
+            "solver.postprocess_candidates."
+        )
+    )
+    repair_attempted: int = Field(
+        description="Selected samples that were infeasible and went to repair."
+    )
+    repair_succeeded: int = Field(
+        description=(
+            "Repairs that reached an assignment the re-validation judged "
+            "feasible."
+        )
+    )
+    local_search_started: int = Field(
+        description=(
+            "Feasible assignments (selected feasible samples plus successful "
+            "repairs) local search started from; a start equal to one already "
+            "searched from in this attempt is not searched again."
+        )
+    )
+    local_search_improved: int = Field(
+        description="Local searches that moved to a strictly better ranking cost."
+    )
+    new_candidates: int = Field(
+        description=(
+            "Distinct assignments post-processing added that the solver had "
+            "not returned in this attempt."
+        )
+    )
+    feasible_added: int = Field(
+        description=(
+            "How many of new_candidates are feasible under re-validation; "
+            "they are ranked together with the solver's feasible samples."
+        )
+    )
+    limit_reached: list[Literal["evaluations", "steps"]] = Field(
+        description=(
+            "Ceilings post-processing stopped at: evaluations (the per-attempt "
+            "move-evaluation budget max_postprocess_evaluations) and steps "
+            "(the per-assignment step cap). Empty when it ran to completion; "
+            "a non-empty list also raises POSTPROCESS_LIMIT_REACHED."
+        )
+    )
+
+
 class SolveAttempt(BaseModel):
     """Statistics for one compile/solve/validate attempt."""
 
@@ -275,7 +348,9 @@ class SolveAttempt(BaseModel):
             "How many of those deduplicated candidates satisfied every hard "
             "constraint under independent re-validation. Fewer entries in "
             "solutions than this means the list was truncated to "
-            "solver.top_k."
+            "solver.top_k. Counts solver samples only: with post-processing "
+            "on, solutions may also hold assignments counted in "
+            "postprocess.feasible_added, so it can exceed this number."
         )
     )
     compiled_variables: int | None = Field(
@@ -316,6 +391,22 @@ class SolveAttempt(BaseModel):
             "Wall-clock milliseconds for decoding, deduplication, "
             "re-validation and ranking of the returned samples. Measured by "
             "the service, unrelated to metadata.timing_us, and different on "
+            "every run."
+        ),
+    )
+    postprocess: PostprocessStats | None = Field(
+        default=None,
+        description=(
+            "Post-processing statistics for this attempt. Null when "
+            "solver.postprocess is none or the backend is exhaustive."
+        ),
+    )
+    postprocess_ms: float | None = Field(
+        default=None,
+        description=(
+            "Wall-clock milliseconds post-processing took (selection, repair, "
+            "local search and re-validating what it produced), separate from "
+            "validate_ms. Null when post-processing did not run; different on "
             "every run."
         ),
     )

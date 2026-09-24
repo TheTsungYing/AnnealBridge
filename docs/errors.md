@@ -90,6 +90,7 @@ happens before any vendor call, so no quota is consumed. The ceilings come from
 | `SWEEPS_LIMIT` | `num_sweeps` exceeds the server's limit for local sampling. | Lower `num_sweeps`. |
 | `RETRY_LIMIT` | `max_retries` exceeds the retry limit for this backend. Remote retries are bounded more tightly because each one is a billed submission. | Lower `max_retries`. |
 | `TOP_K_LIMIT` | `top_k` exceeds the server's limit on returned solutions. | Lower `top_k`. |
+| `POSTPROCESS_LIMIT` | Post-processing is on and would exceed a server ceiling: `postprocess_candidates` is above `ANNEALBRIDGE_MAX_POSTPROCESS_CANDIDATES`, or setting post-processing up plus a single scan of the moves around one assignment (see [Post-processing](problem-format.md#post-processing)) already exceeds `ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS`. Refused by `solve` before the backend is called and listed as blocking by `recommend`; never raised while post-processing is off or on an exhaustive backend. | Lower `postprocess_candidates`, set `postprocess` to `"none"`, or reduce the problem. |
 | `PENALTY_OVERFLOW` | The hard penalty left the floating-point range before a feasible solution was found, so the retry ladder stopped. | Lower `penalty_multiplier` or `max_retries`, or rescale the problem's coefficients. |
 | `CONCURRENCY_LIMIT` | Too many solves are running concurrently on this server. **Retryable.** | Retry after the current solves finish. |
 
@@ -135,8 +136,9 @@ Warnings never block. They appear in `ProblemValidationResult.warnings` and in
 structure, and always carry `retryable: false`. `valid` is decided by errors
 alone. `validate` and `solve` run the same advisory pass for the same backend,
 so a solve result carries exactly the warnings a validate call would have
-given — whatever its `status`, except `invalid_problem` — followed by the one
-warning only a run can raise, `REMOTE_RETRIES_DISABLED`. The two advisories
+given — whatever its `status`, except `invalid_problem` — followed by the two
+warnings only a run can raise, `REMOTE_RETRIES_DISABLED` and
+`POSTPROCESS_LIMIT_REACHED`. The two advisories
 `validate` alone reports, `UNKNOWN_BACKEND` and `NO_COMPILER_FOR_MODEL_TYPE`,
 are errors on `solve`.
 
@@ -154,13 +156,14 @@ known.
 | `EXACT_OVER_LIMIT` | The estimated compiled size already exceeds the exhaustive backend's limit; a solve would be refused with `EXACT_VARIABLE_LIMIT`. |
 | `DENSE_FOR_QPU` | The problem is likely too dense or too large to minor-embed on a backend that requires embedding. |
 | `SEED_IGNORED` | `solver.seed` was given but the selected backend does not support seeding. |
-| `PARAMETER_IGNORED` | A preference has no effect on the selected backend or model path — for example `num_sweeps` on a backend that takes no sweeps, `penalty_multiplier` or `max_retries` on the CQM path, `max_retries` on an exhaustive backend such as `exact` (a retry can never surface new samples), or an option block belonging to a different backend. Only non-default values raise it. |
+| `PARAMETER_IGNORED` | A preference has no effect on the selected backend or model path — for example `num_sweeps` on a backend that takes no sweeps, `penalty_multiplier` or `max_retries` on the CQM path, `max_retries` on an exhaustive backend such as `exact` (a retry can never surface new samples), `postprocess` on an exhaustive backend (it already returns every assignment), `postprocess_candidates` while `postprocess` is `"none"`, or an option block belonging to a different backend. Only non-default values raise it. |
 | `DUPLICATE_TERM_MERGED` | The objective repeats a term; the compiler sums the duplicates rather than rejecting them. |
 | `REDUNDANT_CONSTRAINT` | An inequality is always satisfied over the declared bounds and adds nothing to the model. |
 | `LARGE_INTEGER_RANGE` | An integer variable needs more than 10 encoding bits on a BQM backend. |
 | `INTEGER_QUADRATIC_BLOWUP` | Binary-encoding the integer variables yields more than 2000 quadratic interactions on a BQM backend. |
 | `SOFT_ALWAYS_VIOLATED` | A soft constraint can never be satisfied within the variables' bounds: every solution pays its weight. The hard counterpart is the `TRIVIALLY_INFEASIBLE` error. |
 | `REMOTE_RETRIES_DISABLED` | Emitted during a solve, not validation: a remote solve on the BQM path found nothing feasible, the problem asked for retries (`max_retries > 0`), and server policy disables automatic remote retries, so only one attempt was made. With `max_retries: 0` nothing was blocked and no warning is emitted. |
+| `POSTPROCESS_LIMIT_REACHED` | Emitted during a solve, not validation: post-processing stopped at a ceiling before finishing — the per-attempt evaluation budget (`ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS`) or the per-assignment step cap. At most one per solve, naming each affected attempt and ceiling; the same names are in `attempts[].postprocess.limit_reached`. The `status` is unaffected and every returned solution is still re-validated, but more search might have improved them. |
 
 Four of these — `LARGE_INTEGER_RANGE`, `INTEGER_QUADRATIC_BLOWUP`,
 `PARAMETER_IGNORED` and `SEED_IGNORED` — are warnings, not errors. They never

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from annealbridge.compiler.base import ModelCompiler
 from annealbridge.models import (
     ModelType,
+    OptimizationProblem,
     SolveError,
     SolverCapabilities,
     SolverPreferences,
@@ -27,6 +28,7 @@ from annealbridge.models.reflection import (
     union_members,
 )
 from annealbridge.orchestration.policy import ExecutionPolicy
+from annealbridge.orchestration.postprocess import postprocess_costs
 from annealbridge.solvers.base import SolverBackend
 from annealbridge.solvers.metadata import redact
 
@@ -265,6 +267,55 @@ def preference_limit_errors(
     if preferences.top_k > top_k_maximum:
         errors.append(
             limit_error("TOP_K_LIMIT", "top_k", preferences.top_k, top_k_maximum)
+        )
+    return errors
+
+
+def postprocess_limit_errors(
+    problem: OptimizationProblem,
+    capabilities: SolverCapabilities,
+    policy: ExecutionPolicy,
+) -> list[SolveError]:
+    """Batch 4 (G), postprocess spec §6: the post-processing ceilings.
+
+    Checked only when post-processing is requested and the backend is not
+    exhaustive (where it does not run), so a problem that leaves it off is
+    never refused because of it. Two ceilings, both under
+    POSTPROCESS_LIMIT: ``postprocess_candidates`` against
+    ``max_postprocess_candidates``, and the per-attempt setup plus one
+    neighbourhood scan (:func:`postprocess_costs`, which depend on the
+    problem, not the assignment) against ``max_postprocess_evaluations`` --
+    a problem that cannot afford them could not take one step. Flag
+    driven like the retry and ``top_k`` ceilings: post-processing belongs
+    to the service, not to a backend. Never clamps.
+    """
+    preferences = problem.solver
+    if preferences.postprocess == "none" or capabilities.exhaustive:
+        return []
+    errors: list[SolveError] = []
+    candidates_maximum = policy.required_limit("postprocess_candidates")
+    if preferences.postprocess_candidates > candidates_maximum:
+        errors.append(
+            limit_error(
+                "POSTPROCESS_LIMIT",
+                "postprocess_candidates",
+                preferences.postprocess_candidates,
+                candidates_maximum,
+            )
+        )
+    budget = int(policy.required_limit("postprocess_evaluations"))
+    if postprocess_costs(problem, budget) is None:
+        errors.append(
+            catalog_error(
+                "POSTPROCESS_LIMIT",
+                f"setting up post-processing for this problem plus one "
+                f"neighbourhood scan cost more than the server maximum of "
+                f"{budget} evaluations per attempt (a scan: 2 per variable and "
+                f"per non-zero constraint coefficient, plus 4 per variable "
+                f"pair sharing a hard constraint and per variable pair inside "
+                f"each constraint; the setup: the constraint entries of both "
+                f"variables of every such pair)",
+            )
         )
     return errors
 

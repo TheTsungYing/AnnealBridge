@@ -28,6 +28,8 @@ request, and no setting can be changed by a problem JSON.
 | `ANNEALBRIDGE_MAX_LOCAL_RETRIES` | int ≥ 0 | `10` | Upper bound on `max_retries` for the local backends (`RETRY_LIMIT`) |
 | `ANNEALBRIDGE_MAX_REMOTE_RETRIES` | int ≥ 0 | `3` | Upper bound on `max_retries` for remote backends, enforced even when remote retries are enabled (`RETRY_LIMIT`) |
 | `ANNEALBRIDGE_MAX_TOP_K` | int ≥ 1 | `1000` | Upper bound on `top_k` (`TOP_K_LIMIT`) |
+| `ANNEALBRIDGE_MAX_POSTPROCESS_CANDIDATES` | int ≥ 1 | `100` | Upper bound on `postprocess_candidates` while `solver.postprocess` is on (`POSTPROCESS_LIMIT`). Not checked while post-processing is off, nor on an exhaustive backend, where it never runs |
+| `ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS` | int ≥ 1 | `20000000` | Move evaluations post-processing may spend per attempt, each scan around one assignment charged the evaluations it performs, `2·(n + z) + 4·(p + s)` (`n` variables, `z` non-zero constraint coefficients, `p` variable pairs sharing a hard constraint, `s` the sum over constraints of `k·(k−1)/2`), plus a one-off setup charge per attempt (see [Post-processing](problem-format.md#post-processing)), so it bounds time and scratch memory alike — the default is a few seconds of CPU per attempt. A problem whose setup plus a single scan exceeds it is refused before solving (`POSTPROCESS_LIMIT`); running out part-way stops post-processing with the `POSTPROCESS_LIMIT_REACHED` warning. A count, not a time, so results stay reproducible. Checked only when post-processing runs |
 | `ANNEALBRIDGE_SA_WORKERS` | int ≥ 1 | unset (auto-detect) | Threads the `simulated_annealing` backend samples with. Changes wall time only, never a result: the same seed gives the same answer for any value. Unset uses the CPUs available to the process; a container CPU quota is not detected, so set it there. Its product with `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES` is the ceiling on simultaneous sampling threads, so tune the two together — see [Recommended production settings](#recommended-production-settings) |
 | `ANNEALBRIDGE_TABU_WORKERS` | int ≥ 1 | unset (auto-detect) | The same setting for the `tabu` backend: threads it samples with, wall time only, never a result. The two backends have their own variable because they are tuned independently; whichever one a solve uses, its product with `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES` is the ceiling on simultaneous sampling threads |
 | `ANNEALBRIDGE_SB_DEVICE` | `cpu` \| `cuda` | `cpu` | Where the `simulated_bifurcation` backend runs its dynamics: `cpu` (`numpy`, part of the core install) or `cuda` (PyTorch, from the `[gpu]` extra, imported lazily and only on this setting). A `cuda` setting without a usable CUDA device makes the backend report itself unavailable; it is never substituted by the CPU. This backend has no worker variable — its threads are the BLAS ones, bound by `OPENBLAS_NUM_THREADS` / `MKL_NUM_THREADS` — see [Backends](backends.md#running-it-on-a-gpu) |
@@ -55,6 +57,9 @@ against under the current environment — the same values an agent reads from
 `get_optimization_capabilities`. A backend's own declared ceiling appears there
 too: `simulated_bifurcation` reports `ANNEALBRIDGE_SB_MAX_VARIABLES` as
 `max_variables`, the same key the exhaustive backend's policy ceiling uses.
+The two post-processing ceilings, `max_postprocess_candidates` and
+`max_postprocess_evaluations`, are listed for every backend except an
+exhaustive one, on which post-processing never runs.
 See [CLI](cli.md#capabilities).
 
 ### `ANNEALBRIDGE_ENABLED_BACKENDS`
@@ -97,7 +102,7 @@ export ANNEALBRIDGE_LIMITS='{"iterations": 100000}'
   `ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS` with the hybrid solvers and declares
   no limit key of its own.)
 - A key that already has a dedicated variable is **rejected**, so every limit
-  has exactly one source. The nine rejected keys, and the variable to use
+  has exactly one source. The eleven rejected keys, and the variable to use
   instead:
 
   | Rejected key | Configure with |
@@ -111,6 +116,8 @@ export ANNEALBRIDGE_LIMITS='{"iterations": 100000}'
   | `local_retries` | `ANNEALBRIDGE_MAX_LOCAL_RETRIES` |
   | `remote_retries` | `ANNEALBRIDGE_MAX_REMOTE_RETRIES` |
   | `top_k` | `ANNEALBRIDGE_MAX_TOP_K` |
+  | `postprocess_candidates` | `ANNEALBRIDGE_MAX_POSTPROCESS_CANDIDATES` |
+  | `postprocess_evaluations` | `ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS` |
 
 If a registered backend declares a limit key the policy has no value for, the
 service refuses to start and the failure is reported as a settings error — the
@@ -217,5 +224,18 @@ of the host configuration.
   `OPENBLAS_NUM_THREADS` / `MKL_NUM_THREADS` instead (that too only affects
   speed, never results). Its memory, not its CPU, is what
   `ANNEALBRIDGE_SB_MAX_VARIABLES` bounds.
+- **Size the post-processing budget to the time a slot may be held.**
+  Post-processing is opt-in per problem, runs single-threaded on this machine
+  (for a remote backend too) and holds the concurrency slot while it runs.
+  `ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS` is what bounds that time: it
+  applies to each attempt, so a solve with retries can spend up to
+  `attempts × budget` evaluations. Lower it on a shared host; raise it only if
+  results carry `POSTPROCESS_LIMIT_REACHED` and the extra CPU time is worth
+  it — a larger problem also makes every scan more expensive, and one whose
+  single scan exceeds the budget is refused outright.
+  `ANNEALBRIDGE_MAX_POSTPROCESS_CANDIDATES` rarely needs changing: in the
+  measurements behind the feature, the default of ten candidates per attempt
+  captured the gains, while processing every sample made a TSP-like problem
+  worse for the same time budget.
 - **Watch the startup log for the unknown-variable `WARNING`.** It is the only
   signal that a setting you thought you configured is still at its default.

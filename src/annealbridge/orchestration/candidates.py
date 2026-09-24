@@ -1,5 +1,6 @@
 """Candidate evaluation, dedup and ranking (split out of ``optimizer.py``)."""
 
+import time
 from collections.abc import Collection
 from dataclasses import dataclass
 
@@ -11,7 +12,13 @@ from annealbridge.models import (
     InfeasibilityDiagnostics,
     Objective,
     OptimizationProblem,
+    PostprocessStats,
     Solution,
+)
+from annealbridge.orchestration.postprocess import (
+    PostprocessRequest,
+    PostprocessRun,
+    run_postprocess,
 )
 from annealbridge.solvers import RawSolverResult
 from annealbridge.validation import (
@@ -299,13 +306,17 @@ class ProcessedCandidates:
     ``unique_samples`` and ``feasible_samples`` are the candidate counts the
     attempt reports; both are counted over deduplicated assignments, not
     over the raw rows. ``infeasibility`` is set only when there were
-    candidates and none was feasible.
+    candidates and none was feasible. ``postprocess`` is the attempt's
+    post-processing statistics, ``None`` when post-processing was not
+    requested; the two counts above stay solver-only either way.
     """
 
     solutions: list[Solution]
     unique_samples: int
     feasible_samples: int
     infeasibility: InfeasibilityDiagnostics | None = None
+    postprocess: PostprocessStats | None = None
+    postprocess_ms: float | None = None
 
 
 def diagnose_infeasibility(
@@ -395,11 +406,40 @@ def _top_k_shortlist(
     return np.flatnonzero(below | (equal & (secondary <= thr_s)))
 
 
+def _new_assignments(
+    samples: np.ndarray, run: PostprocessRun
+) -> tuple[np.ndarray, list[str]]:
+    """Post-processing rows the solver did not return, deduplicated.
+
+    An assignment the solver also returned stays the solver's candidate
+    (its energy and sample count are real); among equal produced rows the
+    first one produced -- the lowest selection rank -- keeps its label
+    (postprocess spec §4).
+    """
+    width = samples.shape[1]
+    if len(run.samples) == 0:
+        return np.zeros((0, width), dtype=np.int64), []
+    seen = {row.tobytes() for row in np.ascontiguousarray(samples, dtype=np.int64)}
+    rows: list[np.ndarray] = []
+    sources: list[str] = []
+    for row, source in zip(np.ascontiguousarray(run.samples, dtype=np.int64), run.sources):
+        key = row.tobytes()
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
+        sources.append(source)
+    if not rows:
+        return np.zeros((0, width), dtype=np.int64), []
+    return np.array(rows, dtype=np.int64), sources
+
+
 def process_candidates(
     problem: OptimizationProblem,
     raw: RawSolverResult,
     internal_variables: Collection[str] = frozenset(),
     top_k: int = 5,
+    postprocess: PostprocessRequest | None = None,
 ) -> ProcessedCandidates:
     """Run the §25 candidate pipeline on raw solver output.
 
@@ -421,24 +461,90 @@ def process_candidates(
     :func:`_top_k_shortlist` -- are given the tuple key and sorted; the
     first ``top_k`` of that order are provably the first ``top_k`` of the
     full order, so the ranking is unchanged.
+
+    With ``postprocess`` (batch 4 G, postprocess spec 2026-09-23) the best
+    distinct samples are also repaired / locally searched
+    (:func:`~annealbridge.orchestration.postprocess.run_postprocess`); the
+    assignments that produces which the solver did not return join the
+    pool, are validated by the very same :func:`validate_batch` and ranked
+    by the very same key, with ``source`` naming where they came from, no
+    energy and a zero sample count. ``unique_samples``,
+    ``feasible_samples`` and the infeasibility diagnostics stay about the
+    solver's samples only.
     """
     candidates = deduplicate_samples(raw, internal_variables)
     if len(candidates) == 0:
-        return ProcessedCandidates([], 0, 0)
+        if postprocess is None:
+            return ProcessedCandidates([], 0, 0)
+        return ProcessedCandidates([], 0, 0, postprocess=_empty_stats(), postprocess_ms=0.0)
     minimize = problem.objective.direction == "minimize"
+    sign = 1.0 if minimize else -1.0
 
     verdict = validate_batch(problem, candidates.variables, candidates.samples)
-    feasible = np.flatnonzero(verdict.feasible)
+    raw_feasible = int(np.count_nonzero(verdict.feasible))
+    pool_samples = candidates.samples
+    pool_feasible = verdict.feasible
+    pool_soft = verdict.soft_violation_score
+    sources: list[str] | None = None
+    stats: PostprocessStats | None = None
+    postprocess_ms: float | None = None
+    if postprocess is not None:
+        postprocess_started = time.perf_counter()
+        cost = (
+            sign
+            * evaluate_objective_batch(
+                problem.objective, candidates.variables, candidates.samples
+            )
+            + verdict.soft_violation_score
+        )
+        run = run_postprocess(
+            problem,
+            candidates.variables,
+            candidates.samples,
+            verdict.feasible,
+            verdict.hard_violation_total,
+            cost,
+            postprocess,
+        )
+        new_rows, new_sources = _new_assignments(candidates.samples, run)
+        new_verdict = validate_batch(problem, candidates.variables, new_rows)
+        stats = PostprocessStats(
+            candidates_selected=run.candidates_selected,
+            repair_attempted=run.repair_attempted,
+            repair_succeeded=run.repair_succeeded,
+            local_search_started=run.local_search_started,
+            local_search_improved=run.local_search_improved,
+            new_candidates=len(new_rows),
+            feasible_added=int(np.count_nonzero(new_verdict.feasible)),
+            limit_reached=list(run.limit_reached),
+        )
+        postprocess_ms = (time.perf_counter() - postprocess_started) * 1000.0
+        if len(new_rows):
+            pool_samples = np.concatenate(
+                [candidates.samples.astype(np.int64, copy=False), new_rows]
+            )
+            pool_feasible = np.concatenate([verdict.feasible, new_verdict.feasible])
+            pool_soft = np.concatenate(
+                [verdict.soft_violation_score, new_verdict.soft_violation_score]
+            )
+            sources = ["solver"] * len(candidates) + new_sources
+
+    feasible = np.flatnonzero(pool_feasible)
     if len(feasible) == 0:
         return ProcessedCandidates(
-            [], len(candidates), 0, diagnose_infeasibility(problem, candidates, verdict)
+            [],
+            len(candidates),
+            0,
+            diagnose_infeasibility(problem, candidates, verdict),
+            stats,
+            postprocess_ms,
         )
 
-    feasible_samples = candidates.samples[feasible]
+    feasible_samples = pool_samples[feasible]
     objective_value = evaluate_objective_batch(
         problem.objective, candidates.variables, feasible_samples
     )
-    soft_violation_score = verdict.soft_violation_score[feasible]
+    soft_violation_score = pool_soft[feasible]
     if minimize:
         ranking_score = objective_value + soft_violation_score
     else:
@@ -447,7 +553,6 @@ def process_candidates(
     # §25.1: ascending ranking_score for minimize, descending for maximize;
     # ties broken by objective_value in the same direction, then by the
     # name-sorted assignment tuple so the order is fully deterministic.
-    sign = 1.0 if minimize else -1.0
     name_order = sorted(
         range(len(candidates.variables)), key=lambda j: candidates.variables[j]
     )
@@ -466,8 +571,11 @@ def process_candidates(
     solutions: list[Solution] = []
     for rank, position in enumerate(order[:top_k].tolist(), start=1):
         index = int(feasible[position])
-        sample = candidates.sample_dict(index)
+        sample = dict(zip(candidates.variables, pool_samples[index].tolist()))
         validation = validate_solution(problem, sample)
+        # Rows past the solver's are post-processing products: no compiled
+        # sample behind them, so no energy and no raw rows (spec §5).
+        produced = index >= len(candidates)
         solutions.append(
             Solution(
                 rank=rank,
@@ -475,10 +583,31 @@ def process_candidates(
                 objective_value=float(objective_value[position]),
                 soft_violation_score=validation.soft_violation_score,
                 ranking_score=float(ranking_score[position]),
-                energy=float(candidates.energies[index]),
-                sample_count=int(candidates.counts[index]),
+                energy=None if produced else float(candidates.energies[index]),
+                sample_count=0 if produced else int(candidates.counts[index]),
+                source="solver" if sources is None else sources[index],
                 hard_constraints_satisfied=validation.feasible,
                 constraint_evaluations=validation.evaluations,
             )
         )
-    return ProcessedCandidates(solutions, len(candidates), int(len(feasible)))
+    return ProcessedCandidates(
+        solutions,
+        len(candidates),
+        raw_feasible,
+        postprocess=stats,
+        postprocess_ms=postprocess_ms,
+    )
+
+
+def _empty_stats() -> PostprocessStats:
+    """Statistics of a post-processing run that had no sample to start from."""
+    return PostprocessStats(
+        candidates_selected=0,
+        repair_attempted=0,
+        repair_succeeded=0,
+        local_search_started=0,
+        local_search_improved=0,
+        new_candidates=0,
+        feasible_added=0,
+        limit_reached=[],
+    )

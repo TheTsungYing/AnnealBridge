@@ -7,8 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in post-processing in the original variables:
+  `solver.postprocess: "repair_local_search"` (default `"none"`) takes the
+  best `solver.postprocess_candidates` distinct samples of each attempt
+  (default `10`), greedily repairs the infeasible ones and moves the feasible
+  ones to a local optimum, with single-variable ±1 steps and pair moves over
+  two variables that share a hard constraint (a swap inside a one-hot group,
+  trading one knapsack item for another). It never touches slack bits,
+  encoding bits or the hard penalty, runs single-threaded on this machine
+  whatever the backend, and is deterministic. Every assignment it produces is
+  re-validated and ranked exactly like a solver sample, so rank 1 may be one
+  the solver never returned; `Solution.source` (`repaired`, `local_search`,
+  `repaired_local_search`) marks it, with `energy: null` and
+  `sample_count: 0`, and `SolveAttempt.postprocess` / `postprocess_ms` report
+  what it did and how long it took. It is skipped on an exhaustive backend,
+  with `PARAMETER_IGNORED`. While it is on, an attempt whose samples were all
+  infeasible but whose repair succeeded counts as feasible, so no penalty
+  retry follows. Known limits: an integer moves by ±1 per step within a cap
+  of `4 · n` steps, and permutation constraints such as a TSP's need four
+  variables changed at once, which no move does. See the Post-processing
+  section of `docs/problem-format.md`.
+- Two server ceilings for it, reported in the capabilities limits of every
+  non-exhaustive backend: `ANNEALBRIDGE_MAX_POSTPROCESS_CANDIDATES` (default
+  `100`) on `postprocess_candidates`, and
+  `ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS` (default `20000000`), a
+  per-attempt count of move evaluations, so a solve with retries can spend up
+  to the number of attempts times it. Both keys are also refused in
+  `ANNEALBRIDGE_LIMITS`. Neither is checked while post-processing is off or
+  on an exhaustive backend.
+- Error code `POSTPROCESS_LIMIT` (`resource_limit_exceeded`):
+  `postprocess_candidates` above its ceiling, or a problem whose single
+  neighbourhood scan already exceeds the evaluation budget; refused before
+  the backend is called and listed as blocking by `recommend`. Warning code
+  `POSTPROCESS_LIMIT_REACHED`: post-processing stopped at the evaluation
+  budget or the step cap; at most one per solve, the status is unaffected.
+
 ### Changed
 
+- Visible even with post-processing off, the default: every solution now
+  carries `"source": "solver"`, every attempt carries `"postprocess": null`
+  and `"postprocess_ms": null`, and the capabilities `limits` of every
+  non-exhaustive backend gain `max_postprocess_candidates` and
+  `max_postprocess_evaluations`. Every other value, the ranking and the retry
+  behaviour are unchanged.
 - Raised the minimum dependency versions to the lowest ones the test suite
   actually passes against: `pydantic>=2.10`, `numpy>=2.0`, `dimod>=0.12.19`,
   `dwave-samplers>=1.3`, `typer>=0.26`, `mcp>=2.1,<3` (the `mcp`, `all` and

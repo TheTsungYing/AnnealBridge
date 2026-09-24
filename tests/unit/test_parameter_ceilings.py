@@ -151,6 +151,9 @@ NEW_FIELDS = {
     "max_local_retries": ("local_retries", 10),
     "max_remote_retries": ("remote_retries", 3),
     "max_top_k": ("top_k", 1000),
+    # Batch 4 (G), postprocess spec 2026-09-23 §6.
+    "max_postprocess_candidates": ("postprocess_candidates", 100),
+    "max_postprocess_evaluations": ("postprocess_evaluations", 20_000_000),
 }
 
 
@@ -167,6 +170,8 @@ class TestPolicyFields:
             max_local_retries=0,
             max_remote_retries=1,
             max_top_k=2,
+            max_postprocess_candidates=3,
+            max_postprocess_evaluations=4,
         )
         for field, (key, _) in NEW_FIELDS.items():
             assert COMPATIBILITY_LIMIT_FIELDS[key] == field
@@ -184,6 +189,8 @@ class TestPolicyFields:
             ("max_local_reads", 0),
             ("max_sweeps", 0),
             ("max_top_k", 0),
+            ("max_postprocess_candidates", 0),
+            ("max_postprocess_evaluations", 0),
             ("max_local_retries", -1),
             ("max_remote_retries", -1),
         ],
@@ -212,6 +219,8 @@ class TestSettings:
         clean_env.setenv("ANNEALBRIDGE_MAX_LOCAL_RETRIES", "2")
         clean_env.setenv("ANNEALBRIDGE_MAX_REMOTE_RETRIES", "1")
         clean_env.setenv("ANNEALBRIDGE_MAX_TOP_K", "9")
+        clean_env.setenv("ANNEALBRIDGE_MAX_POSTPROCESS_CANDIDATES", "7")
+        clean_env.setenv("ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS", "12345")
 
         policy = load_settings().to_policy()
 
@@ -220,6 +229,8 @@ class TestSettings:
         assert policy.max_local_retries == 2
         assert policy.max_remote_retries == 1
         assert policy.max_top_k == 9
+        assert policy.max_postprocess_candidates == 7
+        assert policy.max_postprocess_evaluations == 12345
 
     @pytest.mark.parametrize(
         "variable, bad",
@@ -229,6 +240,8 @@ class TestSettings:
             ("ANNEALBRIDGE_MAX_LOCAL_RETRIES", "-1"),
             ("ANNEALBRIDGE_MAX_REMOTE_RETRIES", "abc"),
             ("ANNEALBRIDGE_MAX_TOP_K", "inf"),
+            ("ANNEALBRIDGE_MAX_POSTPROCESS_CANDIDATES", "0"),
+            ("ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS", "1.5"),
         ],
     )
     def test_bad_values_are_settings_errors(self, clean_env, variable, bad):
@@ -261,12 +274,16 @@ class TestLimitsView:
             "max_sweeps": 100000,
             "max_local_retries": 10,
             "max_top_k": 1000,
+            "max_postprocess_candidates": 100,
+            "max_postprocess_evaluations": 20_000_000,
         }
         # No sweep ceiling: the tabu sampler takes no sweeps to cap.
         assert limits["tabu"] == {
             "max_local_reads": 100000,
             "max_local_retries": 10,
             "max_top_k": 1000,
+            "max_postprocess_candidates": 100,
+            "max_postprocess_evaluations": 20_000_000,
         }
         # Simulated bifurcation's sweeps are integration steps, so both
         # local ceilings apply to it.
@@ -276,7 +293,10 @@ class TestLimitsView:
             "max_sweeps": 100000,
             "max_local_retries": 10,
             "max_top_k": 1000,
+            "max_postprocess_candidates": 100,
+            "max_postprocess_evaluations": 20_000_000,
         }
+        # Exhaustive: post-processing never runs there, so no ceiling keys.
         assert limits["exact"] == {
             "max_variables": 24,
             "max_local_retries": 10,
@@ -287,17 +307,26 @@ class TestLimitsView:
             "max_annealing_time_us": 2000.0,
             "max_remote_retries": 3,
             "max_top_k": 1000,
+            "max_postprocess_candidates": 100,
+            "max_postprocess_evaluations": 20_000_000,
         }
         for name in ("leap_hybrid_bqm", "leap_hybrid_cqm", "fujitsu_da"):
             assert limits[name] == {
                 "max_time_seconds": 300,
                 "max_remote_retries": 3,
                 "max_top_k": 1000,
+                "max_postprocess_candidates": 100,
+                "max_postprocess_evaluations": 20_000_000,
             }, name
 
     def test_build_capabilities_follows_the_policy(self):
         policy = ExecutionPolicy(
-            max_local_reads=11, max_sweeps=12, max_local_retries=1, max_top_k=2
+            max_local_reads=11,
+            max_sweeps=12,
+            max_local_retries=1,
+            max_top_k=2,
+            max_postprocess_candidates=3,
+            max_postprocess_evaluations=4,
         )
         view = build_capabilities(SolverRegistry.default(), policy)
         by_name = {backend.name: backend for backend in view.backends}
@@ -306,6 +335,8 @@ class TestLimitsView:
             "max_sweeps": 12,
             "max_local_retries": 1,
             "max_top_k": 2,
+            "max_postprocess_candidates": 3,
+            "max_postprocess_evaluations": 4,
         }
         # Key order feeds the CLI table: declared limits first, then the
         # service-level ceilings.
@@ -314,6 +345,8 @@ class TestLimitsView:
             "max_sweeps",
             "max_local_retries",
             "max_top_k",
+            "max_postprocess_candidates",
+            "max_postprocess_evaluations",
         ]
 
 
@@ -402,6 +435,34 @@ class TestLocalCeilings:
             r for r in result.recommendations if r.backend == "simulated_annealing"
         )
         assert "SWEEPS_LIMIT" in [error.code for error in entry.blocking]
+
+    # Batch 4 (G): the post-processing candidate ceiling, same template as
+    # top_k, but only while post-processing is on (postprocess spec §2).
+    def test_postprocess_candidates_over_the_default_ceiling_is_refused(self):
+        backend, service = make_zero_service()
+        problem = make_problem(postprocess="repair_local_search", postprocess_candidates=101)
+
+        result = service.solve(problem)
+
+        assert result.status == "resource_limit_exceeded"
+        assert codes(result) == ["POSTPROCESS_LIMIT"]
+        assert result.attempts == []
+        assert result.solutions == []
+        assert backend.solve_calls == 0
+        assert "101" in result.errors[0].message
+        assert result.errors[0].recommended_action
+
+    def test_postprocess_candidates_equal_to_the_ceiling_is_allowed(self):
+        service = OptimizationService(
+            policy=ExecutionPolicy(max_postprocess_candidates=3)
+        )
+        problem = make_problem(
+            postprocess="repair_local_search", postprocess_candidates=3, seed=1
+        )
+
+        result = service.solve(problem)
+
+        assert result.status == "success", result.errors
 
 
 # --------------------------------------------------------------------------
