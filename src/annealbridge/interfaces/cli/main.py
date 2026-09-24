@@ -76,6 +76,17 @@ def _global_options(
     pass
 
 
+def _echo_json(text: str) -> None:
+    """Print machine-readable output as UTF-8 bytes and a ``\\n``.
+
+    Bytes bypass the text layer, whose encoding follows the console code page
+    on Windows when stdout is redirected and which turns ``\\n`` into
+    ``\\r\\n``: the output is the same UTF-8 with LF newlines on every
+    platform. Human-readable output stays plain ``typer.echo``.
+    """
+    typer.echo(text.encode("utf-8"))
+
+
 def _format_number(value: float) -> str:
     """Render integral floats without a trailing ``.0`` (e.g. ``17``, not ``17.0``)."""
     if float(value).is_integer():
@@ -331,7 +342,7 @@ def _run(
     result = call(_build_state().service, problem)
 
     if json_output:
-        typer.echo(result.model_dump_json(indent=2))
+        _echo_json(result.model_dump_json(indent=2))
     else:
         typer.echo(render(problem, result))
 
@@ -514,7 +525,7 @@ def capabilities(
         # The MCP tool's default view: problem_json_schema stays null, as
         # ``export-schema`` already prints the schema on its own.
         caps = build_capabilities(state.registry, state.policy, include_schema=False)
-        typer.echo(caps.model_dump_json(indent=2))
+        _echo_json(caps.model_dump_json(indent=2))
         return
     caps = build_capabilities(state.registry, state.policy)
     typer.echo(_render_capabilities_table(caps.backends))
@@ -551,7 +562,7 @@ def example(
 @app.command("export-schema")
 def export_schema() -> None:
     """Print the OptimizationProblem JSON schema."""
-    typer.echo(json.dumps(OptimizationProblem.model_json_schema(), indent=2))
+    _echo_json(json.dumps(OptimizationProblem.model_json_schema(), indent=2))
 
 
 @app.command(

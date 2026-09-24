@@ -135,6 +135,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `~/.codex/config.toml`, with a TOML entry for AnnealBridge; each with its
   source. Both READMEs point at it from the MCP section.
 
+### Fixed
+
+- The CLI's machine-readable output (`--json` on `solve`, `validate`,
+  `recommend` and `capabilities`, and `export-schema`) is now always UTF-8
+  with `\n` newlines. On Windows, redirected to a file or a pipe, it used to
+  be encoded in the console code page (cp950, cp1252, …) with `\r\n`
+  newlines, so `capabilities --json` — whose descriptions contain an em
+  dash — did not decode as UTF-8, and a problem with a name the code page
+  cannot encode made `solve --json` fail with `UnicodeEncodeError`. The JSON
+  itself is unchanged; human-readable output and stderr are unchanged too.
+  See the Output encoding section of `docs/cli.md`.
+
 ## [0.3.0] - 2026-09-22
 
 ### Added

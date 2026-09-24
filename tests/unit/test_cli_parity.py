@@ -242,15 +242,27 @@ main()
 """
 
 
+def _platform_env(**overrides: str) -> dict[str, str]:
+    """The inherited environment without any stdio encoding override, so a
+    child process encodes its text streams the way the platform does (the
+    locale's code page on Windows when piped), plus ``overrides``."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() not in ("PYTHONIOENCODING", "PYTHONUTF8")
+    }
+    env.update(overrides)
+    return env
+
+
 def _core_only(*args: str) -> subprocess.CompletedProcess[bytes]:
-    # A piped stdout is encoded in the locale's code page on Windows, and the
-    # capabilities descriptions are not all ASCII: pin UTF-8 so the bytes
-    # can be compared. ``example`` writes bytes and is unaffected either way.
+    # No encoding is pinned: every machine-readable output is written as
+    # UTF-8 bytes, and the example list is ASCII.
     return subprocess.run(
         [sys.executable, "-c", _CORE_ONLY_CLI, *args],
         capture_output=True,
         timeout=120,
-        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        env=_platform_env(),
     )
 
 
@@ -290,3 +302,110 @@ class TestWithoutTheMcpExtra:
         payload = json.loads(result.stdout)
         assert set(payload) == set(OptimizationCapabilities.model_fields)
         assert payload["problem_json_schema"] is None
+
+
+# ---------------------------------------------------------------------------
+# Machine-readable output is UTF-8 whatever the platform's stdio encoding
+# ---------------------------------------------------------------------------
+
+# CJK and an em dash: neither ASCII nor encodable in cp1252 (the code page of
+# a GitHub Windows runner). The capabilities descriptions carry em dashes too.
+UNICODE_NAME = "物品—甲"
+
+
+def _cli(*args: str, **env: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        [sys.executable, "-m", "annealbridge.interfaces.cli.main", *args],
+        capture_output=True,
+        timeout=120,
+        env=_platform_env(**env),
+    )
+
+
+def _json_stdout(result: subprocess.CompletedProcess[bytes], code: int = 0):
+    """stdout decoded strictly as UTF-8, with LF newlines, then parsed."""
+    assert result.returncode == code, result.stderr.decode("utf-8", "replace")
+    text = result.stdout.decode("utf-8")
+    assert "\r" not in text
+    assert text.endswith("}\n")
+    return json.loads(text)
+
+
+@pytest.fixture
+def unicode_knapsack(tmp_path) -> Path:
+    """The knapsack example with a non-ASCII variable (in the optimum) and
+    constraint id."""
+    text = KNAPSACK.read_text(encoding="utf-8")
+    text = text.replace('"item_a"', f'"{UNICODE_NAME}"')
+    text = text.replace('"capacity"', f'"容量{UNICODE_NAME}"')
+    path = tmp_path / "unicode_knapsack.json"
+    path.write_bytes(text.encode("utf-8"))
+    return path
+
+
+@pytest.fixture
+def unknown_unicode_variable(tmp_path) -> Path:
+    """The knapsack example with a term on an undeclared non-ASCII variable,
+    which the error message echoes."""
+    problem = json.loads(KNAPSACK.read_text(encoding="utf-8"))
+    problem["objective"]["linear_terms"].append(
+        {"variable": UNICODE_NAME, "coefficient": 1}
+    )
+    path = tmp_path / "unknown_variable.json"
+    path.write_bytes(json.dumps(problem, ensure_ascii=False).encode("utf-8"))
+    return path
+
+
+def _assert_solved_with_unicode_names(payload) -> None:
+    assert payload["status"] == "success"
+    best = payload["solutions"][0]
+    assert best["objective_value"] == 17
+    assert best["variables"][UNICODE_NAME] == 1
+    assert f"容量{UNICODE_NAME}" in {
+        evaluation["constraint_id"] for evaluation in best["constraint_evaluations"]
+    }
+
+
+class TestMachineReadableOutputIsUtf8:
+    """Real processes, no ``PYTHONIOENCODING``: on Windows a piped stdout
+    otherwise follows the console code page and translates newlines."""
+
+    def test_capabilities_json(self):
+        payload = _json_stdout(_cli("capabilities", "--json"))
+
+        assert set(payload) == set(OptimizationCapabilities.model_fields)
+        assert any(
+            not backend["description"].isascii() for backend in payload["backends"]
+        )
+
+    def test_export_schema(self):
+        assert "properties" in _json_stdout(_cli("export-schema"))
+
+    def test_solve_json(self, unicode_knapsack):
+        payload = _json_stdout(_cli("solve", str(unicode_knapsack), "--json"))
+
+        _assert_solved_with_unicode_names(payload)
+
+    @pytest.mark.parametrize("command", ["validate", "recommend"])
+    def test_error_messages_keep_the_name(self, command, unknown_unicode_variable):
+        payload = _json_stdout(
+            _cli(command, str(unknown_unicode_variable), "--json"), code=1
+        )
+
+        assert payload["valid"] is False
+        assert any(UNICODE_NAME in error["message"] for error in payload["errors"])
+
+    # A legacy code page forced on the text layer, so the bytes are proven to
+    # bypass it on every platform, not only where the default is not UTF-8.
+
+    def test_capabilities_json_under_a_legacy_code_page(self):
+        result = _cli("capabilities", "--json", PYTHONIOENCODING="cp1252")
+
+        assert set(_json_stdout(result)) == set(OptimizationCapabilities.model_fields)
+
+    def test_solve_json_under_a_legacy_code_page(self, unicode_knapsack):
+        result = _cli(
+            "solve", str(unicode_knapsack), "--json", PYTHONIOENCODING="cp1252"
+        )
+
+        _assert_solved_with_unicode_names(_json_stdout(result))

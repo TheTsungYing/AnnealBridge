@@ -49,6 +49,17 @@ annealbridge --version
 `ANNEALBRIDGE_*` setting and works even when one of them holds an invalid
 value.
 
+## Output encoding
+
+Machine-readable output — `--json` on `solve`, `validate`, `recommend` and
+`capabilities`, and `export-schema` — is always UTF-8 with `\n` newlines,
+whether stdout is a terminal, a file or a pipe, and on Windows too: it does
+not follow the console code page or `PYTHONIOENCODING`, so
+`annealbridge capabilities --json > caps.json` can be read back as UTF-8
+anywhere. `example NAME` prints the file's own UTF-8 bytes. The tables,
+reports and the example list are for people and, like the messages on
+stderr, use the terminal's encoding.
+
 ## The problem file
 
 `solve`, `validate` and `recommend` take a `PROBLEM_FILE` argument: the path

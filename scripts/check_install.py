@@ -232,6 +232,9 @@ def run_common_checks(cli: str) -> str:
     with check("CLI schema export"):
         assert "properties" in json_cli("export-schema")
 
+    with check("CLI capabilities --json is UTF-8 (its descriptions are not ASCII)"):
+        assert json_cli("capabilities", "--json")["backends"]
+
     with check("CLI validate"):
         assert json_cli("validate", "knapsack.json", "--json")["valid"]
 
