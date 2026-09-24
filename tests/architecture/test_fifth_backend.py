@@ -17,13 +17,18 @@ capabilities view must handle it purely from its declaration:
   to ``solvers/metadata.py`` (2026-09-09 review F-10);
 * and every *shipped* backend that declares a credential env var declares it
   from its own ``__init__`` too, so a directly constructed backend (no
-  registry involved) redacts its key as well (2026-09-11 review F-03).
+  registry involved) redacts its key as well (2026-09-11 review F-03);
+* declaring ``supports_interrupt`` (and taking ``interrupt`` in ``solve``)
+  is all it takes to accept ``solver.wall_clock_limit_seconds`` and receive
+  the interrupt; without the flag the limit is refused as
+  WALL_CLOCK_LIMIT_UNSUPPORTED (batch 6 J).
 
 The proof that none of this needed a code change is
 ``test_core_sources_never_mention_the_fake``: the files the fake flows
 through do not contain its name, its error code or its credential names.
 """
 
+import itertools
 import json
 import logging
 from pathlib import Path
@@ -36,6 +41,7 @@ from annealbridge.config import SettingsError
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.interfaces.capabilities import build_capabilities
 from annealbridge.interfaces.composition import build_state_from_policy
+from annealbridge.interrupt import CancelToken, Interrupt
 from annealbridge.models import OptimizationProblem, SolverPreferences, catalog_error
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.solvers import SolverRegistry
@@ -48,6 +54,10 @@ from tests.fakes.declared_backend import (
     FAKE_LIMIT_ERROR_CODE,
     FAKE_LIMIT_KEY,
     FakeDeclaredBackend,
+)
+from tests.fakes.declared_interruptible_backend import (
+    NOT_PASSED,
+    FakeInterruptibleBackend,
 )
 from tests.fakes.dense_problem import dense_problem
 
@@ -71,6 +81,10 @@ CORE_FILES_THE_FAKE_FLOWS_THROUGH = [
     # Review F-10: the redaction data is declared by the backend, so the
     # shared redaction module is on the zero-change list too.
     "solvers/metadata.py",
+    # Batch 6 (J): the interrupt a backend declaring supports_interrupt
+    # receives, and the solver protocol that documents it.
+    "interrupt.py",
+    "solvers/base.py",
 ]
 
 # Never a real key; hyphenated so no vendor token-shape pattern could match
@@ -458,6 +472,140 @@ class TestEveryCredentialBearingBackendDeclaresOnConstruction:
         backend_class()
 
         assert redact(f"key {FAKE_KEY}") == "key ***"
+
+
+class TestInterruptFollowsTheDeclaration:
+    """Batch 6 (J), time-limit spec §9 item 8: the wall-clock limit and the
+    interrupt reach a backend through ``supports_interrupt`` alone.
+
+    ``FakeInterruptibleBackend`` is the declared fake with that one flag set
+    and a keyword-only ``interrupt`` on ``solve``; the plain fake declares
+    neither. Neither fake is named in the service, the validator or the
+    interrupt module (``test_core_sources_never_mention_the_fake``).
+    """
+
+    LIMIT = 30.0
+
+    @staticmethod
+    def service_for(fake, **kwargs) -> OptimizationService:
+        return OptimizationService(
+            registry=make_registry(fake), policy=make_policy(), **kwargs
+        )
+
+    def test_a_declared_backend_is_handed_the_interrupt(self):
+        fake = FakeInterruptibleBackend()
+        service = self.service_for(fake)
+
+        result = service.solve(
+            make_knapsack(num_reads=10, wall_clock_limit_seconds=self.LIMIT)
+        )
+
+        assert result.status == "success"
+        assert result.errors == []
+        assert result.wall_clock_limit_reached is False
+        assert "WALL_CLOCK_LIMIT_REACHED" not in [w.code for w in result.warnings]
+        (interrupt,) = fake.interrupts
+        assert isinstance(interrupt, Interrupt)
+        assert interrupt.should_stop() is False
+
+    def test_a_cancel_token_alone_also_reaches_it(self):
+        fake = FakeInterruptibleBackend()
+        service = self.service_for(fake)
+
+        result = service.solve(make_knapsack(num_reads=10), cancel=CancelToken())
+
+        assert result.status == "success"
+        (interrupt,) = fake.interrupts
+        assert isinstance(interrupt, Interrupt)
+
+    def test_without_limit_or_token_it_gets_the_plain_call(self):
+        # Spec §4.2: no limit and no token means no Interrupt at all, and
+        # the keyword is not even passed.
+        fake = FakeInterruptibleBackend()
+        service = self.service_for(fake)
+
+        assert service.solve(make_knapsack(num_reads=10)).status == "success"
+        assert fake.interrupts == [NOT_PASSED]
+
+    def test_validate_and_recommend_accept_the_limit(self):
+        fake = FakeInterruptibleBackend()
+        service = self.service_for(fake)
+        problem = make_knapsack(wall_clock_limit_seconds=self.LIMIT)
+
+        validation = service.validate(problem)
+        assert validation.valid is True
+        (entry,) = [
+            e
+            for e in service.recommend(problem).recommendations
+            if e.backend == FAKE_DECLARED_NAME
+        ]
+        assert entry.usable is True
+        assert entry.blocking == []
+        assert fake.solve_calls == 0
+
+    def test_an_interrupted_result_is_flagged_from_the_declaration(self):
+        # A clock that leaps ten seconds per reading: the deadline has
+        # passed by the time the backend polls, so it returns zero reads
+        # with ``interrupted`` -- and the service flags the result.
+        clock = itertools.count(start=0.0, step=10.0).__next__
+        fake = FakeInterruptibleBackend()
+        service = self.service_for(fake, clock=clock)
+
+        result = service.solve(
+            make_knapsack(num_reads=10, wall_clock_limit_seconds=1.0)
+        )
+
+        assert fake.solve_calls == 1
+        assert result.status == "infeasible"
+        assert result.solutions == []
+        assert result.wall_clock_limit_reached is True
+        assert [a.wall_clock_limit_reached for a in result.attempts] == [True]
+        assert result.attempts[0].samples_received == 0
+        assert "WALL_CLOCK_LIMIT_REACHED" in [w.code for w in result.warnings]
+
+    def test_an_undeclared_backend_refuses_the_limit_everywhere(self, service, fake):
+        problem = make_knapsack(num_reads=10, wall_clock_limit_seconds=self.LIMIT)
+
+        validation = service.validate(problem)
+        assert validation.valid is False
+        assert [e.code for e in validation.errors] == ["WALL_CLOCK_LIMIT_UNSUPPORTED"]
+        assert validation.errors[0].path == "solver.wall_clock_limit_seconds"
+
+        result = service.solve(problem)
+        assert result.status == "invalid_problem"
+        assert [e.code for e in result.errors] == ["WALL_CLOCK_LIMIT_UNSUPPORTED"]
+
+        (entry,) = [
+            e
+            for e in service.recommend(problem).recommendations
+            if e.backend == FAKE_DECLARED_NAME
+        ]
+        assert entry.usable is False
+        assert [b.code for b in entry.blocking] == ["WALL_CLOCK_LIMIT_UNSUPPORTED"]
+        assert fake.solve_calls == 0
+
+    def test_an_undeclared_backend_gets_the_plain_call_under_a_token(
+        self, service, fake
+    ):
+        # Its ``solve`` takes no ``interrupt``: passing one would be a
+        # TypeError turned solver_error. For it a token acts only at the
+        # service's own checkpoints.
+        result = service.solve(make_knapsack(num_reads=10), cancel=CancelToken())
+
+        assert result.status == "success"
+        assert fake.solve_calls == 1
+
+    def test_declaring_it_without_the_keyword_fails_at_construction(self):
+        declared = FakeInterruptibleBackend().capabilities
+
+        class DeclaresButCannot(FakeDeclaredBackend):
+            capabilities = property(lambda self: declared)
+
+        with pytest.raises(ValueError) as excinfo:
+            self.service_for(DeclaresButCannot())
+        message = str(excinfo.value)
+        assert FAKE_DECLARED_NAME in message
+        assert "supports_interrupt" in message
 
 
 def test_core_sources_never_mention_the_fake() -> None:

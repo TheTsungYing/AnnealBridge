@@ -69,6 +69,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The MCP server serves it as the new resource
   `annealbridge://examples/shift_scheduling`, the fuller counterpart of the
   `schedule_shifts` prompt, and now lists six resources.
+- `solver.wall_clock_limit_seconds` (default `null`, no limit): an upper
+  bound on a solve's wall-clock time on this server, measured from the same
+  instant as `elapsed_ms`. It is a ceiling that stops the solve early, not
+  the budget the remote option blocks' `time_limit_seconds` hands a vendor.
+  When it runs out the solve stops at its next checkpoint and returns what it
+  completed, re-validated and ranked as usual, with the status the result
+  earns (`success`, or `infeasible` with a message saying nothing was found
+  within the limit), `wall_clock_limit_reached: true` on the result, on each
+  attempt that was cut short and on post-processing that stopped early, and
+  one `WALL_CLOCK_LIMIT_REACHED` warning. The flags are set only when work
+  was actually left undone — skipped reads, shards or batches, unfinished
+  post-processing, a retry not started — never because the uninterruptible
+  stages (validation, compilation, re-validation) ran past the limit, which
+  they can. A limit that does not fire changes nothing, bit for bit; one that
+  fires makes the result depend on machine speed and load, the worker
+  counts, BLAS threads and the GPU, so the same seed can give a different
+  result. Accepted by `"1.0"` and `"1.1"` alike, finite and `> 0` or
+  `INVALID_SOLVER_PREFERENCE`, with no server ceiling. See the Wall-clock
+  limit section of `docs/problem-format.md`, and `docs/backends.md` for each
+  backend's checkpoints and worst-case overrun (a `tabu` shard cannot be
+  stopped once started; `simulated_bifurcation` drops a cut batch, so at the
+  default 100 reads a limit that fires returns no samples).
+- A new backend capability, `supports_interrupt`, reported by the
+  capabilities view: `true` for `simulated_annealing`, `tabu` and
+  `simulated_bifurcation`, `false` for `exact` and the four remote backends,
+  which refuse a wall-clock limit with the new error code
+  `WALL_CLOCK_LIMIT_UNSUPPORTED` (`invalid_problem`) in `validate` and
+  `solve`, and list it as blocking in `recommend`. A backend cannot declare
+  it together with `exhaustive`. A third-party backend that declares it must
+  accept a keyword-only `interrupt` in `solve` (checked when the service is
+  built), and when interrupted return the reads it completed, possibly none,
+  with `RawSolverResult.interrupted=True` instead of raising. See Adding a
+  backend in `docs/backends.md`.
+- Cancelling a solve. An MCP client that cancels `solve_optimization`
+  (`notifications/cancelled`, or an in-process client abandoning the call)
+  now stops the solve: the handler returns once the solve's threads have
+  finished, sends no response and no further progress. Measured on a
+  simulated-annealing problem that takes about 5 s, cancelled after 0.5 s:
+  the solve used to run on for about 4.9 s after the cancellation and now
+  stops within about 0.1 s. A library caller passes
+  `OptimizationService.solve(problem, cancel=CancelToken())` and calls
+  `token.cancel()` from another thread; the solve then raises
+  `SolveCancelled` (not an `OptimizerError`, and the only exception `solve`
+  raises by design) with no partial result, its concurrency slot released
+  and its threads finished. Both are exported from
+  `annealbridge.orchestration`. On `exact` and the remote backends a
+  cancellation only takes effect between backend calls; on a remote backend
+  it makes no remote call, so a submitted job still runs and consumes quota.
+  The CLI's Ctrl+C is unchanged. See `docs/mcp.md` and
+  `docs/architecture.md`.
+- `annealbridge solve` and `annealbridge validate` take
+  `--wall-clock-limit SECONDS`, overriding `solver.wall_clock_limit_seconds`
+  from the JSON; `nan` and `inf` exit `2`, any other value is validated like
+  the same value in the JSON.
+- Warning code `WALL_CLOCK_LIMIT_REACHED`, and error code
+  `WALL_CLOCK_LIMIT_UNSUPPORTED` above; the catalog now has 55 codes.
 
 ### Changed
 
@@ -134,6 +190,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   locations of Claude Code, and Codex's `[mcp_servers.<name>]` tables in
   `~/.codex/config.toml`, with a TOML entry for AnnealBridge; each with its
   source. Both READMEs point at it from the MCP section.
+- Visible without a wall-clock limit: every result and every attempt now
+  carries `"wall_clock_limit_reached": false`, every `postprocess` object
+  too, and every backend in the capabilities view (`--json` and the MCP
+  tool) carries `supports_interrupt`. Every other value is unchanged; a solve
+  with neither a limit nor a cancel token runs exactly as before, and an MCP
+  solve, which now always carries a cancel token, returns the same result for
+  the same seed.
+- The shard pool of `simulated_annealing` and `tabu` names its worker
+  threads `annealbridge-shard_<n>`, so they can be told apart in a thread dump.
 
 ### Fixed
 

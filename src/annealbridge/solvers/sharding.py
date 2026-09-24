@@ -8,8 +8,10 @@ result is the same whatever the worker count or the machine.
 """
 
 import os
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from typing import TypeVar
 
 import dimod
 import numpy as np
@@ -28,6 +30,11 @@ import numpy as np
 # 1000 sweeps and +52–73 % at 200. The tabu sampler has no such per-call
 # setup, so for it the shard size is only the unit of parallelism.
 READS_PER_SHARD = 25
+
+# The name prefix of the shard pool's worker threads.
+SHARD_THREAD_PREFIX = "annealbridge-shard"
+
+_T = TypeVar("_T")
 
 
 def default_workers() -> int:
@@ -89,17 +96,78 @@ def run_shards(
     ``run`` is called with the shard index and returns that shard's sample
     set; the merged row order is the shard order, whatever the worker count.
     """
-    if workers == 1:
-        samplesets = [run(shard) for shard in range(count)]
-    else:
-        executor = ThreadPoolExecutor(max_workers=min(workers, count))
+    return dimod.concatenate(_map_shards(run, count, workers))
+
+
+def run_shards_interruptible(
+    run: Callable[[int], dimod.SampleSet],
+    count: int,
+    workers: int,
+    should_stop: Callable[[], bool],
+) -> tuple[dimod.SampleSet | None, bool]:
+    """:func:`run_shards` that skips every shard not started before a stop.
+
+    ``should_stop`` is polled as each shard is about to start; a shard that
+    has started runs to the end (``run`` itself may stop early -- the
+    annealer's per-read callback does -- and reports that through the rows
+    it returns). Returns the shards that ran, concatenated in shard order,
+    or None when none did, and whether any shard was skipped. With
+    ``should_stop`` never true the merged set is exactly
+    :func:`run_shards`'s.
+
+    Every worker thread has returned when this does, on every path: a stop
+    only makes the remaining shards return at once, and a failed shard
+    makes the ones not yet started return at once too, and the failure is
+    raised only after the shards already running have ended. (The
+    uninterruptible :func:`run_shards` keeps its original behaviour of
+    raising at once and leaving running shards to finish in the
+    background.)
+    """
+    failed = threading.Event()
+
+    def guarded(shard: int) -> dimod.SampleSet | None:
+        if failed.is_set() or should_stop():
+            return None
         try:
-            # ``map`` yields in shard order, so the merged row order is
-            # the same as a sequential run.
-            samplesets = list(executor.map(run, range(count)))
+            return run(shard)
         except BaseException:
-            # A failed shard fails the solve; do not wait for the rest.
-            executor.shutdown(wait=False, cancel_futures=True)
+            failed.set()
             raise
-        executor.shutdown(wait=True)
-    return dimod.concatenate(samplesets)
+
+    samplesets = _map_shards(guarded, count, workers, wait_on_failure=True)
+    ran = [sampleset for sampleset in samplesets if sampleset is not None]
+    merged = dimod.concatenate(ran) if ran else None
+    return merged, len(ran) < count
+
+
+def _map_shards(
+    run: Callable[[int], _T],
+    count: int,
+    workers: int,
+    *,
+    wait_on_failure: bool = False,
+) -> list[_T]:
+    """``[run(0), ..., run(count - 1)]``, ``workers`` shards at a time.
+
+    On a failure the shards not yet started are cancelled; running ones are
+    waited for only with ``wait_on_failure``.
+    """
+    if workers == 1:
+        return [run(shard) for shard in range(count)]
+    # Named so a test (or an operator reading a thread dump) can tell this
+    # pool's threads apart from everything else running in the process.
+    executor = ThreadPoolExecutor(
+        max_workers=min(workers, count), thread_name_prefix=SHARD_THREAD_PREFIX
+    )
+    try:
+        # ``map`` yields in shard order, so the merged row order is
+        # the same as a sequential run.
+        results = list(executor.map(run, range(count)))
+    except BaseException:
+        # A failed shard fails the solve. The uninterruptible path does not
+        # wait for the rest (its original behaviour); the interruptible one
+        # does, so no thread outlives the call.
+        executor.shutdown(wait=wait_on_failure, cancel_futures=True)
+        raise
+    executor.shutdown(wait=True)
+    return results

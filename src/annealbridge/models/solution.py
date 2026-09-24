@@ -314,6 +314,16 @@ class PostprocessStats(BaseModel):
             "a non-empty list also raises POSTPROCESS_LIMIT_REACHED."
         )
     )
+    wall_clock_limit_reached: bool = Field(
+        default=False,
+        description=(
+            "True when solver.wall_clock_limit_seconds ran out while "
+            "post-processing still had starts or steps left, so it stopped "
+            "early. Separate from limit_reached, which lists count ceilings "
+            "only; a time cut raises WALL_CLOCK_LIMIT_REACHED, never "
+            "POSTPROCESS_LIMIT_REACHED."
+        ),
+    )
 
 
 class SolveAttempt(BaseModel):
@@ -408,6 +418,15 @@ class SolveAttempt(BaseModel):
             "local search and re-validating what it produced), separate from "
             "validate_ms. Null when post-processing did not run; different on "
             "every run."
+        ),
+    )
+    wall_clock_limit_reached: bool = Field(
+        default=False,
+        description=(
+            "True when solver.wall_clock_limit_seconds cut this attempt "
+            "short: the backend skipped reads it was asked for, or "
+            "post-processing stopped with work left. Its samples are then a "
+            "partial, timing-dependent set."
         ),
     )
 
@@ -535,6 +554,18 @@ class SolveResult(BaseModel):
             "assignment: rank 1 is then the global optimum of ranking_score, "
             "not merely the best candidate seen. Always false on a heuristic "
             "or remote backend."
+        ),
+    )
+    wall_clock_limit_reached: bool = Field(
+        default=False,
+        description=(
+            "True when solver.wall_clock_limit_seconds ran out while work was "
+            "left: an attempt was cut short or a retry was not started. The "
+            "solutions are then the best of a partial search, still "
+            "re-validated and ranked, and the result may differ between runs "
+            "even with a seed (WALL_CLOCK_LIMIT_REACHED says so as well). "
+            "False when no limit was set or the solve finished within it; "
+            "the result is then exactly what it would be without a limit."
         ),
     )
     errors: list[SolveError] = Field(

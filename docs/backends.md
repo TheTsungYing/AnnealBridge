@@ -32,6 +32,13 @@ The four remote rows are qualitative descriptions only: no declared field
 corresponds to them, and `recommend` does not reorder the remote backends by
 problem shape.
 
+Only the three local heuristics — `simulated_annealing`, `tabu` and
+`simulated_bifurcation` — declare `supports_interrupt`: they can stop part-way
+through a solve, so they accept `solver.wall_clock_limit_seconds` and stop
+promptly when a solve is cancelled. `exact` and the four remote backends
+refuse a wall-clock limit with `WALL_CLOCK_LIMIT_UNSUPPORTED`. See
+[Wall-clock limits and cancellation](#wall-clock-limits-and-cancellation).
+
 Every remote backend additionally requires `ANNEALBRIDGE_ALLOW_REMOTE=true`.
 Without it a request for a remote backend returns `backend_unavailable` /
 `REMOTE_DISABLED`; there is never a silent fallback to a local solver, and
@@ -68,6 +75,12 @@ configured. See [CLI](cli.md#capabilities).
 - Reports `metadata` with `remote: false` and `model_type: "bqm"`. A local run
   has no vendor side, so `timing_us` is empty and the vendor fields are `null`
   — `num_reads_requested` included, since this backend does not sample.
+- Cannot stop part-way (`supports_interrupt: false`): the enumeration is one
+  sampler call with no checkpoint, and a partial enumeration would no longer
+  prove anything. A `solver.wall_clock_limit_seconds` is refused with
+  `WALL_CLOCK_LIMIT_UNSUPPORTED`, and a cancelled solve waits for the
+  enumeration to finish (bounded by the variable limit above). See
+  [Wall-clock limits and cancellation](#wall-clock-limits-and-cancellation).
 
 ## `simulated_annealing`
 
@@ -122,6 +135,13 @@ configured. See [CLI](cli.md#capabilities).
   `num_reads_requested` set to the reads asked of the sampler — the whole
   request, not a shard. A local run has no vendor side, so `timing_us` is
   empty and the vendor fields are `null`.
+- Honours `solver.wall_clock_limit_seconds` and cancellation
+  (`supports_interrupt`): it checks before every shard starts and, through
+  the sampler's own `interrupt_function`, after every completed read, and
+  returns only reads that finished their whole schedule. A limit that does
+  not fire leaves the result bit for bit unchanged; one that fires makes it
+  timing-dependent. See
+  [Wall-clock limits and cancellation](#wall-clock-limits-and-cancellation).
 - **When to choose it.** The general-purpose local backend, and the one a
   problem gets when it names none. It has the best measured hit rate of the
   three on a penalty-dominated QUBO — the shape every problem with an
@@ -197,6 +217,14 @@ configured. See [CLI](cli.md#capabilities).
   `num_reads_requested` set to the reads asked of the sampler — the whole
   request, not a shard. A local run has no vendor side, so `timing_us` is
   empty and the vendor fields are `null`.
+- Honours `solver.wall_clock_limit_seconds` and cancellation
+  (`supports_interrupt`), but **only between shards**: the sampler has no
+  interrupt callback, and its per-read `timeout` stays off for the reasons
+  above, so a shard that has started — the whole request, at 25 reads or
+  fewer — always runs to its end. The limit is a ceiling on the solve, not a
+  budget handed to the sampler, so it does not touch the count-bounded search
+  itself; but on a large problem a shard can overrun it by seconds. See
+  [Wall-clock limits and cancellation](#wall-clock-limits-and-cancellation).
 - **When to choose it.** Dense QUBOs, and the first of the local heuristics
   once they are large. It matched the best energy the annealer found on the
   dense ±1 SK instances measured below in about a third of the wall time
@@ -276,9 +304,10 @@ configured. See [CLI](cli.md#capabilities).
   so no polish is applied.
 - `num_reads` is bounded by `ANNEALBRIDGE_MAX_LOCAL_READS`
   (`LOCAL_READS_LIMIT`) and `num_sweeps` by `ANNEALBRIDGE_MAX_SWEEPS`
-  (`SWEEPS_LIMIT`). There is no time-limit ceiling, because there is no wall
-  clock anywhere in the backend: the step count bounds the work. An over-limit
-  value is rejected, never clamped.
+  (`SWEEPS_LIMIT`). There is no time-limit ceiling, because the dynamics read
+  no clock: the step count bounds the work. (`solver.wall_clock_limit_seconds`
+  can still stop the run early; see below.) An over-limit value is rejected,
+  never clamped.
 - `ANNEALBRIDGE_SB_MAX_VARIABLES` (default `10000`) caps the compiled problem,
   including the internal slack and integer-encoding variables. The dynamics
   need the couplings as a dense single-precision `N × N` matrix — `4 N²`
@@ -309,6 +338,14 @@ configured. See [CLI](cli.md#capabilities).
   `num_reads_requested` set to the reads asked for — the whole request, not a
   batch. A local run has no vendor side, so `timing_us` is empty and the vendor
   fields are `null`.
+- Honours `solver.wall_clock_limit_seconds` and cancellation
+  (`supports_interrupt`): it checks before every batch and after every
+  integration step. A batch cut mid-schedule is **dropped whole** — its reads
+  have not finished the pump schedule, so they are not SB samples — and only
+  completed batches are returned. At the default 100 reads the whole request is
+  one batch, so a limit that fires returns no samples at all (`infeasible`
+  plus `WALL_CLOCK_LIMIT_REACHED`); leave generous headroom. See
+  [Wall-clock limits and cancellation](#wall-clock-limits-and-cancellation).
 - **When to choose it.** Large dense problems with no effective hard
   constraint, where the single matrix product per step pays off: it reached
   the same best energy as the other two on the 1000-variable SK instance in
@@ -578,6 +615,66 @@ microseconds). A value that does not parse, or is not finite once converted
 (`"NaN"`, `"inf"`, an integer too large for a float, or a millisecond count
 that overflows), is dropped on its own; the other field is kept.
 
+## Wall-clock limits and cancellation
+
+Two things can ask a solve to stop before it has done all the work it was
+asked for: [`solver.wall_clock_limit_seconds`](problem-format.md#wall-clock-limit)
+running out, and the caller cancelling — an MCP client cancelling
+`solve_optimization` (see [MCP](mcp.md#cancellation)), or a library caller
+holding a `CancelToken` (see
+[Architecture](architecture.md#library-use-without-the-interfaces)). Both are
+polled at checkpoints; nothing is ever stopped from outside, so every thread a
+solve started has returned by the time it does — on the normal, the
+interrupted and the failed path alike. (A solve with neither a limit nor a
+token runs as before; there, a failed shard is reported at once and the
+shards already running finish in the background.)
+
+Whether a backend can stop part-way is the `supports_interrupt` capability,
+reported by the capabilities view. The service decides from that flag alone,
+never from a backend's name.
+
+| Backend | `supports_interrupt` | Checkpoints | Worst-case overrun once a stop is requested |
+| --- | --- | --- | --- |
+| `simulated_annealing` | `true` | Before each shard starts; after every completed read (the sampler's `interrupt_function`), on the single-shard path as well. | Per worker thread: that shard's setup (initial states, vectorising the model, the default beta-range estimate — about 15–110 ms, growing with the interaction count) plus one read, which grows with `num_sweeps`. |
+| `tabu` | `true` | Before each shard starts only. A started shard cannot be stopped. | Each of the up to `ANNEALBRIDGE_TABU_WORKERS` threads finishes the shard it is on: 25 reads, or the whole request at 25 reads or fewer. Each read performs at least `max(c·n, 500000)` variable updates, `c` being 10000 up to 500 variables and 25000 above, with no upper bound on `n` — at 2000 variables a shard takes about 8 s. |
+| `simulated_bifurcation` | `true` | Before each batch of up to 1024 reads; after every integration step. A batch cut mid-schedule is dropped. | One integration step. On `cuda` every step already waits for the device, so nothing is left running on the GPU afterwards. |
+| `exact` | `false` | None. | A wall-clock limit is refused (`WALL_CLOCK_LIMIT_UNSUPPORTED`). A cancelled solve waits for the enumeration, bounded by `ANNEALBRIDGE_EXACT_MAX_VARIABLES`. |
+| `dwave_qpu`, `leap_hybrid_bqm`, `leap_hybrid_cqm`, `fujitsu_da` | `false` | None inside the backend call. | A wall-clock limit is refused (`WALL_CLOCK_LIMIT_UNSUPPORTED`). A cancelled solve waits for the running remote call; see below. |
+
+**The service's own checkpoints.** Around the backend call the service checks
+before each attempt, after compiling, after the backend returns, before every
+post-processing start and step, and after the samples are processed. A
+cancellation raises at the next of them; a wall-clock limit that has run out
+stops post-processing and prevents the next retry from starting. The first
+attempt always starts: when the limit has already run out by then, the
+backend stops at its first checkpoint and returns no samples, so the result is
+`infeasible` with `samples_received: 0`.
+
+**Stages that cannot be interrupted** add their full duration on top of the
+limit and delay a cancellation by as much: problem validation, compiling (and
+the BQM preparation), the dense Ising matrix and the final energy re-scoring of
+`simulated_bifurcation`, decoding and re-validating the samples, the
+infeasibility diagnostics, and setting up post-processing's pair moves.
+
+**Reproducibility.** Without a limit and without a cancel token nothing
+changes: the backend is not even handed a stop condition. With one that never
+fires, the checks read no random numbers and the shard layout and seeds are
+exactly the uninterrupted ones, so the result is bit for bit the same. With one
+that fires, the reads, shards, batches and post-processing steps that completed
+depend on machine speed and load, `ANNEALBRIDGE_SA_WORKERS` /
+`ANNEALBRIDGE_TABU_WORKERS`, BLAS threads and the GPU; with several shards the
+completed ones are not necessarily the first ones. The same seed can then give
+a different result, which `wall_clock_limit_reached` and the
+`WALL_CLOCK_LIMIT_REACHED` warning say (see
+[Output format](output-format.md#wall-clock-limit-and-reproducibility)).
+
+**Backends that cannot be interrupted.** A cancellation still takes effect at
+the service's checkpoints — no further attempt starts and post-processing does
+not run — but a backend call already in progress runs to its end. On a remote
+backend a cancellation triggers **no remote call at all**: nothing is sent to
+cancel or delete the job, and nothing is retried; but a job already submitted
+keeps running on the vendor side and consumes quota as usual.
+
 ## How the compiler path is chosen
 
 Which compiler runs is decided by the backend's **declaration**, not by a name
@@ -805,7 +902,9 @@ is required:
   must not submit anything and must be deterministic, so the service can check
   it against policy before the solve runs.
 - `solve(compiled_problem, preferences)` — returns a `RawSolverResult`
-  (variable names, an integer sample matrix, an aligned energy vector).
+  (variable names, an integer sample matrix, an aligned energy vector). A
+  backend that declares `supports_interrupt` also takes a keyword argument
+  `interrupt` (see below).
 
 The `BackendAliases` mixin in the same module supplies `name`,
 `is_exhaustive` and the "no time limit" `resolve_time_limit` so a backend only
@@ -818,6 +917,9 @@ system dispatches on — never the backend's name:
 - `remote`, `heuristic`, `exhaustive`, `supports_seed`, `supports_num_reads`,
   `supports_num_sweeps`, `supports_time_limit`, `returns_multiple_samples`,
   `requires_embedding` — drive warnings, routing and the capabilities view.
+  (`supports_time_limit` means the backend takes a time budget that it spends,
+  like the remote `time_limit_seconds`; it is unrelated to
+  `supports_interrupt` below.)
 - `strong_on_large_dense` / `weak_on_penalty_dominated` — optional structural
   preferences, both `False` by default, and **only matched on the bqm path**:
   a backend that compiles to cqm gains nothing by declaring either, because
@@ -829,6 +931,32 @@ system dispatches on — never the backend's name:
   and a backend that declares neither simply keeps registry order. Record the
   measurement that justifies the claim, as the two heuristics that declare
   them do; see [above](#how-recommend-orders-the-local-heuristics).
+- `supports_interrupt` — whether the backend can stop part-way through a
+  solve. `False` by default, and it cannot be `True` together with
+  `exhaustive` (a cut-short enumeration proves nothing); that declaration
+  fails when `SolverCapabilities` is constructed. A backend that declares it
+  must accept `solve(compiled_problem, preferences, *, interrupt=None)` —
+  the service checks the signature when it is built and refuses to start
+  otherwise. The service passes `interrupt=` only to such a backend, and only
+  when the solve has a wall-clock limit or a cancel token; every other call is
+  the plain two-argument one, so a backend without the flag never sees it.
+  The contract for a backend that takes it:
+  - poll `interrupt.should_stop()` at the backend's own checkpoints (between
+    shards, reads, batches or steps); it never raises and may be called from
+    several threads at once;
+  - when it says stop, **do not raise**: return the reads that ran their whole
+    schedule — possibly none (`solvers.base.empty_result` builds a zero-row
+    result in the model's variable order) — with
+    `RawSolverResult.interrupted=True`, never a read that was cut short;
+  - with `should_stop()` never true, return exactly what the call without
+    `interrupt` returns, so a limit that does not fire changes nothing;
+  - on the normal, the interrupted and the failed path, every thread the
+    backend started has returned before `solve` returns or raises
+    (`solvers.sharding.run_shards_interruptible` does this for a shard pool).
+
+  Without the flag a `solver.wall_clock_limit_seconds` is refused with
+  `WALL_CLOCK_LIMIT_UNSUPPORTED` and a cancellation only takes effect between
+  backend calls; see [above](#wall-clock-limits-and-cancellation).
 - `seed_min` / `seed_max` — the inclusive range of `solver.seed` the backend
   itself accepts. Unlike `parameter_limits` this is the backend's own rule,
   not a policy ceiling: it takes no value from policy and no

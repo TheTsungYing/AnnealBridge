@@ -88,6 +88,22 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "them. Lower postprocess_candidates, or ask the operator to raise "
         "max_postprocess_evaluations."
     ),
+    "WALL_CLOCK_LIMIT_UNSUPPORTED": (
+        "The selected backend cannot stop part-way through a solve, so it "
+        "cannot honour solver.wall_clock_limit_seconds; remove the field, or "
+        "choose a backend whose capabilities declare supports_interrupt. A "
+        "remote backend's own time budget is time_limit_seconds in its "
+        "option block, which is a different thing: a run time the vendor "
+        "spends in full."
+    ),
+    "WALL_CLOCK_LIMIT_REACHED": (
+        "solver.wall_clock_limit_seconds ran out before the solve finished, "
+        "so the result comes from a partial search: the returned solutions "
+        "are still re-validated and ranked, but more time might improve them "
+        "or find a feasible one, and the result may differ between runs and "
+        "machines even with a seed. Raise the limit, or remove it for a "
+        "complete and reproducible run."
+    ),
     "PENALTY_OVERFLOW": (
         "The hard-constraint penalty left the floating-point range before a "
         "feasible solution was found, so the retry ladder stopped; lower "

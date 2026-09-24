@@ -242,6 +242,29 @@ class SolverPreferences(InputModel):
             "leave at the default, as hard penalties are sized by the server."
         ),
     )
+    # Batch 6 (J), time-limit spec 2026-09-24. A ceiling, not a budget: the
+    # remote option blocks' ``time_limit_seconds`` is a run time handed to
+    # the vendor, which uses all of it; this stops early. Named apart on
+    # purpose so the two are never mistaken for each other.
+    wall_clock_limit_seconds: Quantity | None = Field(
+        default=None,
+        allow_inf_nan=False,
+        description=(
+            "Upper bound on this solve's wall-clock time in seconds, measured "
+            "from the moment the server starts it; null (the default) means "
+            "no limit. When it runs out the solve stops at its next "
+            "checkpoint, re-validates and ranks what it completed, and "
+            "reports wall_clock_limit_reached with a WALL_CLOCK_LIMIT_REACHED "
+            "warning: such a result is partial and, even with a seed, may "
+            "differ between runs and machines. Stages that cannot be "
+            "interrupted (validation, compilation, re-validation) still run "
+            "to the end, so the solve can overrun it slightly. Must be finite "
+            "and positive; refused with WALL_CLOCK_LIMIT_UNSUPPORTED on a "
+            "backend whose capabilities do not declare supports_interrupt. "
+            "Not the time_limit_seconds of a remote backend's option block, "
+            "which is a run time the vendor spends in full."
+        ),
+    )
     simulated_bifurcation: SimulatedBifurcationOptions | None = Field(
         default=None,
         description=(

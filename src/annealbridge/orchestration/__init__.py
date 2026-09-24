@@ -1,5 +1,7 @@
 """Orchestration service (spec §28)."""
 
+from annealbridge.exceptions import SolveCancelled
+from annealbridge.interrupt import CancelToken
 from annealbridge.orchestration.candidates import (
     CandidateSet,
     ProcessedCandidates,
@@ -15,12 +17,14 @@ from annealbridge.orchestration.progress import ProgressCallback, SolveProgress
 from annealbridge.orchestration.routing import REASON_DESCRIPTIONS, recommend
 
 __all__ = [
+    "CancelToken",
     "CandidateSet",
     "ExecutionPolicy",
     "OptimizationService",
     "ProcessedCandidates",
     "ProgressCallback",
     "REASON_DESCRIPTIONS",
+    "SolveCancelled",
     "SolveProgress",
     "recommend",
     "deduplicate_samples",

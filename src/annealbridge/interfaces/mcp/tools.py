@@ -9,6 +9,11 @@ worker thread through ``anyio.to_thread.run_sync`` (2026-09-09 review F-15):
 they are synchronous and CPU-bound, and a large problem — ``recommend`` runs
 the full validation once per registered backend — would otherwise freeze the
 event loop and with it every other client of the server.
+
+A solve is also cancellable (batch 6 J): when the client cancels the
+request, the solve is told to stop through a ``CancelToken`` and the
+handler waits for its thread to return before the cancellation propagates,
+so nothing keeps computing for a request nobody is waiting on.
 """
 
 import functools
@@ -17,6 +22,7 @@ import time
 from typing import Annotated, Any
 
 import anyio
+import anyio.lowlevel
 from mcp.server.mcpserver import Context
 from pydantic import Field, WrapValidator
 
@@ -32,7 +38,12 @@ from annealbridge.interfaces.problem_input import (
     parse_problem,
 )
 from annealbridge.models import OptimizationProblem, SolveError, SolveResult
-from annealbridge.orchestration import ProgressCallback, SolveProgress
+from annealbridge.orchestration import (
+    CancelToken,
+    ProgressCallback,
+    SolveCancelled,
+    SolveProgress,
+)
 from annealbridge.validation import (
     BackendRecommendationResult,
     ProblemValidationResult,
@@ -70,7 +81,9 @@ def _parse(tool: str, problem: Any) -> OptimizationProblem | list[SolveError]:
     return parsed
 
 
-def _progress_reporter(ctx: Context) -> ProgressCallback:
+def _progress_reporter(
+    ctx: Context, cancel: CancelToken | None = None
+) -> ProgressCallback:
     """Turn the core's progress events into MCP progress notifications.
 
     The core calls the callback on the worker thread ``solve`` runs on, so
@@ -85,16 +98,22 @@ def _progress_reporter(ctx: Context) -> ProgressCallback:
     line says why the host saw nothing more. Only progress notifications are
     used — the MCP logging capability is deprecated in the 2026-07-28
     protocol and delivered only on a per-request opt-in.
+
+    Once ``cancel`` is cancelled nothing more is sent: the request is gone,
+    and a notification scheduled after the cancellation would otherwise
+    still reach the client for it.
     """
     dropped = False
 
     def report(event: SolveProgress) -> None:
         nonlocal dropped
-        if dropped:
+        if dropped or (cancel is not None and cancel.cancelled):
             return
         try:
             anyio.from_thread.run(
-                ctx.report_progress,
+                _send_progress,
+                ctx,
+                cancel,
                 float(event.step),
                 float(event.total_steps),
                 event.message,
@@ -109,6 +128,24 @@ def _progress_reporter(ctx: Context) -> ProgressCallback:
             )
 
     return report
+
+
+async def _send_progress(
+    ctx: Context,
+    cancel: CancelToken | None,
+    progress: float,
+    total: float,
+    message: str,
+) -> None:
+    """Send one progress notification unless the request is cancelled.
+
+    Checked again here, on the event loop, where the watcher sets the
+    token: the check on the worker thread alone would leave a window in
+    which a notification already on its way still went out.
+    """
+    if cancel is not None and cancel.cancelled:
+        return
+    await ctx.report_progress(progress, total, message)
 
 
 @mcp.tool()
@@ -292,11 +329,61 @@ async def solve_optimization(
     if not isinstance(parsed, OptimizationProblem):
         return invalid_solve_result(parsed, started)
     state = get_state()
+    cancel = CancelToken()
     # One progress notification as each stage of each attempt starts
     # ("attempt 2 of 3: solving on simulated_annealing"), for hosts that
     # asked for progress; see ``_progress_reporter``.
-    return await anyio.to_thread.run_sync(
-        functools.partial(
-            state.service.solve, parsed, on_progress=_progress_reporter(ctx)
-        )
+    solve = functools.partial(
+        state.service.solve,
+        parsed,
+        on_progress=_progress_reporter(ctx, cancel),
+        cancel=cancel,
     )
+    return await _run_cancellable(solve, cancel)
+
+
+async def _run_cancellable(
+    solve: functools.partial[SolveResult], cancel: CancelToken
+) -> SolveResult:
+    """Run ``solve`` on a worker thread; a cancelled request stops it.
+
+    The SDK cancels the handler's scope when the client cancels the request
+    (``notifications/cancelled``, or the in-process client abandoning the
+    call). The worker thread cannot be cancelled from outside, so:
+
+    - the thread is awaited with ``abandon_on_cancel=False``: the await is
+      shielded and returns only once the thread has, so the handler never
+      finishes while the solve is still running;
+    - a watcher task beside it sleeps until that same cancellation reaches
+      it and then cancels the token, which the solve polls at its
+      checkpoints; the solve stops soon after and raises SolveCancelled;
+    - the outcome is caught *inside* the task group, so it is never wrapped
+      in an ``ExceptionGroup``, and once the group has closed a
+      SolveCancelled becomes the pending anyio cancellation again through
+      one checkpoint (raising the cancellation class by hand would not be
+      recognised as a cancellation). The re-raise after it is the fallback
+      for a token cancelled without one.
+
+    On the normal path the watcher is stopped when the solve returns; that
+    cancels the token too, harmlessly, since nothing polls it any more.
+    """
+
+    async def watch() -> None:
+        try:
+            await anyio.sleep_forever()
+        finally:
+            cancel.cancel()
+
+    outcome: SolveResult | BaseException
+    async with anyio.create_task_group() as group:
+        group.start_soon(watch)
+        try:
+            outcome = await anyio.to_thread.run_sync(solve, abandon_on_cancel=False)
+        except BaseException as exc:
+            outcome = exc
+        group.cancel_scope.cancel()
+    if isinstance(outcome, SolveCancelled):
+        await anyio.lowlevel.checkpoint()
+    if isinstance(outcome, BaseException):
+        raise outcome
+    return outcome

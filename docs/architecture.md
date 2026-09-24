@@ -52,6 +52,13 @@ models ← validation ← penalty ← compiler ← solvers ← orchestration ←
 compiler calls: orchestration applies it on the BQM path, and the compiler
 reads `compute_objective_scale` from `validation.estimates` directly.
 
+Two modules sit at the top of the package, beside the layers rather than in
+the chain, so every core layer can import them: `exceptions.py` and
+`interrupt.py`. `interrupt.py` holds `CancelToken` and `Interrupt`, the stop
+condition a solve's backends and post-processing poll (see
+[Stopping a solve early](#stopping-a-solve-early)); it imports the standard
+library only.
+
 ## Enforced boundaries
 
 These boundaries are not a convention — `tests/architecture/` fails the build
@@ -66,7 +73,8 @@ when any of them is broken. The full list of rules:
 | Concrete compilers have one importer | `BQMCompiler` / `CQMCompiler` (in any import form) imported by an orchestration file other than `orchestration/optimizer.py`, which is where the default compiler list is assembled |
 | Candidate, message and post-processing code knows no compiler | `orchestration/candidates.py`, `orchestration/messages.py` or `orchestration/postprocess.py` importing anything from `annealbridge.compiler`, `compiler.base` included |
 | No third-party HTTP client | `requests`, `httpx` or `aiohttp` imported anywhere in the package, at module level or inside a function |
-| No backend-name constants | A string constant whose *whole* value is a shipped backend name, appearing in `orchestration/`, `validation/`, `interfaces/capabilities.py`, `interfaces/mcp/tools.py` or `interfaces/cli/main.py` |
+| No backend-name constants | A string constant whose *whole* value is a shipped backend name, appearing in `orchestration/`, `validation/`, `interrupt.py`, `interfaces/capabilities.py`, `interfaces/mcp/tools.py` or `interfaces/cli/main.py` |
+| The interrupt module stays at the bottom | `interrupt.py` importing anything but the standard library — an `annealbridge` module (relative imports included) or a third-party package |
 | A new backend plugs in by declaration alone | A fake backend registered next to the built-ins that cannot be routed, limited, warned about, recommended and redacted purely from its own declaration |
 
 Two deliberate carve-outs:
@@ -89,14 +97,15 @@ option blocks), `models/error_catalog.py`, each backend's own module,
 The "fifth backend" rule is the strongest of the set. A test-only backend is
 registered alongside the eight shipped ones, and the suite proves that the
 service, the validator, the capabilities view, the policy limits, the
-recommendation ranking and the credential redaction all handle it from its
-declaration alone — then asserts that `orchestration/optimizer.py`,
+recommendation ranking, the credential redaction and the wall-clock limit
+(through `supports_interrupt`) all handle it from its declaration alone — then
+asserts that `orchestration/optimizer.py`,
 `orchestration/candidates.py`, `orchestration/messages.py`,
 `orchestration/postprocess.py`,
 `orchestration/limits.py`, `orchestration/policy.py`, `orchestration/routing.py`,
-`interfaces/capabilities.py`, `validation/problem_validator.py` and
-`solvers/metadata.py` never mention its name, its error code or its
-credential variables.
+`interfaces/capabilities.py`, `validation/problem_validator.py`,
+`solvers/metadata.py`, `solvers/base.py` and `interrupt.py` never mention its
+name, its error code or its credential variables.
 
 ## Package layout
 
@@ -109,7 +118,9 @@ Everything lives under `src/annealbridge/`.
 | `penalty/` | The penalty strategy: objective scale, penalty scale, initial penalty and the doubling ladder |
 | `compiler/` | The BQM compiler (slack and integer encoding), the CQM compiler, and the `decode` step that folds encoding bits back into integer values |
 | `solvers/` | The eight solver backends, the registry, the `SolverBackend` protocol, the read sharding the two `dwave-samplers` backends share (`solvers/sharding.py` — not a backend), and metadata sanitisation / redaction |
-| `orchestration/` | `OptimizationService`, `ExecutionPolicy`, model-type routing, candidate arrays (`candidates.py`), opt-in post-processing over the business variables (`postprocess.py`), result messages (`messages.py`), progress events |
+| `orchestration/` | `OptimizationService`, `ExecutionPolicy`, model-type routing, candidate arrays (`candidates.py`), opt-in post-processing over the business variables (`postprocess.py`), result messages (`messages.py`), progress events; re-exports `CancelToken` and `SolveCancelled` for library callers |
+| `interrupt.py` (module) | `CancelToken` and `Interrupt`: the wall-clock deadline and the caller's cancellation, polled at checkpoints. Standard library only |
+| `exceptions.py` (module) | The core's exception types, `SolveCancelled` among them |
 | `config/` | `ServerSettings` (the `ANNEALBRIDGE_*` environment) — importable by the interfaces only |
 | `interfaces/` | `capabilities.py` and `composition.py` shared by both adapters, plus `cli/` and `mcp/` |
 
@@ -165,6 +176,48 @@ Otherwise the budget is `1 + max_retries`. A penalty that would have to double
 past the floating-point range stops the ladder with a structured
 `PENALTY_OVERFLOW` result rather than a solver error, keeping the attempts made
 so far and calling no backend with a non-finite model.
+
+### Stopping a solve early
+
+`solve` also takes a keyword-only `cancel`, a `CancelToken`, and the problem
+may set `solver.wall_clock_limit_seconds`. When either is present the service
+builds one `Interrupt` for the solve: a deadline measured with the same clock
+reading `elapsed_ms` starts from, the token, or both. When neither is present
+no `Interrupt` exists and the solve runs exactly as it did before the feature.
+
+The `Interrupt` is polled, never pushed: nothing is stopped from outside, so
+every thread a solve with an `Interrupt` starts has returned before it does —
+also when a shard fails, which then stops the shards not yet started and
+waits for the running ones. (Without an `Interrupt` a failed shard keeps the
+original behaviour: the failure is reported at once and shards already
+running finish in the background.)
+
+- **Service checkpoints** — before each attempt, after compiling, after the
+  backend returns, before every post-processing start and step, and after the
+  samples are processed. A cancelled token raises `SolveCancelled` at the next
+  one (cancellation wins when both apply). A deadline that has passed stops
+  post-processing, keeps the next retry from starting, and marks the result
+  `wall_clock_limit_reached`; the first attempt always starts.
+- **Backend checkpoints** — the `Interrupt` is handed to a backend only when
+  its capabilities declare `supports_interrupt`, as the keyword `interrupt`.
+  The backend stops between its own units of work and returns the reads that
+  completed, flagged `RawSolverResult.interrupted`, rather than raising; the
+  service reads that flag instead of the clock. Which backends declare it, and
+  their checkpoints, are in
+  [Backends](backends.md#wall-clock-limits-and-cancellation).
+- **Not interruptible** — validation, compilation, decoding, re-validation
+  and ranking, the infeasibility diagnostics and post-processing's setup.
+  Every sample that did arrive is still re-validated in full.
+
+`SolveCancelled` is the one exception `solve` raises by design. It is not an
+`OptimizerError`: every domain failure is still a structured result, and a
+cancellation is not a failure but the caller no longer wanting one. It is
+raised only from the attempt loop, after the concurrency slot was taken, and
+the slot is released on the way out; a request that fails earlier (invalid
+problem, unavailable backend, full server) returns its result as usual. The
+MCP server creates a token per `solve_optimization` call and cancels it when
+the client cancels the request (see [MCP](mcp.md#cancellation)); the CLI
+passes none.
 
 ## Design principles
 
@@ -254,6 +307,27 @@ with open("examples/knapsack.json", encoding="utf-8") as f:
 
 result = OptimizationService().solve(problem)
 ```
+
+A library caller can cancel a solve from another thread with a `CancelToken`:
+
+```python
+import threading
+
+from annealbridge.orchestration import CancelToken, SolveCancelled
+
+token = CancelToken()
+threading.Timer(2.0, token.cancel).start()  # e.g. a UI's Cancel button
+try:
+    result = OptimizationService().solve(problem, cancel=token)
+except SolveCancelled:
+    result = None  # stopped; no partial result, every thread has returned
+```
+
+A cancelled solve returns no partial result; for a partial result on a
+deadline, set `solver.wall_clock_limit_seconds` instead (see
+[Stopping a solve early](#stopping-a-solve-early)). `CancelToken` and
+`SolveCancelled` are exported from `annealbridge.orchestration`; the top-level
+`annealbridge` package exports nothing.
 
 (`examples/knapsack.json` is a repository checkout path; an installed
 package has no such directory for the CLI to read. Any problem JSON saved

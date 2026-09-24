@@ -105,6 +105,7 @@ VALIDATOR_ERROR_CODES: frozenset[str] = frozenset(
         "SOFT_CONSTRAINT_MISSING_WEIGHT",
         "TRIVIALLY_INFEASIBLE",
         "UNKNOWN_VARIABLE",
+        "WALL_CLOCK_LIMIT_UNSUPPORTED",
     }
 )
 
@@ -333,9 +334,11 @@ def validate_problem_full(
 ) -> ProblemValidationResult:
     """Validate a problem and add the §20 advisory layer (3a §9).
 
-    Reuses :func:`validate_problem` unchanged for errors, then adds the one
-    backend-dependent error: a ``solver.seed`` outside the range
-    ``capabilities`` declares (see :func:`_check_seed_range`). Warnings and
+    Reuses :func:`validate_problem` unchanged for errors, then adds the
+    backend-dependent errors: a ``solver.seed`` outside the range
+    ``capabilities`` declares (see :func:`_check_seed_range`), and a
+    ``solver.wall_clock_limit_seconds`` on a backend that cannot stop
+    part-way (see :func:`_check_wall_clock_limit`). Warnings and
     estimates are only produced when there are no errors: an erroneous
     problem must be fixed first anyway, and the no-error gate is exactly
     what makes the pure slack arithmetic well-defined.
@@ -358,6 +361,7 @@ def validate_problem_full(
     errors, duplicate_warnings = _collect(problem)
     if capabilities is not None:
         _check_seed_range(problem, capabilities, errors)
+        _check_wall_clock_limit(problem, capabilities, errors)
     if errors:
         return ProblemValidationResult(valid=False, errors=errors)
 
@@ -1229,6 +1233,18 @@ def _check_solver_preferences(
             "must be a finite number > 0",
         ),
     ]
+    # Batch 6 (J): the wall-clock limit, when set. Finiteness re-checked
+    # for the same reason as penalty_multiplier.
+    limit = solver.wall_clock_limit_seconds
+    if limit is not None:
+        checks.append(
+            (
+                "wall_clock_limit_seconds",
+                limit,
+                not math.isfinite(limit) or limit <= 0,
+                "must be a finite number > 0",
+            )
+        )
     for field, value, is_bad, rule in checks:
         if is_bad:
             errors.append(
@@ -1288,6 +1304,29 @@ def _check_seed_range(
             message=(
                 f"solver.seed must be an integer between {caps.seed_min} and "
                 f"{caps.seed_max} on backend {caps.name}, got {seed}"
+            ),
+        )
+    )
+
+
+def _check_wall_clock_limit(
+    problem: OptimizationProblem, caps: SolverCapabilities, errors: list[SolveError]
+) -> None:
+    """A ``solver.wall_clock_limit_seconds`` the backend cannot honour.
+
+    Read from ``supports_interrupt`` on the declaration, never from the
+    backend's name. Refused rather than warned about: ignoring the limit
+    would let the solve run past a ceiling the caller set, silently.
+    """
+    if problem.solver.wall_clock_limit_seconds is None or caps.supports_interrupt:
+        return
+    errors.append(
+        _error(
+            code="WALL_CLOCK_LIMIT_UNSUPPORTED",
+            path="solver.wall_clock_limit_seconds",
+            message=(
+                f"Backend {caps.name} cannot stop part-way through a solve, so "
+                f"it cannot honour solver.wall_clock_limit_seconds"
             ),
         )
     )

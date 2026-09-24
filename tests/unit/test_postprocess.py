@@ -456,6 +456,7 @@ class TestRepair:
             "new_candidates": 3,
             "feasible_added": 3,
             "limit_reached": [],
+            "wall_clock_limit_reached": False,
         }
         assert attempt.postprocess_ms is not None and attempt.postprocess_ms >= 0
         assert attempt.validate_ms >= 0
@@ -538,6 +539,7 @@ class TestRepair:
             "new_candidates": 0,
             "feasible_added": 0,
             "limit_reached": [],
+            "wall_clock_limit_reached": False,
         }
 
 

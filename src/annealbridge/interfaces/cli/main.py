@@ -169,6 +169,31 @@ def _override_backend(problem: OptimizationProblem, backend: str) -> Optimizatio
     return problem.model_copy(update={"solver": preferences})
 
 
+def _override_wall_clock_limit(
+    problem: OptimizationProblem, seconds: float
+) -> OptimizationProblem:
+    """Return a copy of ``problem`` with ``solver.wall_clock_limit_seconds``
+    replaced by ``seconds``.
+
+    Only the schema runs here, and it refuses just ``nan`` and ``inf``: a
+    zero or negative limit, or one on a backend that cannot be interrupted,
+    passes through to the validator, which reports it in the command's own
+    result like the same value written in the JSON.
+    """
+    try:
+        preferences = SolverPreferences.model_validate(
+            {**problem.solver.model_dump(), "wall_clock_limit_seconds": seconds}
+        )
+    except ValidationError:
+        typer.echo(
+            f"Error: invalid --wall-clock-limit '{seconds}' "
+            "(expected a finite number of seconds)",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    return problem.model_copy(update={"solver": preferences})
+
+
 def _render_errors(items: Sequence[SolveError], lines: list[str], title: str) -> None:
     """Append an ``[CODE] path: message`` block with recommended actions.
 
@@ -314,6 +339,14 @@ BackendOption = Annotated[
     Optional[str],
     typer.Option("--backend", help="Override solver.backend from the JSON"),
 ]
+WallClockLimitOption = Annotated[
+    Optional[float],
+    typer.Option(
+        "--wall-clock-limit",
+        metavar="SECONDS",
+        help="Override solver.wall_clock_limit_seconds from the JSON",
+    ),
+]
 
 ResultT = TypeVar("ResultT", bound=BaseModel)
 
@@ -321,6 +354,7 @@ ResultT = TypeVar("ResultT", bound=BaseModel)
 def _run(
     problem_file: Path,
     backend: Optional[str],
+    wall_clock_limit: Optional[float],
     json_output: bool,
     call: Callable[[OptimizationService, OptimizationProblem], ResultT],
     render: Callable[[OptimizationProblem, ResultT], str],
@@ -328,9 +362,10 @@ def _run(
 ) -> None:
     """The shared body of ``solve``, ``validate`` and ``recommend``.
 
-    Loads the problem, applies ``--backend`` when one is given, wires the
-    service from the environment — the same composition root as the MCP
-    server (spec §30) — and makes the command's one delegating ``call``.
+    Loads the problem, applies ``--backend`` and ``--wall-clock-limit`` when
+    given, wires the service from the environment — the same composition
+    root as the MCP server (spec §30) — and makes the command's one
+    delegating ``call``.
     The result is printed as JSON or through the command's ``render``, and
     the process exits 1 when ``failed`` says so. No optimization logic
     lives here.
@@ -338,6 +373,8 @@ def _run(
     problem = _load_problem(problem_file)
     if backend is not None:
         problem = _override_backend(problem, backend)
+    if wall_clock_limit is not None:
+        problem = _override_wall_clock_limit(problem, wall_clock_limit)
 
     result = call(_build_state().service, problem)
 
@@ -354,6 +391,7 @@ def _run(
 def solve(
     problem_file: ProblemFileArgument,
     backend: BackendOption = None,
+    wall_clock_limit: WallClockLimitOption = None,
     json_output: Annotated[
         bool, typer.Option("--json", help="Print the full SolveResult as JSON")
     ] = False,
@@ -362,6 +400,7 @@ def solve(
     _run(
         problem_file,
         backend,
+        wall_clock_limit,
         json_output,
         call=lambda service, problem: service.solve(problem),
         render=_render_human,
@@ -395,6 +434,7 @@ def _render_validation(
 def validate(
     problem_file: ProblemFileArgument,
     backend: BackendOption = None,
+    wall_clock_limit: WallClockLimitOption = None,
     json_output: Annotated[
         bool,
         typer.Option("--json", help="Print the full ProblemValidationResult as JSON"),
@@ -405,6 +445,7 @@ def validate(
     _run(
         problem_file,
         backend,
+        wall_clock_limit,
         json_output,
         call=lambda service, problem: service.validate(problem),
         render=_render_validation,
@@ -462,9 +503,11 @@ def recommend(
     Advisory only: ``solve`` still uses solver.backend exactly as given.
     """
     # The same one-line delegation as MCP; no ranking logic lives here, and
-    # there is no --backend: every backend is ranked.
+    # there is no --backend (every backend is ranked) and so no
+    # --wall-clock-limit either.
     _run(
         problem_file,
+        None,
         None,
         json_output,
         call=lambda service, problem: service.recommend(problem),

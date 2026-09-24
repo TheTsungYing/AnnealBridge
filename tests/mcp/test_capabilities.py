@@ -246,3 +246,26 @@ async def test_capabilities_never_calls_solve(monkeypatch):
     result = await _get_capabilities()
     assert result.is_error is False
     assert calls == []
+
+
+async def test_supports_interrupt_is_declared_per_backend():
+    content = (await _get_capabilities()).structured_content
+    by_name = {backend["name"]: backend for backend in content["backends"]}
+    interruptible = {"simulated_annealing", "tabu", "simulated_bifurcation"}
+    for name, backend in by_name.items():
+        assert backend["supports_interrupt"] is (name in interruptible), name
+    # The view repeats each class's own declaration, nothing else.
+    for cls in BACKEND_CLASSES:
+        caps = cls().capabilities
+        assert by_name[caps.name]["supports_interrupt"] is caps.supports_interrupt
+
+
+async def test_supports_interrupt_is_described_in_the_output_schema():
+    async with Client(mcp) as client:
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+    schema = tools["get_optimization_capabilities"].output_schema
+    backend_schema = schema["$defs"]["BackendCapability"]["properties"]
+    assert backend_schema["supports_interrupt"]["type"] == "boolean"
+    assert "WALL_CLOCK_LIMIT_UNSUPPORTED" in (
+        backend_schema["supports_interrupt"]["description"]
+    )

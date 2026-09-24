@@ -482,6 +482,169 @@ class TestValidate:
         assert "Error: Invalid server settings" in _output(result)
 
 
+class TestWallClockLimitOverride:
+    """``--wall-clock-limit`` on ``solve`` and ``validate`` (batch 6 J, spec
+    §2.2): it replaces ``solver.wall_clock_limit_seconds`` and the result goes
+    through the same validation as the value written in the JSON. Only a
+    value the schema refuses (``nan``, ``inf``) stops the CLI itself."""
+
+    KNAPSACK = EXAMPLES_DIR / "knapsack.json"
+
+    def _seeded(self, tmp_path, **solver) -> str:
+        problem = json.loads(self.KNAPSACK.read_text())
+        problem["solver"] = {
+            "backend": "simulated_annealing",
+            "seed": 7,
+            "num_reads": 50,
+            **solver,
+        }
+        path = tmp_path / "seeded.json"
+        path.write_text(json.dumps(problem))
+        return str(path)
+
+    @pytest.mark.parametrize("command", ["solve", "validate"])
+    def test_help_lists_the_option(self, command):
+        result = runner.invoke(app, [command, "--help"])
+        assert result.exit_code == 0
+        text = _plain(result.output)
+        assert "--wall-clock-limit" in text
+        assert "SECONDS" in text
+
+    def test_a_limit_that_is_not_reached_leaves_the_result_unchanged(self, tmp_path):
+        path = self._seeded(tmp_path)
+
+        plain = runner.invoke(app, ["solve", path, "--json"])
+        limited = runner.invoke(
+            app, ["solve", path, "--wall-clock-limit", "5", "--json"]
+        )
+
+        assert plain.exit_code == 0
+        assert limited.exit_code == 0
+        before = json.loads(plain.stdout)
+        after = json.loads(limited.stdout)
+        assert after["status"] == "success"
+        assert after["solutions"] == before["solutions"]
+        assert after["solutions"][0]["objective_value"] == 17
+        assert after["wall_clock_limit_reached"] is False
+        assert "WALL_CLOCK_LIMIT_REACHED" not in [w["code"] for w in after["warnings"]]
+
+    @pytest.mark.parametrize("backend", ["simulated_annealing", "tabu"])
+    def test_validate_accepts_it_on_an_interruptible_backend(self, backend):
+        result = runner.invoke(
+            app,
+            [
+                "validate",
+                str(self.KNAPSACK),
+                "--backend",
+                backend,
+                "--wall-clock-limit",
+                "5",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0
+        assert json.loads(result.stdout)["valid"] is True
+
+    def test_the_option_replaces_the_value_in_the_json(self, tmp_path):
+        # 0 in the file is refused; the override is what gets validated.
+        path = self._seeded(tmp_path, wall_clock_limit_seconds=0)
+
+        from_file = runner.invoke(app, ["validate", path, "--json"])
+        overridden = runner.invoke(
+            app, ["validate", path, "--wall-clock-limit", "2.5", "--json"]
+        )
+
+        assert from_file.exit_code == 1
+        assert overridden.exit_code == 0
+        assert json.loads(overridden.stdout)["valid"] is True
+
+    @pytest.mark.parametrize("command", ["solve", "validate"])
+    def test_a_backend_without_interrupt_is_refused_by_the_validator(self, command):
+        # knapsack.json names exact, which declares supports_interrupt=False.
+        result = runner.invoke(
+            app, [command, str(self.KNAPSACK), "--wall-clock-limit", "5", "--json"]
+        )
+
+        assert result.exit_code == 1
+        errors = json.loads(result.stdout)["errors"]
+        assert [e["code"] for e in errors] == ["WALL_CLOCK_LIMIT_UNSUPPORTED"]
+        assert errors[0]["path"] == "solver.wall_clock_limit_seconds"
+
+    def test_the_human_report_shows_the_unsupported_error(self):
+        result = runner.invoke(
+            app, ["solve", str(self.KNAPSACK), "--wall-clock-limit", "5"]
+        )
+
+        assert result.exit_code == 1
+        assert "Status:    invalid_problem" in result.output
+        assert "[WALL_CLOCK_LIMIT_UNSUPPORTED] solver.wall_clock_limit_seconds:" in (
+            result.output
+        )
+
+    @pytest.mark.parametrize("command", ["solve", "validate"])
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_zero_or_negative_reaches_the_validator(self, command, value):
+        result = runner.invoke(
+            app,
+            [
+                command,
+                str(self.KNAPSACK),
+                "--backend",
+                "simulated_annealing",
+                f"--wall-clock-limit={value}",
+                "--json",
+            ],
+        )
+
+        assert result.exit_code == 1
+        errors = json.loads(result.stdout)["errors"]
+        assert [e["code"] for e in errors] == ["INVALID_SOLVER_PREFERENCE"]
+        assert errors[0]["path"] == "solver.wall_clock_limit_seconds"
+
+    @pytest.mark.parametrize("command", ["solve", "validate"])
+    @pytest.mark.parametrize("value", ["inf", "-inf", "nan"])
+    @pytest.mark.parametrize("json_flag", [[], ["--json"]])
+    def test_a_non_finite_value_names_the_option_and_exits_2(
+        self, command, value, json_flag
+    ):
+        result = runner.invoke(
+            app,
+            [
+                command,
+                str(self.KNAPSACK),
+                "--backend",
+                "simulated_annealing",
+                f"--wall-clock-limit={value}",
+                *json_flag,
+            ],
+        )
+
+        assert result.exit_code == 2
+        # Like the other override and load errors: stderr only, even in
+        # --json mode, and never mistaken for an unknown backend.
+        assert result.stdout == ""
+        text = _output(result)
+        assert (
+            f"Error: invalid --wall-clock-limit '{value}' "
+            "(expected a finite number of seconds)"
+        ) in text
+        assert "unknown backend" not in text
+
+    def test_a_non_number_is_a_usage_error(self):
+        result = runner.invoke(
+            app, ["solve", str(self.KNAPSACK), "--wall-clock-limit", "soon"]
+        )
+        assert result.exit_code == 2
+        assert result.stdout == ""
+
+    def test_recommend_has_no_such_option(self):
+        # recommend ranks every backend and takes no --backend either.
+        result = runner.invoke(
+            app, ["recommend", str(self.KNAPSACK), "--wall-clock-limit", "5"]
+        )
+        assert result.exit_code == 2
+
+
 class TestRecommend:
     """``annealbridge recommend`` (3a §25): a one-line delegation to
     ``service.recommend()``; exit 0 unless the problem itself is invalid."""

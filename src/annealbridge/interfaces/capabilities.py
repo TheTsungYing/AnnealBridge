@@ -93,6 +93,14 @@ class BackendCapability(BaseModel):
             "most 1."
         )
     )
+    supports_interrupt: bool = Field(
+        description=(
+            "Whether a solve on this backend can stop part-way: "
+            "solver.wall_clock_limit_seconds is honoured and a cancelled "
+            "solve stops promptly. False means a wall-clock limit is refused "
+            "with WALL_CLOCK_LIMIT_UNSUPPORTED before anything runs."
+        )
+    )
     limits: dict[str, float | int] = Field(
         description=(
             "The server-side policy ceilings that apply to this backend. A "
@@ -210,6 +218,7 @@ def build_capabilities(
                 seed_min=caps.seed_min,
                 seed_max=caps.seed_max,
                 returns_multiple_samples=caps.returns_multiple_samples,
+                supports_interrupt=caps.supports_interrupt,
                 limits=policy.limits_for(caps),
                 description=caps.description,
             )

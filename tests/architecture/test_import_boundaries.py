@@ -15,7 +15,10 @@ at all, so reading the Ocean config moved to the one D-Wave-aware module.
 """
 
 import ast
+import sys
 from pathlib import Path
+
+import pytest
 
 CORE_PACKAGES = [
     "models",
@@ -402,4 +405,73 @@ def test_compiler_import_detector_recognises_every_form() -> None:
         (1, "annealbridge.compiler.bqm"),
         (2, "annealbridge.compiler.cqm"),
         (3, "annealbridge.compiler.BQMCompiler"),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Batch 6 (J), time-limit spec 2026-09-24 §6.1: ``annealbridge/interrupt.py``
+# sits beside ``exceptions.py`` at the top of the package, below every core
+# layer, so solvers and orchestration can both import it. That only holds
+# while it imports nothing but the standard library -- no annealbridge
+# module (not even a sibling), no third-party package.
+# ---------------------------------------------------------------------------
+
+STDLIB_ONLY_MODULES = ["interrupt.py"]
+
+
+def _stdlib_violations(tree: ast.AST) -> list[tuple[int, str]]:
+    """``(lineno, module)`` of every import that is not the standard library.
+
+    A relative import is a violation too: it can only reach annealbridge.
+    """
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] not in sys.stdlib_module_names:
+                    found.append((node.lineno, alias.name))
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level:
+                found.append((node.lineno, "." * node.level + module))
+            elif module.split(".")[0] not in sys.stdlib_module_names:
+                found.append((node.lineno, module))
+    return found
+
+
+@pytest.mark.parametrize("relative_to_src", STDLIB_ONLY_MODULES)
+def test_stdlib_only_module_imports_only_the_standard_library(relative_to_src) -> None:
+    py_file = SRC_ROOT / relative_to_src
+    assert py_file.is_file(), f"{relative_to_src} is missing; rule would be vacuous"
+    tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+    violations = [
+        f"{relative_to_src}:{lineno} -> {module}"
+        for lineno, module in _stdlib_violations(tree)
+    ]
+    assert not violations, (
+        "this module must import the standard library only, so every core "
+        "layer can depend on it:\n" + "\n".join(violations)
+    )
+
+
+def test_stdlib_detector_recognises_every_form() -> None:
+    """Guard the detector itself so the rule above cannot silently go blind."""
+    source = (
+        "import threading\n"
+        "import time as clock\n"
+        "from collections.abc import Callable\n"
+        "import numpy\n"
+        "from annealbridge.models import SolveError\n"
+        "from . import exceptions\n"
+        "from .exceptions import SolveCancelled\n"
+        "def f():\n"
+        "    import dimod\n"
+        "    from os import path\n"
+    )
+    assert sorted(_stdlib_violations(ast.parse(source))) == [
+        (4, "numpy"),
+        (5, "annealbridge.models"),
+        (6, "."),
+        (7, ".exceptions"),
+        (9, "dimod"),
     ]

@@ -249,6 +249,10 @@ agent 產生一個 `OptimizationProblem`：binary 或有界整數變數、線性
 
 另有預設關閉的 `solver.postprocess`，可在排名前於原始變數上修補並局部改善
 最好的幾個樣本；它產生的解同樣重新驗證，並以每個解的 `source` 標示來源。
+選用的 `solver.wall_clock_limit_seconds` 可為本機啟發式 backend 的求解設定
+牆鐘時間上限：時間到時回傳已完成的部分，同樣重新驗證並排名，並以
+`wall_clock_limit_reached` 標明。MCP 客戶端取消求解時，求解會跟著停止，
+不會在背景繼續跑完。
 
 agent 永遠不必寫 QUBO 矩陣、penalty 權重、slack 變數或整數編碼，而且每一
 步都能在沒有 AI、沒有網路、沒有廠商帳號的情況下測試。

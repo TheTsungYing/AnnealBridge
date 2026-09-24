@@ -23,8 +23,15 @@ wall-clock time: ``max_evaluations`` per attempt, every neighbourhood scan
 being charged :func:`scan_cost` (the elementary evaluations it performs),
 and at most ``4 · n`` steps per repair or local search. Reaching either
 stops the search and is reported, never hidden (principle 5).
+
+The one wall-clock stop is not a ceiling of this module but of the solve
+(batch 6 J): a request may carry the solve's ``should_stop``, polled before
+every step and every start. It is ``None`` unless the solve has a
+wall-clock limit or a cancel token, and a stop that never fires changes
+nothing -- it is checked before a step is charged, and reads no state.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -69,13 +76,23 @@ _COMPACT_MIN = 1 << 20
 LimitName = str  # "evaluations" | "steps"
 _LIMIT_ORDER = ("evaluations", "steps")
 
+# What _repair / _local_search return in the limit slot when the solve's
+# ``should_stop`` ended them. Not a ceiling of this module, so it never
+# reaches ``limit_reached``; it sets ``PostprocessRun.interrupted`` instead.
+_INTERRUPTED = "interrupted"
+
 
 @dataclass(frozen=True)
 class PostprocessRequest:
-    """What the service asks for: how many samples, and the evaluation budget."""
+    """What the service asks for: how many samples, and the evaluation budget.
+
+    ``should_stop`` is the solve's interrupt check (see the module
+    docstring), or None when the solve has none.
+    """
 
     candidates: int
     max_evaluations: int
+    should_stop: Callable[[], bool] | None = None
 
 
 @dataclass
@@ -96,6 +113,8 @@ class PostprocessRun:
     local_search_started: int = 0
     local_search_improved: int = 0
     limit_reached: list[LimitName] = field(default_factory=list)
+    # True when ``should_stop`` ended the run with starts or steps left.
+    interrupted: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -669,10 +688,25 @@ class _Budget:
         return True
 
 
-def _repair(hood: _Neighbourhood, budget: _Budget, x: np.ndarray):
-    """(end state or None, limit hit or None) — greedy descent on V to zero."""
+def _stopped(should_stop: Callable[[], bool] | None) -> bool:
+    return should_stop is not None and should_stop()
+
+
+def _repair(
+    hood: _Neighbourhood,
+    budget: _Budget,
+    x: np.ndarray,
+    should_stop: Callable[[], bool] | None = None,
+):
+    """(end state or None, limit hit or None) — greedy descent on V to zero.
+
+    A repair the interrupt ends is abandoned (None, ``_INTERRUPTED``): the
+    half-repaired point is still infeasible and so of no use.
+    """
     st = hood.state(x)
     for _ in range(_STEP_FACTOR * hood.n):
+        if _stopped(should_stop):
+            return None, _INTERRUPTED
         if not budget.take():
             return None, "evaluations"
         move = hood.best_repair(st)
@@ -684,10 +718,21 @@ def _repair(hood: _Neighbourhood, budget: _Budget, x: np.ndarray):
     return None, "steps"
 
 
-def _local_search(hood: _Neighbourhood, budget: _Budget, x: np.ndarray):
-    """(end state, steps taken, limit hit or None) — best improvement, stays feasible."""
+def _local_search(
+    hood: _Neighbourhood,
+    budget: _Budget,
+    x: np.ndarray,
+    should_stop: Callable[[], bool] | None = None,
+):
+    """(end state, steps taken, limit hit or None) — best improvement, stays feasible.
+
+    A search the interrupt ends keeps the point it reached, like one that
+    ran out of evaluations: every step taken was a complete, improving move.
+    """
     st = hood.state(x)
     for step in range(_STEP_FACTOR * hood.n):
+        if _stopped(should_stop):
+            return st, step, _INTERRUPTED
         if not budget.take():
             return st, step, "evaluations"
         move = hood.best_search(st)
@@ -736,13 +781,21 @@ def run_postprocess(
     def still_feasible(x: np.ndarray) -> bool:
         return bool(validate_batch(problem, variables, x[None, :]).feasible[0])
 
+    stop = request.should_stop
     for index in selected.tolist():
+        if _stopped(stop):
+            # Starts left: the interrupt cut the run short.
+            run.interrupted = True
+            break
         run.candidates_selected += 1
         start = samples[index]
         repaired = False
         if not feasible[index]:
             run.repair_attempted += 1
-            end, limit = _repair(hood, budget, start)
+            end, limit = _repair(hood, budget, start, stop)
+            if limit == _INTERRUPTED:
+                run.interrupted = True
+                break
             if limit is not None:
                 limits.add(limit)
             if end is None or not still_feasible(end.x):
@@ -759,13 +812,16 @@ def run_postprocess(
             continue
         searched.add(key)
         run.local_search_started += 1
-        end, steps, limit = _local_search(hood, budget, start)
-        if limit is not None:
+        end, steps, limit = _local_search(hood, budget, start, stop)
+        if limit is not None and limit != _INTERRUPTED:
             limits.add(limit)
         if steps > 0 and still_feasible(end.x):
             run.local_search_improved += 1
             rows.append(end.x.copy())
             run.sources.append("repaired_local_search" if repaired else "local_search")
+        if limit == _INTERRUPTED:
+            run.interrupted = True
+            break
         if limit == "evaluations":
             break
 

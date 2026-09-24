@@ -39,3 +39,6 @@ async def test_capabilities_json_equals_the_mcp_tool_default(monkeypatch):
     assert set(payload) == set(served)
     assert payload == served
     assert payload["problem_json_schema"] is None
+    # Batch 6 (J): the new per-backend flag is on both sides.
+    for backend in payload["backends"]:
+        assert isinstance(backend["supports_interrupt"], bool), backend["name"]

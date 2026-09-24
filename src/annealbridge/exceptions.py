@@ -77,3 +77,16 @@ class SolverExecutionError(OptimizerError):
         super().__init__(message)
         self.code = code
         self.status = status
+
+
+class SolveCancelled(Exception):
+    """The caller cancelled the solve through its ``CancelToken``.
+
+    Raised by ``OptimizationService.solve`` at the first checkpoint after
+    the token was cancelled; no result is returned, because the caller no
+    longer wants one. Deliberately *not* an :class:`OptimizerError`: it is
+    not a domain failure, and the service's handlers, which turn every
+    ``OptimizerError`` into a structured ``solver_error``, must let it
+    through. By the time it propagates every thread the solve started has
+    returned and its concurrency slot has been released.
+    """

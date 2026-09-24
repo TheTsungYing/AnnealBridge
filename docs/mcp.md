@@ -244,7 +244,9 @@ Describes what this server accepts and which backends are usable right now.
   whether inequalities require integer coefficients, the installed package
   version (`annealbridge_version`), `problem_json_schema` (only when
   `include_schema` is `true`, otherwise `null`), and one entry per backend
-  with `available`, `enabled`, `unavailable_reason`, its flags, the
+  with `available`, `enabled`, `unavailable_reason`, its flags (among them
+  `supports_interrupt`: whether it accepts `solver.wall_clock_limit_seconds`
+  and stops promptly on cancellation), the
   `seed_min` / `seed_max` range it accepts for `solver.seed` (`null` when it
   declares none) and its resource limits.
 - **When to call:** when the agent needs the list of backends with their
@@ -292,9 +294,11 @@ Checks a problem without solving it.
   are made.
 
 Validation collects **all** errors in one pass, so one round trip is enough to
-fix a problem. That pass includes the one check that depends on the named
+fix a problem. That pass includes the two checks that depend on the named
 backend: a `solver.seed` outside the `seed_min` / `seed_max` range that
-backend declares is an `INVALID_SOLVER_PREFERENCE` error. The size estimate
+backend declares is an `INVALID_SOLVER_PREFERENCE` error, and a
+`solver.wall_clock_limit_seconds` on a backend that does not declare
+`supports_interrupt` is a `WALL_CLOCK_LIMIT_UNSUPPORTED` error. The size estimate
 follows the model type: on a bqm backend it counts the slack bits of every
 inequality plus the binary-encoding bits of
 every integer variable, so wider bounds cost more compiled variables; on a cqm
@@ -393,6 +397,10 @@ Validates, compiles, solves, re-validates and ranks.
   skipped; the solve itself finishes and returns its result regardless. The
   server uses progress notifications only, not MCP logging, which the
   2026-07-28 protocol deprecates and delivers only on a per-request opt-in.
+  Once the server has seen the cancellation no further progress notification
+  is sent.
+- **Cancellation:** a cancelled request stops the solve; see
+  [Cancellation](#cancellation) below.
 
 Things worth knowing before calling it:
 
@@ -410,6 +418,16 @@ Things worth knowing before calling it:
 - On an `infeasible` result, read `infeasibility` to learn which candidate came
   closest to feasibility and how often each hard constraint was violated,
   instead of reporting only that nothing was found.
+- `solver.wall_clock_limit_seconds` caps how long the server spends on the
+  solve; `null` (the default) sets no limit. It is a ceiling, not a budget:
+  when it runs out the result holds what was completed, re-validated and
+  ranked as usual, with `wall_clock_limit_reached: true` and a
+  `WALL_CLOCK_LIMIT_REACHED` warning, and it may differ between runs even
+  with a seed. Only the local heuristics accept it (`supports_interrupt` in
+  the capabilities); elsewhere it is refused with
+  `WALL_CLOCK_LIMIT_UNSUPPORTED`. It is not the remote option blocks'
+  `time_limit_seconds`, which is a run time the vendor spends in full. See
+  [Wall-clock limit](problem-format.md#wall-clock-limit).
 - `solver.postprocess: "repair_local_search"` is off by default. It repairs
   and locally improves the best samples of each attempt in the original
   variables, on this machine, before ranking; each solution's `source` says
@@ -421,11 +439,40 @@ Things worth knowing before calling it:
   `validate_optimization_problem` gives for that backend (`SEED_IGNORED`,
   `PARAMETER_IGNORED`, `LARGE_INTEGER_RANGE`, `SOFT_WEIGHT_SMALL`, ...),
   followed by any warning raised during the run (`REMOTE_RETRIES_DISABLED`,
-  `POSTPROCESS_LIMIT_REACHED`).
+  `POSTPROCESS_LIMIT_REACHED`, `WALL_CLOCK_LIMIT_REACHED`).
   Skipping `validate` therefore never hides them; only an `invalid_problem`
   result carries none. Read them before trusting an answer that looks weaker
   than expected — a wide integer range on a heuristic backend, for example,
   can return a slightly sub-optimal value with `status: success`.
+
+#### Cancellation
+
+When the client cancels a `solve_optimization` request — a
+`notifications/cancelled` message, or an in-process client abandoning the
+call — the server stops the solve instead of computing a result nobody will
+read:
+
+- The solve stops at its next checkpoint (see
+  [Backends](backends.md#wall-clock-limits-and-cancellation)). On a local
+  heuristic that is soon: measured on a simulated-annealing problem that takes
+  about 5 s, cancelled after 0.5 s, the solve stopped within about 0.1 s
+  rather than running its remaining ~4.9 s with every shard thread busy.
+- The handler returns only after the solve's worker threads have finished,
+  so nothing keeps computing for the cancelled request, and the concurrency
+  slot is free again by then.
+- No response is sent for the cancelled request — no partial result — and no
+  progress notification is sent once the server has seen the cancellation.
+- On a backend that cannot stop part-way (`supports_interrupt: false`:
+  `exact` and the four remote backends) the cancellation takes effect at the
+  service's own checkpoints only: no further attempt starts and
+  post-processing does not run, but the backend call already running
+  finishes first. On a remote backend a cancellation **makes no remote call**
+  — no cancel, no delete, no retry — so a job already submitted keeps running
+  on the vendor side and **still consumes quota**.
+
+`validate_optimization_problem` and `recommend_backend` are fast and are not
+cancellable in this way. The CLI is separate: Ctrl+C during `annealbridge
+solve` does not stop a running shard early (see [CLI](cli.md#solve)).
 
 ## Prompts
 

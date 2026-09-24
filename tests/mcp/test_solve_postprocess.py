@@ -23,6 +23,7 @@ STATS_KEYS = {
     "new_candidates",
     "feasible_added",
     "limit_reached",
+    "wall_clock_limit_reached",
 }
 
 

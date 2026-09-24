@@ -13,15 +13,29 @@ _BudgetCut = Literal["exhaustive", "no_hard_penalty", "remote_retries_disabled"]
 
 
 def _infeasible_message(
-    proven: bool, cut_reason: _BudgetCut | None, attempts_made: int
+    proven: bool,
+    cut_reason: _BudgetCut | None,
+    attempts_made: int,
+    *,
+    wall_clock_limited: bool = False,
 ) -> tuple[str, list[SolveError]]:
     """The infeasible result's message and warnings (3a §16.2 steps 16–17).
 
     Pure so each wording can be pinned by a test without a backend, a
-    compiler and a policy behind it.
+    compiler and a policy behind it. ``wall_clock_limited`` (batch 6 J):
+    the wall-clock limit cut the search short, which then is the reason
+    given; the WALL_CLOCK_LIMIT_REACHED warning is added by the service.
+    An exhaustive backend is never interrupted, so ``proven`` and a cut
+    search do not meet.
     """
     warnings: list[SolveError] = []
-    if proven:
+    if wall_clock_limited and not proven:
+        message = (
+            f"No feasible solution found before solver.wall_clock_limit_seconds "
+            f"ran out ({attempts_made} attempt(s)); the search was cut short, "
+            f"so the problem may still be feasible with more time"
+        )
+    elif proven:
         message = (
             "No feasible solution exists: the exhaustive backend "
             "enumerated every assignment"
@@ -150,5 +164,37 @@ def _postprocess_limit_warnings(
             f"Post-processing stopped at a ceiling before finishing ({detail}); "
             "every returned solution is still re-validated against the "
             "original problem",
+        )
+    ]
+
+
+def _wall_clock_limit_warnings(
+    cut_attempts: list[int], retry_skipped: bool
+) -> list[SolveError]:
+    """One WALL_CLOCK_LIMIT_REACHED for a solve the limit cut short (batch 6 J).
+
+    ``cut_attempts`` are the attempts that stopped with work left and
+    ``retry_skipped`` says a retry was not started; with neither there is
+    no warning. The text says what was cut and that the result depends on
+    timing, so it can differ between runs even with a seed.
+    """
+    parts = []
+    if cut_attempts:
+        parts.append(
+            "attempt " + ", ".join(str(attempt) for attempt in cut_attempts)
+            + " stopped with work left"
+        )
+    if retry_skipped:
+        parts.append("no further retry was started")
+    if not parts:
+        return []
+    return [
+        catalog_error(
+            "WALL_CLOCK_LIMIT_REACHED",
+            f"solver.wall_clock_limit_seconds ran out ({'; '.join(parts)}); "
+            "the result comes from a partial search that depends on timing, "
+            "so it may differ between runs even with a seed, and every "
+            "returned solution is still re-validated against the original "
+            "problem",
         )
     ]

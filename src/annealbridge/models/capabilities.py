@@ -245,6 +245,16 @@ class SolverCapabilities(BaseModel):
         default=False,
         description="Whether it honours solver.num_sweeps.",
     )
+    supports_interrupt: bool = Field(
+        default=False,
+        description=(
+            "Whether it can stop part-way through a solve: it honours "
+            "solver.wall_clock_limit_seconds and stops promptly when the "
+            "caller cancels, returning only the reads it completed. Without "
+            "it a wall-clock limit is refused (WALL_CLOCK_LIMIT_UNSUPPORTED) "
+            "and a cancelled solve waits for the running solver call to end."
+        ),
+    )
     # strict: a declaration is code, and ``True`` or ``"0"`` read as a bound
     # would be a typo accepted silently.
     seed_min: int | None = Field(
@@ -328,6 +338,18 @@ class SolverCapabilities(BaseModel):
         if not value:
             raise ValueError("supported_model_types must contain at least one model type")
         return value
+
+    @model_validator(mode="after")
+    def _exhaustive_is_never_interrupted(self) -> "SolverCapabilities":
+        # A result is a proof of optimality or infeasibility only when every
+        # assignment was enumerated; one cut short by an interrupt proves
+        # nothing. Refused at declaration rather than checked per result.
+        if self.exhaustive and self.supports_interrupt:
+            raise ValueError(
+                "an exhaustive backend cannot declare supports_interrupt: an "
+                "interrupted enumeration would no longer prove anything"
+            )
+        return self
 
     @model_validator(mode="after")
     def _consistent_seed_range(self) -> "SolverCapabilities":

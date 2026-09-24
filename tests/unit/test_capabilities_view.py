@@ -250,3 +250,48 @@ class TestSeedRange:
         for field in ("seed_min", "seed_max"):
             assert field in BackendCapability.model_fields
             assert BackendCapability.model_fields[field].description
+
+
+class TestSupportsInterrupt:
+    """Batch 6 (J): whether solver.wall_clock_limit_seconds is accepted is
+    read from each backend's declaration, so an agent can tell before it
+    submits a limit that would be refused with WALL_CLOCK_LIMIT_UNSUPPORTED."""
+
+    def test_each_built_in_backend_reports_its_declaration(self):
+        registry = SolverRegistry.default()
+        entries = _entries(registry)
+
+        assert {name: entry.supports_interrupt for name, entry in entries.items()} == {
+            "exact": False,
+            "simulated_annealing": True,
+            "tabu": True,
+            "simulated_bifurcation": True,
+            "dwave_qpu": False,
+            "leap_hybrid_bqm": False,
+            "leap_hybrid_cqm": False,
+            "fujitsu_da": False,
+        }
+        for name, entry in entries.items():
+            assert entry.supports_interrupt is (
+                registry.get(name).capabilities.supports_interrupt
+            ), name
+
+    @pytest.mark.parametrize("declared", [True, False])
+    def test_a_custom_backend_is_reported_from_its_declaration(self, declared):
+        # A name the view has never seen: only the declaration can decide.
+        backend = SpyBackend(
+            make_capabilities(
+                name="my_interruptible", remote=False, supports_interrupt=declared
+            )
+        )
+        registry = SolverRegistry({"my_interruptible": backend})
+
+        (entry,) = build_capabilities(registry, ExecutionPolicy()).backends
+
+        assert entry.supports_interrupt is declared
+
+    def test_the_field_is_described(self):
+        description = BackendCapability.model_fields["supports_interrupt"].description
+        assert description
+        assert "wall_clock_limit_seconds" in description
+        assert "WALL_CLOCK_LIMIT_UNSUPPORTED" in description

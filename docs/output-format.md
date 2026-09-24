@@ -37,10 +37,11 @@ The outcome of `solve_optimization` / `annealbridge solve`.
 | `infeasibility_proven` | boolean | `true` only when an exhaustive backend actually enumerated every assignment and found none feasible. Defaults to `false`. |
 | `infeasibility` | [InfeasibilityDiagnostics](#infeasibilitydiagnostics) \| null | Why the last attempt found nothing feasible. Present only when `status` is `infeasible` **and** that attempt had candidates to diagnose; `null` on every other status, and on an attempt that received no samples at all. |
 | `optimality_proven` | boolean | `true` only on `success` when an exhaustive backend enumerated every assignment: rank 1 is then the global optimum of `ranking_score`, not merely the best candidate seen. Always `false` on a heuristic or remote backend. |
+| `wall_clock_limit_reached` | boolean | `true` when [`solver.wall_clock_limit_seconds`](problem-format.md#wall-clock-limit) ran out while work was left: an attempt was cut short (see [SolveAttempt](#solveattempt)) or a retry was not started. The solutions are then the best of a partial search, still re-validated and ranked, and a `WALL_CLOCK_LIMIT_REACHED` warning is added. `false` when no limit was set or the solve finished within it. See [Wall-clock limit and reproducibility](#wall-clock-limit-and-reproducibility). |
 | `errors` | array of [SolveError](#solveerror) | Structured failures. Empty on success. |
 | `warnings` | array of [SolveError](#solveerror) | Non-blocking advice, same structure as an error: the warnings `validate` gives for this backend, then any raised during the run. Present whatever the `status`, except `invalid_problem`. |
 | `metadata` | [SolverExecutionMetadata](#solverexecutionmetadata) \| null | Sanitized execution facts. Present whenever an attempt actually completed, local backends included; `null` when the request failed before any solve finished. |
-| `message` | string \| null | Human-readable one-line summary of the result. On `success`: which backend produced it, whether optimality is proven, the rank-1 objective with its direction (and its soft violation when non-zero), how many distinct candidates the attempt saw, how many were feasible and how many are returned, the attempt number when a retry produced it, and — with post-processing on — how many feasible assignments it added and, when rank 1 is one of them, its `source`. On `infeasible`: why nothing feasible was found. On a failure: the first error's message. Deterministic — it never contains timings. `null` when there is nothing to add. |
+| `message` | string \| null | Human-readable one-line summary of the result. On `success`: which backend produced it, whether optimality is proven, the rank-1 objective with its direction (and its soft violation when non-zero), how many distinct candidates the attempt saw, how many were feasible and how many are returned, the attempt number when a retry produced it, and — with post-processing on — how many feasible assignments it added and, when rank 1 is one of them, its `source`; when the wall-clock limit cut the search short, a closing sentence says so. On `infeasible`: why nothing feasible was found — including, when the wall-clock limit cut the search short, that nothing was found before it ran out. On a failure: the first error's message. Deterministic — it never contains timings. `null` when there is nothing to add. |
 | `elapsed_ms` | number \| null | Wall-clock milliseconds measured by the service from entering `solve` to returning, problem validation and any wait for a concurrency slot included. Present whatever the `status`. Unrelated to `metadata.timing_us`, which is what a vendor reports about its own side. |
 | `annealbridge_version` | string \| null | The installed package version that produced the result (`"unknown"` outside an installed distribution). |
 
@@ -64,6 +65,47 @@ returned samples can set — is a proof. On a heuristic or remote backend an
 `infeasible` result means "not found under this configuration". Either way,
 [`infeasibility`](#infeasibilitydiagnostics) says which hard constraints stood
 in the way.
+
+### Wall-clock limit and reproducibility
+
+A solve with [`solver.wall_clock_limit_seconds`](problem-format.md#wall-clock-limit)
+set, whose limit ran out before the work was done, is not an error. It returns
+what it completed, through the usual pipeline:
+
+- Every sample the backend returned is decoded, re-validated against the
+  original problem and ranked; nothing is taken from the solver's energy or
+  its own feasibility claims. The status follows the result: `success` when a
+  sample (or a post-processing output) is feasible, `infeasible` otherwise.
+- `wall_clock_limit_reached` is `true` on the result and on each attempt that
+  was cut short, `postprocess.wall_clock_limit_reached` on an attempt whose
+  post-processing stopped with work left, and one `WALL_CLOCK_LIMIT_REACHED`
+  warning names the attempts that were cut and whether a retry was skipped.
+- On `success` the `message` ends with a sentence saying the limit cut the
+  search short; on `infeasible` it says no feasible solution was found before
+  the limit ran out and that more time might find one.
+- A backend stopped before its first read returns no samples: the attempt
+  shows `samples_received: 0`, there is nothing to diagnose, so
+  `infeasibility` stays `null`, and the status is `infeasible`.
+
+The flags mean *work was left undone* — the backend skipped reads, shards or
+batches it was asked for, post-processing stopped with starts or steps left,
+or a retry was not started. A solve whose uninterruptible stages (validation,
+compilation, re-validation) merely ran past the limit did not skip anything
+and is not flagged; its `elapsed_ms` can simply exceed the limit.
+
+Reproducibility:
+
+- **No limit** (and, for a library caller, no cancel token): the solve runs
+  exactly as it always has.
+- **A limit that does not fire**: the result is bit-for-bit what it would be
+  without the limit, apart from the `*_ms` timings.
+- **A limit that fires**: how many reads, shards, batches and post-processing
+  steps completed depends on machine speed and load,
+  `ANNEALBRIDGE_SA_WORKERS` / `ANNEALBRIDGE_TABU_WORKERS`, BLAS threads and
+  the GPU, so the same seed can give a different result on another run or
+  machine. With several shards the completed ones are not necessarily the
+  first ones. Remove the limit, or raise it, for a complete and reproducible
+  run.
 
 ### Solution
 
@@ -155,6 +197,7 @@ constraint with a rate below 1 does not imply a feasible candidate exists.
 | `validate_ms` | number \| null | Wall-clock milliseconds for decoding, deduplication, re-validation and ranking of the returned samples — post-processing outputs included in the ranking, the post-processing itself excluded. |
 | `postprocess` | [PostprocessStats](#postprocessstats) \| null | What post-processing did in this attempt. `null` when `solver.postprocess` is `"none"` (the default) or the backend is exhaustive; an object whenever it ran, even on an attempt that received no samples (every count is then `0`). |
 | `postprocess_ms` | number \| null | Wall-clock milliseconds post-processing took: selection, repair and local search, plus re-validating what it produced. Separate from `validate_ms`, never overlapping it. `null` when post-processing did not run. |
+| `wall_clock_limit_reached` | boolean | `true` when `solver.wall_clock_limit_seconds` cut this attempt short: the backend skipped reads it was asked for, or post-processing stopped with work left. Its samples are then a partial, timing-dependent set. `false` otherwise. |
 
 An attempt is recorded even when it produced nothing feasible, so the retry
 ladder is visible: attempt 2 carries double attempt 1's penalty.
@@ -169,14 +212,17 @@ post-processing on, the assignments it added are counted in
 The `*_ms` timings are the service's own clock around each stage. The first
 three are measured for every backend, local ones included; `postprocess_ms`
 only when post-processing ran. They vary from run to run and are the only
-fields of a result that do; `elapsed_ms` on the result covers all attempts
+fields of a result that do — unless a wall-clock limit fired (see
+[Wall-clock limit and reproducibility](#wall-clock-limit-and-reproducibility));
+`elapsed_ms` on the result covers all attempts
 plus validation and bookkeeping, so it is never smaller than their sum.
 
 ### PostprocessStats
 
 What the opt-in post-processing did in one attempt (see
 [Post-processing](problem-format.md#post-processing)). Every count is
-deterministic for a given set of solver samples.
+deterministic for a given set of solver samples, unless the wall-clock limit
+stopped it (`wall_clock_limit_reached`).
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -187,7 +233,8 @@ deterministic for a given set of solver samples.
 | `local_search_improved` | integer | Local searches that moved to a strictly better ranking cost. |
 | `new_candidates` | integer | Distinct assignments post-processing added that the solver had not returned in this attempt. |
 | `feasible_added` | integer | How many of `new_candidates` are feasible under re-validation. They are ranked together with the solver's feasible samples. |
-| `limit_reached` | array of `"evaluations"` \| `"steps"` | The ceilings post-processing stopped at: `evaluations`, the per-attempt move-evaluation budget `ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS`, and `steps`, the fixed per-assignment step cap. Empty when it ran to completion; a non-empty list also raises the `POSTPROCESS_LIMIT_REACHED` warning. |
+| `limit_reached` | array of `"evaluations"` \| `"steps"` | The ceilings post-processing stopped at: `evaluations`, the per-attempt move-evaluation budget `ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS`, and `steps`, the fixed per-assignment step cap. Empty when it ran to completion; a non-empty list also raises the `POSTPROCESS_LIMIT_REACHED` warning. The wall-clock limit is not one of these ceilings and never appears here. |
+| `wall_clock_limit_reached` | boolean | `true` when `solver.wall_clock_limit_seconds` ran out while post-processing still had starts or steps left, so it stopped early, keeping what it had finished. Reported through `WALL_CLOCK_LIMIT_REACHED`, never through `limit_reached` or `POSTPROCESS_LIMIT_REACHED`. |
 
 Post-processing only ever adds candidates to one attempt's pool; it never
 merges attempts, never changes `unique_samples`, `feasible_samples` or the
@@ -364,12 +411,14 @@ Ranks 3–5 are elided below; they continue the same pattern down to
       "solve_ms": 3.4,
       "validate_ms": 0.8,
       "postprocess": null,
-      "postprocess_ms": null
+      "postprocess_ms": null,
+      "wall_clock_limit_reached": false
     }
   ],
   "infeasibility_proven": false,
   "infeasibility": null,
   "optimality_proven": true,
+  "wall_clock_limit_reached": false,
   "errors": [],
   "warnings": [],
   "metadata": {
@@ -434,7 +483,7 @@ no network I/O, no solving, no concurrency slot and no quota consumed.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `valid` | boolean | The problem's own validity. When `false`, `recommendations` is empty. An error only one backend's declaration raises — a `solver.seed` outside the range that backend declares — leaves `valid` true and blocks that backend instead. |
+| `valid` | boolean | The problem's own validity. When `false`, `recommendations` is empty. An error only one backend's declaration raises — a `solver.seed` outside the range that backend declares, or a `solver.wall_clock_limit_seconds` on a backend that does not declare `supports_interrupt` — leaves `valid` true and blocks that backend instead. |
 | `errors` | array of [SolveError](#solveerror) | The problem's errors when it is invalid. |
 | `recommendations` | array of [BackendRecommendation](#backendrecommendation) | Every registered backend, ranked. |
 | `advisory` | string | A fixed sentence restating that a solve always uses `problem.solver.backend` as given. |
@@ -448,7 +497,7 @@ no network I/O, no solving, no concurrency slot and no quota consumed.
 | `usable` | boolean | Whether a solve on it right now would get past every gate and limit. |
 | `model_type` | `"bqm"` \| `"cqm"` \| null | The compiler path it would take; `null` when the server has no compiler for it. |
 | `reasons` | array of string | Fixed routing reason codes, in the order they were applied. See [Recommendation reason codes](errors.md#recommendation-reason-codes). |
-| `blocking` | array of [SolveError](#solveerror) | Why a solve now would fail, e.g. `REMOTE_DISABLED`, or `INVALID_SOLVER_PREFERENCE` at `solver.seed` when the seed lies outside the range this backend declares. |
+| `blocking` | array of [SolveError](#solveerror) | Why a solve now would fail, e.g. `REMOTE_DISABLED`, `INVALID_SOLVER_PREFERENCE` at `solver.seed` when the seed lies outside the range this backend declares, or `WALL_CLOCK_LIMIT_UNSUPPORTED` when a wall-clock limit is set and this backend cannot stop part-way. |
 | `warnings` | array of [SolveError](#solveerror) | The validation warnings for this backend's path. |
 | `estimated_compiled_variables` | integer \| null | The compiled size on this backend's path. `null` when there is no compiler path, or when the problem is invalid for this backend (see `blocking`). |
 
@@ -488,6 +537,7 @@ configured.
 | `seed_min` | integer \| null | The smallest `solver.seed` this backend accepts, inclusive. A seed outside `seed_min`–`seed_max` is refused with `INVALID_SOLVER_PREFERENCE` before anything runs. `null` when the backend declares no seed range. |
 | `seed_max` | integer \| null | The largest `solver.seed` this backend accepts, inclusive. `null` when the backend declares no seed range. |
 | `returns_multiple_samples` | boolean | `false` means the effective `top_k` is at most 1. |
+| `supports_interrupt` | boolean | Whether a solve on this backend can stop part-way: it honours `solver.wall_clock_limit_seconds` and stops promptly when the solve is cancelled. `false` means a wall-clock limit is refused with `WALL_CLOCK_LIMIT_UNSUPPORTED` before anything runs. Never `true` together with `exhaustive`. See [Backends](backends.md#wall-clock-limits-and-cancellation). |
 | `limits` | object of string → number | The policy ceilings that apply to this backend. |
 | `description` | string | One-line description of the backend. |
 

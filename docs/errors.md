@@ -10,7 +10,8 @@ codes the CLI uses.
 
 Domain failures are **returned, never raised**. A caller that gets a result
 back always gets a `status` plus a structured explanation; nothing is left to a
-stack trace.
+stack trace. The one exception is not a failure but a request: a solve its
+caller cancelled gets no result at all (see [Cancellation](#cancellation)).
 
 ## The SolveError structure
 
@@ -61,6 +62,7 @@ schema, so it never became a problem the validator could check (see
 | `HARD_CONSTRAINT_HAS_WEIGHT` | A hard constraint carries a `weight`, but the server decides the hard penalty. | Remove the weight, or make the constraint soft if it is only a preference. |
 | `SOFT_CONSTRAINT_MISSING_WEIGHT` | A soft constraint has no positive `weight`, so its violation cost is undefined. | Supply a positive weight in objective units, or make the constraint hard. |
 | `INVALID_SOLVER_PREFERENCE` | A solver preference is outside its allowed range. | Correct the value, or omit it to use the default. Every numeric preference must be finite and `> 0`; a retry count may also be `0`. A `solver.seed` must lie within the `seed_min`–`seed_max` range the selected backend declares in its capabilities — each sampler has its own rule, so the range differs per backend (`simulated_annealing`: `0`–`2147483647`; `tabu` and `simulated_bifurcation`: `0`–`4294967295`); a backend that does not support seeding raises the `SEED_IGNORED` warning for any seed instead. |
+| `WALL_CLOCK_LIMIT_UNSUPPORTED` | `solver.wall_clock_limit_seconds` is set, but the selected backend's capabilities do not declare `supports_interrupt`: it cannot stop part-way through a solve (`exact` and the four remote backends). Refused rather than ignored, so a limit is never silently exceeded; `validate` reports it too, and `recommend` lists it as blocking that backend. | Remove the field, or choose a backend that declares `supports_interrupt`. A remote backend's own time budget is `time_limit_seconds` in its option block — a run time the vendor spends in full, not a ceiling. |
 | `TRIVIALLY_INFEASIBLE` | A hard constraint cannot be satisfied by any assignment within the variables' bounds. | Correct the rhs, operator or coefficients, or make the constraint soft. |
 | `INTEGER_BOUNDS_MISSING` | An integer variable is missing `lower_bound` or `upper_bound`. | Add both bounds, or make the variable binary. |
 | `INTEGER_BOUNDS_INVALID` | `upper_bound` is not greater than `lower_bound`. | Equal bounds are a constant — fold it into the objective and constraints instead. |
@@ -139,6 +141,17 @@ CONCURRENCY_LIMIT   REMOTE_TIMEOUT   REMOTE_SOLVER_ERROR   REMOTE_BUSY
 Every other error is deterministic: resubmitting it unchanged will fail the
 same way. No warning is ever retryable.
 
+### Cancellation
+
+Cancelling a solve adds no code. A cancelled solve returns no `SolveResult`
+at all: an MCP client that cancels `solve_optimization` gets no response to
+that request, and a library caller of `OptimizationService.solve(problem,
+cancel=token)` gets the `SolveCancelled` exception — deliberately not an
+`OptimizerError`, because it is not a domain failure. A request that fails
+before its attempts begin (an invalid problem, an unavailable backend, a full
+server) returns its result as usual even with a cancelled token. See
+[MCP](mcp.md#cancellation) and [Architecture](architecture.md#library-use-without-the-interfaces).
+
 ## Schema errors
 
 Before the validator can check a problem, the submitted document has to parse
@@ -214,9 +227,9 @@ Warnings never block. They appear in `ProblemValidationResult.warnings` and in
 structure, and always carry `retryable: false`. `valid` is decided by errors
 alone. `validate` and `solve` run the same advisory pass for the same backend,
 so a solve result carries exactly the warnings a validate call would have
-given — whatever its `status`, except `invalid_problem` — followed by the two
-warnings only a run can raise, `REMOTE_RETRIES_DISABLED` and
-`POSTPROCESS_LIMIT_REACHED`. The two advisories
+given — whatever its `status`, except `invalid_problem` — followed by the
+three warnings only a run can raise, `REMOTE_RETRIES_DISABLED`,
+`POSTPROCESS_LIMIT_REACHED` and `WALL_CLOCK_LIMIT_REACHED`. The two advisories
 `validate` alone reports, `UNKNOWN_BACKEND` and `NO_COMPILER_FOR_MODEL_TYPE`,
 are errors on `solve`.
 
@@ -242,6 +255,7 @@ known.
 | `SOFT_ALWAYS_VIOLATED` | A soft constraint can never be satisfied within the variables' bounds: every solution pays its weight. The hard counterpart is the `TRIVIALLY_INFEASIBLE` error. |
 | `REMOTE_RETRIES_DISABLED` | Emitted during a solve, not validation: a remote solve on the BQM path found nothing feasible, the problem asked for retries (`max_retries > 0`), and server policy disables automatic remote retries, so only one attempt was made. With `max_retries: 0` nothing was blocked and no warning is emitted. |
 | `POSTPROCESS_LIMIT_REACHED` | Emitted during a solve, not validation: post-processing stopped at a ceiling before finishing — the per-attempt evaluation budget (`ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS`) or the per-assignment step cap. At most one per solve, naming each affected attempt and ceiling; the same names are in `attempts[].postprocess.limit_reached`. The `status` is unaffected and every returned solution is still re-validated, but more search might have improved them. |
+| `WALL_CLOCK_LIMIT_REACHED` | Emitted during a solve, not validation: `solver.wall_clock_limit_seconds` ran out while work was left — an attempt was cut short (the backend skipped reads, or post-processing stopped with work left) or a retry was not started. At most one per solve, naming the attempts that were cut and whether a retry was skipped; `wall_clock_limit_reached` is `true` on the result and on those attempts. Every returned solution is still re-validated and ranked, and the status follows them (`success`, or `infeasible` when none is feasible); but the result comes from a partial search that depends on timing, so it can differ between runs even with a seed. Never raised when only the uninterruptible stages ran past the limit. See [Output format](output-format.md#wall-clock-limit-and-reproducibility). |
 
 Four of these — `LARGE_INTEGER_RANGE`, `INTEGER_QUADRATIC_BLOWUP`,
 `PARAMETER_IGNORED` and `SEED_IGNORED` — are warnings, not errors. They never
@@ -290,7 +304,7 @@ different kind. The ranking never rewrites
 | `1` | A domain answer that is not success: a non-`success` `SolveResult`, an invalid problem for `validate` or `recommend`. The structured errors are printed either way. |
 | `2` | The request never reached the service. |
 
-Exit code `2` covers three situations:
+Exit code `2` covers four situations:
 
 - the input file cannot be read, is not valid JSON, or is not a valid
   optimization problem document (a schema error, as opposed to a semantic
@@ -299,6 +313,11 @@ Exit code `2` covers three situations:
   [Schema errors](#schema-errors));
 - `--backend` (available on `solve` and `validate` only) names a backend
   that is not one of the known names;
+- `--wall-clock-limit` (on `solve` and `validate` only) is not a finite
+  number (`nan`, `inf`). A finite value that is zero or negative, or a limit
+  on a backend that cannot honour it, is a semantic error instead, reported
+  in the command's result (`INVALID_SOLVER_PREFERENCE`,
+  `WALL_CLOCK_LIMIT_UNSUPPORTED`) with exit code `1`;
 - an `ANNEALBRIDGE_*` environment variable holds an illegal value. The message
   names the variable only — values are never echoed back, in case one holds a
   secret. An `ANNEALBRIDGE_*` variable that is not recognised at all is *not*

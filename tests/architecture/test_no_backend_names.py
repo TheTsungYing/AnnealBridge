@@ -34,6 +34,9 @@ BACKEND_NAMES = frozenset(
 
 SCANNED_PACKAGES = ["orchestration", "validation"]
 SCANNED_FILES = [
+    # Batch 6 (J): the interrupt every core layer polls; a name there
+    # would be a per-backend stop rule.
+    "interrupt.py",
     "interfaces/capabilities.py",
     "interfaces/mcp/tools.py",
     "interfaces/cli/main.py",

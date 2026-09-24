@@ -517,6 +517,7 @@ def process_candidates(
             new_candidates=len(new_rows),
             feasible_added=int(np.count_nonzero(new_verdict.feasible)),
             limit_reached=list(run.limit_reached),
+            wall_clock_limit_reached=run.interrupted,
         )
         postprocess_ms = (time.perf_counter() - postprocess_started) * 1000.0
         if len(new_rows):

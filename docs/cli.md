@@ -83,12 +83,13 @@ Error: '<stdin>' is not valid JSON: Expecting value: line 1 column 1 (char 0)
 Validate, compile, solve, re-validate and rank a problem.
 
 ```bash
-annealbridge solve PROBLEM_FILE [--backend NAME] [--json]
+annealbridge solve PROBLEM_FILE [--backend NAME] [--wall-clock-limit SECONDS] [--json]
 ```
 
 | Option | Meaning |
 | --- | --- |
 | `--backend NAME` | Override `solver.backend` from the JSON |
+| `--wall-clock-limit SECONDS` | Override `solver.wall_clock_limit_seconds` from the JSON (see [below](#the-wall-clock-limit)) |
 | `--json` | Print the full `SolveResult` as JSON instead of the report |
 
 ```console
@@ -163,18 +164,49 @@ Warnings (1):
 per-constraint evaluation, every attempt, and the solver metadata. That is the
 form to pipe into another tool; see [Output format](output-format.md).
 
+### The wall-clock limit
+
+`--wall-clock-limit SECONDS` sets `solver.wall_clock_limit_seconds` for this
+run, replacing whatever the JSON says, and the result is then exactly what the
+same value written in the JSON would give: an upper bound on the solve's wall
+time, after which it stops at its next checkpoint and returns what it
+completed, re-validated and ranked, with a `WALL_CLOCK_LIMIT_REACHED` warning
+in the report (see [Wall-clock limit](problem-format.md#wall-clock-limit)).
+
+```bash
+annealbridge solve problem.json --backend simulated_annealing --wall-clock-limit 30
+```
+
+- Only `nan` and `inf` are refused on the spot, with exit `2` and
+  `Error: invalid --wall-clock-limit ... (expected a finite number of
+  seconds)` on stderr. A zero or negative value goes through validation like
+  the same value in the JSON: `INVALID_SOLVER_PREFERENCE`, exit `1`.
+- On a backend that cannot stop part-way (`exact` and the remote backends;
+  see `supports_interrupt` under [`capabilities`](#capabilities)) any value is
+  refused with `WALL_CLOCK_LIMIT_UNSUPPORTED` and exit `1`, before anything
+  runs.
+- The option is on `solve` and `validate`. `recommend` has neither it nor
+  `--backend`, and ranks the problem exactly as the JSON states it.
+
+Ctrl+C does not stop a running solve early: a single-shard sampler call only
+sees the interrupt once it returns, and with several shards the process ends
+only after the shards already running have finished. Nothing is left running
+afterwards, but the stop is not immediate. Use `--wall-clock-limit` to bound
+the time instead.
+
 ## `validate`
 
 Check a problem without solving it, and report the size it would compile to.
 No compiling, no solving, no network I/O.
 
 ```bash
-annealbridge validate PROBLEM_FILE [--backend NAME] [--json]
+annealbridge validate PROBLEM_FILE [--backend NAME] [--wall-clock-limit SECONDS] [--json]
 ```
 
 | Option | Meaning |
 | --- | --- |
 | `--backend NAME` | Override `solver.backend` from the JSON |
+| `--wall-clock-limit SECONDS` | Override `solver.wall_clock_limit_seconds` from the JSON, so validation checks it against the backend (see [`solve`](#the-wall-clock-limit)) |
 | `--json` | Print the full `ProblemValidationResult` as JSON |
 
 ```console
@@ -326,7 +358,9 @@ confirm the change took effect.
 returns by default (`include_schema: false`), field for field: the schema
 versions, the supported variable types, constraint operators and objective
 terms, whether inequalities need integer coefficients, one entry per backend
-(availability, policy, seeding, limits and a description), and the package
+(availability, policy, seeding, whether it can be interrupted —
+`supports_interrupt`, which decides whether it accepts
+`solver.wall_clock_limit_seconds` — limits and a description), and the package
 version. `problem_json_schema` is always `null` here; `export-schema` prints
 the schema on its own. Abridged:
 
@@ -365,6 +399,7 @@ $ annealbridge capabilities --json
       "seed_min": null,
       "seed_max": null,
       "returns_multiple_samples": true,
+      "supports_interrupt": false,
       "limits": {
         "max_variables": 24,
         "max_local_retries": 10,
@@ -468,7 +503,7 @@ suits you; a hand-written host configuration is shorter with
 | `1` | A domain answer that is not success: a non-`success` `SolveResult` (including `infeasible`), or an invalid problem from `validate` / `recommend` |
 | `2` | The command could not run at all |
 
-Exit `2` covers four distinct situations, and all four print to stderr:
+Exit `2` covers five distinct situations, and all five print to stderr:
 
 - **The input file (or stdin) cannot be used** — unreadable, not valid JSON,
   or not a valid `OptimizationProblem` document:
@@ -508,6 +543,10 @@ Exit `2` covers four distinct situations, and all four print to stderr:
   $ annealbridge solve examples/knapsack.json --backend nope
   Error: unknown backend 'nope' (expected one of 'simulated_annealing', 'exact', 'tabu', 'simulated_bifurcation', 'dwave_qpu', 'leap_hybrid_bqm', 'leap_hybrid_cqm', 'fujitsu_da')
   ```
+
+- **`--wall-clock-limit` is not a finite number** (`nan` or `inf`; `solve`
+  and `validate` only). A zero or negative value is a semantic error instead
+  and exits `1` (see [The wall-clock limit](#the-wall-clock-limit)).
 
 - **`example` names an example that does not exist** (shown under
   [`example`](#example)).

@@ -415,6 +415,7 @@ The `solver` block is optional; every field has a default.
 | `postprocess` | `"none"` \| `"repair_local_search"` | `"none"` | Opt-in post-processing of each attempt's samples in the original variables: repair the infeasible ones, then move the feasible ones to a local optimum. Runs locally; ignored on an exhaustive backend. See [Post-processing](#post-processing). |
 | `postprocess_candidates` | integer > 0 | `10` | How many distinct samples per attempt post-processing starts from, best first. Bounded by policy (`POSTPROCESS_LIMIT`) while `postprocess` is on; ignored while it is `"none"`. |
 | `penalty_multiplier` | finite number > 0 | `2.0` | Multiplier applied to `penalty_scale` for the first attempt. |
+| `wall_clock_limit_seconds` | finite number > 0 \| null | `null` | Upper bound on the solve's wall-clock time on this server, in seconds; `null` sets no limit. A ceiling that stops the solve early, not a budget to spend. Only accepted on a backend whose capabilities declare `supports_interrupt`. See [Wall-clock limit](#wall-clock-limit). |
 | `simulated_bifurcation` | object \| null | `null` | Options for the `simulated_bifurcation` backend. |
 | `dwave_qpu` | object \| null | `null` | Options for the `dwave_qpu` backend. |
 | `leap_hybrid_bqm` | object \| null | `null` | Options for the `leap_hybrid_bqm` backend. |
@@ -512,6 +513,14 @@ did in each attempt is in [`attempts[].postprocess`](output-format.md#postproces
   same way (whenever a repair or local search uses all its steps, even if the
   last one happened to reach a local optimum). The budget applies to each attempt separately, so with retries the
   total can reach the number of attempts times the budget.
+- **The wall-clock limit.** With
+  [`wall_clock_limit_seconds`](#wall-clock-limit) set, post-processing is also
+  checked before every start and every step, and stops when the limit has run
+  out, keeping what was finished the same way as when the budget runs out. That
+  stop is reported through `wall_clock_limit_reached` and
+  `WALL_CLOCK_LIMIT_REACHED`, never in `limit_reached` or as
+  `POSTPROCESS_LIMIT_REACHED`, and it is the one case in which post-processing
+  depends on time.
 
 Known limitations:
 
@@ -523,6 +532,61 @@ Known limitations:
   assignment to another. No move changes more than two, so local search
   cannot improve a feasible tour at all and only spends time.
 - A local optimum is not a proof: `optimality_proven` stays `false`.
+
+### Wall-clock limit
+
+`"wall_clock_limit_seconds": 30` caps how long the server spends on the solve.
+It is measured from the moment the service starts processing the request —
+the same starting point as [`elapsed_ms`](output-format.md#solveresult) — and
+covers every attempt and post-processing. It says *at most* how long, never
+*how long*: a solve that finishes sooner is not held back, and one that
+reaches the limit stops at its next checkpoint instead of running on.
+
+When the limit runs out with work left, the solve returns what it has
+completed: every sample it received is decoded, re-validated against the
+original problem and ranked exactly as usual, and the status follows the
+result — `success` when one of them is feasible, `infeasible` (with a message
+saying none was found within the limit) when not. The result carries
+`wall_clock_limit_reached: true` and a `WALL_CLOCK_LIMIT_REACHED` warning; see
+[Output format](output-format.md#wall-clock-limit-and-reproducibility). It is
+not an error, and it is only reported when work was actually left undone.
+
+- **Validation.** The value must be finite and greater than zero; anything
+  else is rejected with `INVALID_SOLVER_PREFERENCE`. On a backend whose
+  capabilities do not declare `supports_interrupt` — currently `exact`,
+  `dwave_qpu`, `leap_hybrid_bqm`, `leap_hybrid_cqm` and `fujitsu_da` — any
+  value is rejected with `WALL_CLOCK_LIMIT_UNSUPPORTED` (`invalid_problem`)
+  before anything runs, never silently ignored; `validate` and `recommend`
+  report the same error. The supporting backends are `simulated_annealing`,
+  `tabu` and `simulated_bifurcation`.
+- **Both schema versions.** It is a solver preference, so `"1.0"` and `"1.1"`
+  accept it alike.
+- **No server-side ceiling.** There is no policy key for it: a larger value
+  only makes the limit less likely to fire.
+- **It can be overrun.** Some stages cannot be interrupted and add their full
+  duration on top of the limit: validating the problem, compiling it, decoding
+  and re-validating the samples, the infeasibility diagnostics and setting up
+  post-processing. Each backend also finishes the unit of work it is in when
+  the limit runs out — a read, a shard of 25 reads for `tabu`, one integration
+  step. The first attempt always starts even if the limit has already run out
+  by then; its backend then returns no samples. The per-backend checkpoints and
+  worst-case overruns are listed in
+  [Backends](backends.md#wall-clock-limits-and-cancellation).
+- **Reproducibility.** A solve the limit does not cut short returns exactly
+  what it would return without the limit, bit for bit. A solve it does cut
+  short depends on timing — machine speed and load, the worker counts, BLAS
+  threads, the GPU — so the same seed can give a different result.
+
+It is a different field from the `time_limit_seconds` of the remote option
+blocks below:
+
+| | `solver.wall_clock_limit_seconds` | `solver.<block>.time_limit_seconds` |
+| --- | --- | --- |
+| Where | top level of `solver` | inside a remote backend's option block |
+| What it is | a ceiling: stop early when reached | a run-time budget handed to the vendor, which spends all of it |
+| Measured | on this server, from the start of the solve | by the vendor, for its own run |
+| Backends | those declaring `supports_interrupt` (local heuristics) | `leap_hybrid_bqm`, `leap_hybrid_cqm`, `fujitsu_da` |
+| Server ceiling | none | `ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS` (`REMOTE_TIME_LIMIT`) |
 
 ### Backend option blocks
 

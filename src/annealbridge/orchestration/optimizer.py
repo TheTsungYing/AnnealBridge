@@ -7,6 +7,8 @@ feasibility and objective values are recomputed from the problem itself
 never on the concrete compiled model type (spec §17).
 """
 
+import dataclasses
+import inspect
 import logging
 import math
 import threading
@@ -22,7 +24,9 @@ from annealbridge.exceptions import (
     CompilationError,
     NonFiniteModelError,
     OptimizerError,
+    SolveCancelled,
 )
+from annealbridge.interrupt import CancelToken, Clock, Interrupt
 from annealbridge.models import (
     CompiledProblem,
     InfeasibilityDiagnostics,
@@ -53,6 +57,7 @@ from annealbridge.orchestration.messages import (
     _infeasible_message,
     _postprocess_limit_warnings,
     _success_message,
+    _wall_clock_limit_warnings,
 )
 from annealbridge.orchestration.policy import ExecutionPolicy
 from annealbridge.orchestration.postprocess import PostprocessRequest
@@ -145,6 +150,27 @@ class _AttemptState:
     # ``(attempt, limit names)`` of every attempt whose post-processing
     # stopped at a ceiling; folded into one warning (postprocess spec §6).
     postprocess_limits: list[tuple[int, list[str]]] = field(default_factory=list)
+    # Batch 6 (J): the solve's stop condition, None when it has neither a
+    # wall-clock limit nor a cancel token (the solve then runs exactly as
+    # before); and whether the limit stopped a retry from starting.
+    interrupt: Interrupt | None = None
+    retry_skipped: bool = False
+
+    def check_cancelled(self) -> None:
+        """A service checkpoint: raise :class:`SolveCancelled` once the
+        caller has cancelled. Cancellation wins over the wall-clock limit
+        wherever both could apply."""
+        if self.interrupt is not None and self.interrupt.cancelled:
+            raise SolveCancelled("the solve was cancelled by its caller")
+
+    @property
+    def wall_clock_limit_reached(self) -> bool:
+        """The limit left work undone: an attempt was cut short or a retry
+        was not started. Never true merely because the uninterruptible
+        stages (validation, compilation, re-validation) ran past it."""
+        return self.retry_skipped or any(
+            attempt.wall_clock_limit_reached for attempt in self.attempts
+        )
 
     def emit(self, attempt: int, stage: Stage, backend_name: str) -> None:
         """Call the progress callback, if any, for a stage that is starting.
@@ -183,8 +209,13 @@ class OptimizationService:
         penalty_strategy: PenaltyStrategy | None = None,
         registry: SolverRegistry | None = None,
         policy: ExecutionPolicy = ExecutionPolicy(),
+        *,
+        clock: Clock = time.perf_counter,
     ) -> None:
+        """``clock`` measures ``elapsed_ms`` and the wall-clock limit from
+        the same reading; a test may inject a fake one."""
         self._policy = policy
+        self._clock = clock
         # 3a §16.1: one compiler per model type, chosen per solve from the
         # backend's declaration. This is the only place the service names
         # a concrete compiler (§4).
@@ -205,6 +236,7 @@ class OptimizationService:
             registry if registry is not None else SolverRegistry.default()
         )
         self._check_declared_limits()
+        self._check_interrupt_signatures()
         # Concurrency slots are per service instance (spec §14); a CLI-style
         # single call is unaffected.
         self._solve_slots = threading.BoundedSemaphore(policy.max_concurrent_solves)
@@ -246,6 +278,36 @@ class OptimizationService:
                         f"'{declaration.error_code}') but that path cannot "
                         f"carry a limit: {exc}"
                     ) from exc
+
+    def _check_interrupt_signatures(self) -> None:
+        """A backend that declares ``supports_interrupt`` must take ``interrupt``.
+
+        The service passes ``interrupt=`` to exactly those backends; one
+        whose ``solve`` has no such keyword would fail only on the first
+        limited or cancellable solve, as an unclassified ``TypeError``.
+        Refused here, at construction, like a limit the policy cannot check.
+        """
+        for name in self._registry.names():
+            backend = self._registry.get(name)
+            if not backend.capabilities.supports_interrupt:
+                continue
+            parameters = inspect.signature(backend.solve).parameters
+            accepts = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            ) or (
+                "interrupt" in parameters
+                and parameters["interrupt"].kind
+                in (
+                    inspect.Parameter.KEYWORD_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                )
+            )
+            if not accepts:
+                raise ValueError(
+                    f"backend '{name}' declares supports_interrupt but its "
+                    f"solve() takes no 'interrupt' keyword argument"
+                )
 
     def _select_model_type(self, caps: SolverCapabilities) -> ModelType | None:
         """3a §16.1: the first declared model type the service can compile.
@@ -340,6 +402,7 @@ class OptimizationService:
         problem: OptimizationProblem,
         *,
         on_progress: ProgressCallback | None = None,
+        cancel: CancelToken | None = None,
     ) -> SolveResult:
         """Solve ``problem`` and return a structured :class:`SolveResult`.
 
@@ -360,8 +423,34 @@ class OptimizationService:
         stage (compile, solve, validate) of each attempt starts, on this
         thread. An exception it raises is logged and ignored; it cannot
         change the result. Without it the behaviour is exactly as before.
+
+        ``solver.wall_clock_limit_seconds`` (batch 6 J) is measured from
+        entering this method, the same instant ``elapsed_ms`` starts from.
+        When it runs out the solve stops at its next checkpoint and returns
+        what it completed, with ``wall_clock_limit_reached`` and a
+        WALL_CLOCK_LIMIT_REACHED warning.
+
+        ``cancel``, when given, is polled at the same checkpoints; once it
+        is cancelled the solve stops and raises
+        :class:`~annealbridge.exceptions.SolveCancelled` instead of
+        returning -- the one exception this method raises by design. Every
+        thread the solve started has returned and its concurrency slot has
+        been released by then. A request that fails before the attempts
+        begin (validation, an unavailable backend, a full server) returns
+        its result as usual. Without a limit and a token no interrupt
+        exists at all and the solve runs exactly as before.
         """
-        started = time.perf_counter()
+        started = self._clock()
+        limit = problem.solver.wall_clock_limit_seconds
+        interrupt = (
+            Interrupt(
+                deadline=None if limit is None else started + limit,
+                token=cancel,
+                clock=self._clock,
+            )
+            if limit is not None or cancel is not None
+            else None
+        )
         validation, _, _ = self._validate_against_backend(problem)
         if validation.errors:
             logger.info(
@@ -371,14 +460,16 @@ class OptimizationService:
             )
             result = self._failure("invalid_problem", None, None, validation.errors)
         else:
-            result = self._dispatch(problem, on_progress=on_progress)
+            result = self._dispatch(
+                problem, on_progress=on_progress, interrupt=interrupt
+            )
         # Every path is stamped the same way: the service's own wall clock
         # (independent of the vendor-reported ``metadata.timing_us``) and
         # the package version that produced the result.
         return result.model_copy(
             update={
                 "warnings": [*validation.warnings, *result.warnings],
-                "elapsed_ms": _elapsed_ms(started),
+                "elapsed_ms": round((self._clock() - started) * 1000.0, 3),
                 "annealbridge_version": package_version(),
             }
         )
@@ -388,6 +479,7 @@ class OptimizationService:
         problem: OptimizationProblem,
         *,
         on_progress: ProgressCallback | None = None,
+        interrupt: Interrupt | None = None,
     ) -> SolveResult:
         """§16.2 steps 2–6 for a validated problem: resolve the backend,
         gate it, take a concurrency slot and run the attempts."""
@@ -428,9 +520,15 @@ class OptimizationService:
             )
         try:
             return self._run_attempts(
-                problem, backend, direction, on_progress=on_progress
+                problem,
+                backend,
+                direction,
+                on_progress=on_progress,
+                interrupt=interrupt,
             )
         finally:
+            # Also on SolveCancelled: by then every thread the solve
+            # started has returned, so the slot is free for real.
             self._solve_slots.release()
 
     def _failure(
@@ -797,10 +895,18 @@ class OptimizationService:
                 [time_limit_error],
                 attempts=state.attempts,
             )
+        state.check_cancelled()
         state.emit(attempt, "solve", backend.name)
         solve_started = time.perf_counter()
-        raw = backend.solve(compiled, problem.solver)
+        # Batch 6 (J): the interrupt goes only to a backend that declared it
+        # can stop part-way (decided by the flag, never by the name); every
+        # other call is the plain two-argument one it always was.
+        if state.interrupt is not None and backend.capabilities.supports_interrupt:
+            raw = backend.solve(compiled, problem.solver, interrupt=state.interrupt)
+        else:
+            raw = backend.solve(compiled, problem.solver)
         solve_ms = _elapsed_ms(solve_started)
+        state.check_cancelled()
         # 3a §22: the service, not the backend, knows the model
         # type; never create metadata a local backend did not.
         if raw.metadata is not None:
@@ -815,9 +921,15 @@ class OptimizationService:
         # ever sees business variables in problem order.
         validate_started = time.perf_counter()
         decoded = compiler.decode(compiled, raw)
+        postprocess = plan.postprocess
+        if postprocess is not None and state.interrupt is not None:
+            postprocess = dataclasses.replace(
+                postprocess, should_stop=state.interrupt.should_stop
+            )
         processed = process_candidates(
-            problem, decoded, frozenset(), problem.solver.top_k, plan.postprocess
+            problem, decoded, frozenset(), problem.solver.top_k, postprocess
         )
+        state.check_cancelled()
         solutions = processed.solutions
         unique_samples = processed.unique_samples
         feasible_samples = processed.feasible_samples
@@ -842,6 +954,13 @@ class OptimizationService:
             validate_ms=validate_ms,
             postprocess=processed.postprocess,
             postprocess_ms=processed.postprocess_ms,
+            # Only a stop that left work undone: reads the backend skipped,
+            # or post-processing ended with starts or steps left.
+            wall_clock_limit_reached=raw.interrupted
+            or (
+                processed.postprocess is not None
+                and processed.postprocess.wall_clock_limit_reached
+            ),
         )
         state.attempts.append(current)
         logger.info(
@@ -888,6 +1007,7 @@ class OptimizationService:
         direction: str,
         *,
         on_progress: ProgressCallback | None = None,
+        interrupt: Interrupt | None = None,
     ) -> SolveResult:
         """3a §16.2 steps 7–19: the compile/solve/validate loop.
 
@@ -895,9 +1015,54 @@ class OptimizationService:
         whose last handler catches any ``Exception`` (2026-09-09 review
         F-03), so the ``solve`` docstring's promise — never raise, report
         ``solver_error`` — is kept by the service itself rather than
-        delegated to every backend's own wrapping.
+        delegated to every backend's own wrapping. The one exception let
+        through is :class:`SolveCancelled`, which the caller asked for.
+
+        Whatever the loop returns is stamped with the wall-clock facts in
+        one place (:meth:`_stamp_wall_clock`), so no status path can forget
+        them.
         """
-        state = _AttemptState(on_progress=on_progress)
+        state = _AttemptState(on_progress=on_progress, interrupt=interrupt)
+        result = self._attempt_loop(problem, backend, direction, state)
+        return self._stamp_wall_clock(result, state)
+
+    @staticmethod
+    def _stamp_wall_clock(result: SolveResult, state: _AttemptState) -> SolveResult:
+        """Mark a result the wall-clock limit cut short (batch 6 J).
+
+        ``wall_clock_limit_reached`` and one WALL_CLOCK_LIMIT_REACHED
+        warning, whatever the status; on success the message says so as
+        well (the infeasible message already does). A result nothing cut is
+        returned untouched.
+        """
+        if not state.wall_clock_limit_reached:
+            return result
+        cut = [
+            attempt.attempt
+            for attempt in state.attempts
+            if attempt.wall_clock_limit_reached
+        ]
+        update: dict[str, object] = {
+            "wall_clock_limit_reached": True,
+            "warnings": [
+                *result.warnings,
+                *_wall_clock_limit_warnings(cut, state.retry_skipped),
+            ],
+        }
+        if result.status == "success" and result.message is not None:
+            update["message"] = (
+                f"{result.message} The wall-clock limit cut the search short."
+            )
+        return result.model_copy(update=update)
+
+    def _attempt_loop(
+        self,
+        problem: OptimizationProblem,
+        backend: SolverBackend,
+        direction: str,
+        state: _AttemptState,
+    ) -> SolveResult:
+        """The body of :meth:`_run_attempts`."""
         # The current penalty, so the NonFiniteModelError handler can tell
         # the hard-penalty path from a penalty-free one; None until
         # ``_prepare_attempts`` has chosen it.
@@ -910,6 +1075,16 @@ class OptimizationService:
             max_attempts = plan.budget.max_attempts
             state.max_attempts = max_attempts
             for attempt in range(1, max_attempts + 1):
+                state.check_cancelled()
+                # Attempt 1 always starts (its backend decides how much it
+                # can do); a retry is not started once the limit is gone.
+                if (
+                    attempt > 1
+                    and state.interrupt is not None
+                    and state.interrupt.deadline_passed()
+                ):
+                    state.retry_skipped = True
+                    break
                 result = self._solve_attempt(
                     problem, backend, plan, direction, attempt, penalty, state
                 )
@@ -926,7 +1101,10 @@ class OptimizationService:
                 and state.raw.num_samples > 0
             )
             message, warnings = _infeasible_message(
-                proven, plan.budget.cut_reason, len(state.attempts)
+                proven,
+                plan.budget.cut_reason,
+                len(state.attempts),
+                wall_clock_limited=state.wall_clock_limit_reached,
             )
             return SolveResult(
                 status="infeasible",
@@ -945,6 +1123,10 @@ class OptimizationService:
                 metadata=state.last_metadata,
                 message=message,
             )
+        except SolveCancelled:
+            # Before every other handler: the ``Exception`` one below would
+            # otherwise turn a cancellation into a solver_error.
+            raise
         except NonFiniteModelError as exc:
             # F-07, second guard: the penalty itself was finite but the
             # compiled biases are not (penalty × coefficient² overflowed).

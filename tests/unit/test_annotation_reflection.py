@@ -250,6 +250,15 @@ MODEL_FIELD_CASES = [
     ),
     pytest.param(
         SolverPreferences,
+        "wall_clock_limit_seconds",
+        None,
+        True,
+        None,
+        True,
+        id="prefs.wall_clock_limit_seconds",
+    ),
+    pytest.param(
+        SolverPreferences,
         "simulated_bifurcation",
         SimulatedBifurcationOptions,
         False,

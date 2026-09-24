@@ -6,6 +6,7 @@ import dimod
 from dwave.samplers import TabuSampler
 
 from annealbridge.exceptions import SolverExecutionError
+from annealbridge.interrupt import Interrupt
 from annealbridge.models import (
     CompiledProblem,
     SolverExecutionMetadata,
@@ -17,6 +18,7 @@ from annealbridge.solvers.base import (
     ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
+    empty_result,
     log_solved,
     result_from_sampleset,
 )
@@ -27,6 +29,7 @@ from annealbridge.solvers.base import (
 from annealbridge.solvers.sharding import (
     default_workers,
     run_shards,
+    run_shards_interruptible,
     shard_seeds,
     shard_sizes,
 )
@@ -96,6 +99,11 @@ _CAPABILITIES = SolverCapabilities(
     # ``_sample_sharded`` stays as the last line for a direct caller.
     seed_min=0,
     seed_max=_SEED_LIMIT - 1,
+    # Stops between shards only: ``TabuSampler`` has no interrupt callback
+    # (its ``timeout`` is a per-read wall clock that would make every
+    # result machine-dependent), so a shard that has started runs to its
+    # end. docs/backends.md states the resulting overrun.
+    supports_interrupt=True,
     # Measured on dense ±1 SK instances (docs/backends.md): the same energy
     # as the annealer in about a third of the time at 1000 variables. No
     # weakness was observed on the shipped hard-constrained examples (their
@@ -167,11 +175,25 @@ class TabuBackend(BackendAliases):
         self,
         compiled_problem: CompiledProblem,
         preferences: SolverPreferences,
+        *,
+        interrupt: Interrupt | None = None,
     ) -> RawSolverResult:
-        """Run tabu search, returning all reads as samples."""
+        """Run tabu search, returning all reads as samples.
+
+        With an ``interrupt`` a shard not yet started when it says stop is
+        skipped; a started shard -- the whole request when it is one shard
+        -- runs to its end, because the sampler cannot be stopped part-way
+        (see ``SolverBackend.solve``). Without one the sampler calls are
+        exactly the uninterruptible ones.
+        """
         sizes = shard_sizes(preferences.num_reads)
+        interrupted = False
         try:
-            if len(sizes) <= 1:
+            if interrupt is not None:
+                sampleset, interrupted = self._sample_interruptible(
+                    compiled_problem.model, sizes, preferences, interrupt
+                )
+            elif len(sizes) <= 1:
                 # One shard (or an invalid count): the plain call, seed
                 # untouched, so the sampler's own validation reaches the
                 # caller exactly as the vendor wrote it.
@@ -187,19 +209,25 @@ class TabuBackend(BackendAliases):
         except Exception as exc:
             raise SolverExecutionError(f"Tabu search solver failed: {exc}") from exc
 
-        result = result_from_sampleset(
-            sampleset,
+        # A local run leaves no vendor facts behind: no solver id, no
+        # timing, no quota. Reported are the backend, that it ran here,
+        # and the read count asked of the sampler — the shard layout is
+        # an implementation detail and is not part of the output.
+        metadata = SolverExecutionMetadata(
             backend=self.name,
-            # A local run leaves no vendor facts behind: no solver id, no
-            # timing, no quota. Reported are the backend, that it ran here,
-            # and the read count asked of the sampler — the shard layout is
-            # an implementation detail and is not part of the output.
-            metadata=SolverExecutionMetadata(
-                backend=self.name,
-                remote=False,
-                num_reads_requested=preferences.num_reads,
-            ),
+            remote=False,
+            num_reads_requested=preferences.num_reads,
         )
+        if sampleset is None:
+            result = empty_result(
+                compiled_problem.model, backend=self.name, metadata=metadata
+            )
+        else:
+            result = result_from_sampleset(
+                sampleset, backend=self.name, metadata=metadata
+            )
+            result.interrupted = interrupted
+        extra = {"interrupted": True} if result.interrupted else {}
         log_solved(
             logger,
             self.name,
@@ -210,6 +238,7 @@ class TabuBackend(BackendAliases):
             seed=preferences.seed,
             shards=max(1, len(sizes)),
             workers=min(self._workers, max(1, len(sizes))),
+            **extra,
         )
         return result
 
@@ -249,6 +278,43 @@ class TabuBackend(BackendAliases):
         seed: int | None,
     ) -> dimod.SampleSet:
         """Sample every shard, ``workers`` at a time, and concatenate in order."""
+        seeds = self._shard_seeds(seed, len(sizes))
+        return run_shards(
+            lambda shard: self._sample(model, sizes[shard], seeds[shard]),
+            len(sizes),
+            self._workers,
+        )
+
+    def _sample_interruptible(
+        self,
+        model: dimod.BinaryQuadraticModel,
+        sizes: list[int],
+        preferences: SolverPreferences,
+        interrupt: Interrupt,
+    ) -> tuple[dimod.SampleSet | None, bool]:
+        """The sampling above with a check before each shard; returns the
+        shards that ran (None when none did) and whether any was skipped.
+
+        The layout -- one plain call for one shard, derived seeds for
+        several -- is exactly the uninterruptible one, so a run the
+        interrupt never stops returns the same reads.
+        """
+        if len(sizes) <= 1:
+            if interrupt.should_stop():
+                return None, True
+            return self._sample(model, preferences.num_reads, preferences.seed), False
+        seeds = self._shard_seeds(preferences.seed, len(sizes))
+        return run_shards_interruptible(
+            lambda shard: self._sample(model, sizes[shard], seeds[shard]),
+            len(sizes),
+            self._workers,
+            interrupt.should_stop,
+        )
+
+    @staticmethod
+    def _shard_seeds(seed: int | None, count: int) -> list[int | None]:
+        """Per-shard seeds, the user's seed checked against the sampler's
+        rule first."""
         if seed is not None and not 0 <= seed < _SEED_LIMIT:
             # The sampler's own rule (see ``_SEED_LIMIT``), checked before
             # derivation: masked shard seeds are always in range, so without
@@ -257,9 +323,4 @@ class TabuBackend(BackendAliases):
             # the same: this is the vendor's own message, so a caller cannot
             # tell from the error which path ran.
             raise ValueError("Seed must be between 0 and 2**32 - 1")
-        seeds = shard_seeds(seed, len(sizes))
-        return run_shards(
-            lambda shard: self._sample(model, sizes[shard], seeds[shard]),
-            len(sizes),
-            self._workers,
-        )
+        return shard_seeds(seed, count)

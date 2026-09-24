@@ -272,6 +272,11 @@ constraints. Nothing else. AnnealBridge then, deterministically:
 An opt-in `solver.postprocess` step can also repair and locally improve the
 best samples in the original variables before ranking; what it produces is
 re-validated like any other candidate and marked by each solution's `source`.
+An optional `solver.wall_clock_limit_seconds` caps how long a solve on a local
+heuristic backend may take: when it runs out, the result holds what was
+completed, still re-validated and ranked, and says so
+(`wall_clock_limit_reached`). An MCP client that cancels a solve stops it
+rather than leaving it to run on.
 
 The agent never writes a QUBO matrix, a penalty weight, a slack variable or
 an integer encoding, and every step is testable without an AI, a network or a

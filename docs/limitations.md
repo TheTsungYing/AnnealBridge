@@ -57,6 +57,14 @@ variables.
   of them only means "not found under this configuration"
   (`infeasibility_proven: false`). `tabu` also takes no `num_sweeps` and no
   time limit: the only dial on its search effort is `num_reads`.
+- **Stopping early is coarse on some backends.** `solver.wall_clock_limit_seconds`
+  and cancellation are only supported by the three local heuristics, and a
+  `tabu` shard of 25 reads cannot be stopped once it has started — seconds on
+  a large problem. `exact` and the remote backends refuse a wall-clock limit,
+  and a cancellation waits for their running call; a remote job already
+  submitted is not cancelled on the vendor side and still consumes quota.
+  Ctrl+C in the CLI does not stop a running shard early. See
+  [Backends](backends.md#wall-clock-limits-and-cancellation).
 - **`simulated_bifurcation` is weak on small penalty-dominated problems**, the
   shape most of the shipped examples have: it finds their optimum in only 1 to
   5 % of its reads, so it needs a large `num_reads` where the annealer does

@@ -16,6 +16,7 @@ import pytest
 from annealbridge.solvers import sharding
 from annealbridge.solvers.sharding import (
     READS_PER_SHARD,
+    SHARD_THREAD_PREFIX,
     run_shards,
     shard_seeds,
     shard_sizes,
@@ -38,10 +39,18 @@ def _shard_sampleset(shard: int, rows: int = 1) -> dimod.SampleSet:
 class _RecordingExecutor(ThreadPoolExecutor):
     """A real pool that records its size and every ``shutdown`` call."""
 
-    def __init__(self, record: dict, max_workers: int | None = None) -> None:
+    def __init__(
+        self,
+        record: dict,
+        max_workers: int | None = None,
+        thread_name_prefix: str = "",
+    ) -> None:
         self.record = record
         record["max_workers"] = max_workers
-        super().__init__(max_workers=max_workers)
+        record["thread_name_prefix"] = thread_name_prefix
+        super().__init__(
+            max_workers=max_workers, thread_name_prefix=thread_name_prefix
+        )
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
         self.record.setdefault("shutdown", []).append((wait, cancel_futures))
@@ -55,7 +64,9 @@ def executor_record(monkeypatch):
     monkeypatch.setattr(
         sharding,
         "ThreadPoolExecutor",
-        lambda max_workers: _RecordingExecutor(record, max_workers),
+        lambda max_workers, thread_name_prefix="": _RecordingExecutor(
+            record, max_workers, thread_name_prefix
+        ),
     )
     return record
 
@@ -179,13 +190,34 @@ class TestRunShards:
         assert type(exc_info.value) is RuntimeError
         assert str(exc_info.value) == "shard exploded"
         # And the pool is gone before the exception leaves: shut down without
-        # waiting for the shards that are still queued.
+        # waiting for the shards that are still queued. Batch 6 (J): only
+        # run_shards_interruptible waits for running shards on a failure;
+        # this uninterruptible path keeps raising at once.
         assert executor_record["shutdown"] == [(False, True)]
 
     def test_a_successful_run_shuts_the_pool_down(self, executor_record):
         run_shards(_shard_sampleset, count=4, workers=2)
 
         assert executor_record["shutdown"] == [(True, False)]
+
+    def test_the_pool_threads_carry_the_shard_prefix(self, executor_record):
+        # Batch 6 (J): named so a test (or a thread dump) can count the
+        # shard threads apart from everything else in the process.
+        names: list[str] = []
+        lock = threading.Lock()
+
+        def run(shard: int) -> dimod.SampleSet:
+            with lock:
+                names.append(threading.current_thread().name)
+            return _shard_sampleset(shard)
+
+        run_shards(run, count=4, workers=2)
+
+        assert executor_record["thread_name_prefix"] == SHARD_THREAD_PREFIX
+        assert SHARD_THREAD_PREFIX == "annealbridge-shard"
+        assert names and all(
+            name.startswith(SHARD_THREAD_PREFIX) for name in names
+        )
 
     @pytest.mark.parametrize(
         ("count", "workers", "expected"),

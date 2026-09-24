@@ -38,12 +38,14 @@ three units above the optimum). Hence ``mode`` is a solver option.
 import importlib
 import importlib.util
 import logging
+from collections.abc import Callable
 from typing import Any, Literal
 
 import dimod
 import numpy as np
 
 from annealbridge.exceptions import SolverExecutionError
+from annealbridge.interrupt import Interrupt
 from annealbridge.models import (
     CompiledProblem,
     SolverExecutionMetadata,
@@ -125,6 +127,9 @@ _CAPABILITIES = SolverCapabilities(
     returns_multiple_samples=True,
     seed_min=0,
     seed_max=_SEED_LIMIT - 1,
+    # Checked before every batch and after every integration step; a batch
+    # cut mid-schedule is dropped, never returned half-annealed.
+    supports_interrupt=True,
     # Both measured (module docstring, docs/backends.md): the fastest of the
     # local heuristics to the same energy on a dense 1000-variable SK, and
     # the lowest hit rate per read on the shipped hard-constrained examples,
@@ -254,8 +259,19 @@ class SimulatedBifurcationBackend(BackendAliases):
         self,
         compiled_problem: CompiledProblem,
         preferences: SolverPreferences,
+        *,
+        interrupt: Interrupt | None = None,
     ) -> RawSolverResult:
-        """Run the dynamics, returning every read as a sample."""
+        """Run the dynamics, returning every read as a sample.
+
+        With an ``interrupt`` the run is checked before every batch and
+        after every step; once it says stop, the batch in flight is dropped
+        -- its reads have not finished the pump schedule, so they are not
+        SB samples -- and only the batches that ran to the end are returned,
+        possibly none (see ``SolverBackend.solve``). The checks read no
+        random numbers, so a run the interrupt never stops returns exactly
+        what it returns without one.
+        """
         num_variables = compiled_problem.num_variables
         if num_variables > self._max_variables:
             # The service refuses this before compiling, from the declared
@@ -280,7 +296,7 @@ class SimulatedBifurcationBackend(BackendAliases):
 
         try:
             variables, field, couplings, gain = _dense_ising(compiled_problem.model)
-            samples, batches = self._sample(
+            samples, batches, interrupted = self._sample(
                 couplings,
                 field,
                 gain,
@@ -288,12 +304,18 @@ class SimulatedBifurcationBackend(BackendAliases):
                 steps=preferences.num_sweeps,
                 seed=seed,
                 discrete=(mode == "discrete"),
+                should_stop=interrupt.should_stop if interrupt is not None else None,
             )
             # Re-scored by the original binary model in float64, offset
-            # included: the dynamics' own energy is never reported.
-            energies = np.asarray(
-                compiled_problem.model.energies((samples, variables)),
-                dtype=np.float64,
+            # included: the dynamics' own energy is never reported. An
+            # interrupt that left no completed read leaves nothing to score.
+            energies = (
+                np.asarray(
+                    compiled_problem.model.energies((samples, variables)),
+                    dtype=np.float64,
+                )
+                if len(samples)
+                else np.empty(0, dtype=np.float64)
             )
         except Exception as exc:
             raise SolverExecutionError(f"{_FAILED}: {exc}") from exc
@@ -312,7 +334,9 @@ class SimulatedBifurcationBackend(BackendAliases):
                 remote=False,
                 num_reads_requested=preferences.num_reads,
             ),
+            interrupted=interrupted,
         )
+        extra = {"interrupted": True} if interrupted else {}
         log_solved(
             logger,
             self.name,
@@ -325,6 +349,7 @@ class SimulatedBifurcationBackend(BackendAliases):
             mode=mode,
             device=self._device,
             batches=batches,
+            **extra,
         )
         return result
 
@@ -338,9 +363,15 @@ class SimulatedBifurcationBackend(BackendAliases):
         steps: int,
         seed: int | None,
         discrete: bool,
-    ) -> tuple[np.ndarray, int]:
+        should_stop: Callable[[], bool] | None = None,
+    ) -> tuple[np.ndarray, int, bool]:
         """Run every batch of reads in order; return the binary samples
-        (``num_reads x N``, int8) and the number of batches run."""
+        (``num_reads x N``, int8), the number of batches run and whether
+        ``should_stop`` cut the run short.
+
+        When it does, the rows are only the batches completed before it --
+        a prefix of the uninterrupted rows, because every batch's initial
+        state depends on the seed and on its position alone."""
         n = couplings.shape[0]
         rng = np.random.default_rng(np.random.SeedSequence(seed))
         sizes = _batch_sizes(num_reads)
@@ -351,11 +382,18 @@ class SimulatedBifurcationBackend(BackendAliases):
         # it batch by batch avoids a second copy at the end.
         samples = np.zeros((max(num_reads, 0), n), dtype=np.int8)
         start = 0
+        completed = 0
         for size in sizes:
+            if should_stop is not None and should_stop():
+                return samples[:start].copy(), completed, True
             x0, y0 = _initial_states(rng, n, size)
-            x = _run(
-                xp, j_dev, h_dev, to_device(x0), to_device(y0), steps, gain, discrete
-            )
+            dynamics = (xp, j_dev, h_dev, to_device(x0), to_device(y0), steps, gain, discrete)
+            # Without a stop condition the call is the one it always was.
+            x = _run(*dynamics) if should_stop is None else _run(*dynamics, should_stop)
+            if x is None:
+                # Stopped mid-schedule: this batch is dropped, the ones
+                # before it are complete.
+                return samples[:start].copy(), completed, True
             if not bool(xp.isfinite(x).all()):
                 # Cannot happen for a finite model after the rescaling
                 # above; if it ever does, ``sign(nan)`` would otherwise turn
@@ -368,7 +406,8 @@ class SimulatedBifurcationBackend(BackendAliases):
             # +1 spin is binary 1: ``(s + 1) / 2`` in one comparison.
             samples[start : start + size] = to_host(x >= 0).T
             start += size
-        return samples, len(sizes)
+            completed += 1
+        return samples, len(sizes), False
 
     def _runtime(self) -> tuple[Any, Any, Any]:
         """The array module the dynamics run on, plus the two edge
@@ -496,6 +535,7 @@ def _run(
     steps: int,
     c0: float,
     discrete: bool,
+    should_stop: Callable[[], bool] | None = None,
 ) -> Any:
     """The SB dynamics, in place on ``x`` / ``y`` (``N x reads``).
 
@@ -510,9 +550,17 @@ def _run(
         x clipped to [-1, 1]; where it hit the wall, y is reset to 0
 
     (the symplectic Euler scheme of Goto et al. 2021, their eqs. 3-4 with
-    the wall condition). Returns ``x``.
+    the wall condition). Returns ``x``, or None when ``should_stop`` said
+    stop after a step, before the schedule ended.
+
+    On the torch path the boolean-mask indexing below makes every step wait
+    for the device, so at most the current step's kernels are still queued
+    when a stop is seen; nothing keeps running on the GPU afterwards beyond
+    that.
     """
     for step in range(steps):
+        if should_stop is not None and step and should_stop():
+            return None
         pump = _A0 * step / steps
         z = xp.sign(x) if discrete else x
         y += ((-(_A0 - pump)) * x + c0 * (xp.matmul(couplings, z) - field)) * _DT

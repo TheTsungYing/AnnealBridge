@@ -555,7 +555,10 @@ class TestSeedOutsideTheBackendRange:
     def test_solve_is_refused_before_the_backend_runs(self, monkeypatch, seed):
         calls: list[int | None] = []
 
-        def spy(self, compiled_problem, preferences):
+        # Keyword-only ``interrupt`` like the real one: the service checks,
+        # when it is built, that a backend declaring supports_interrupt
+        # takes it.
+        def spy(self, compiled_problem, preferences, *, interrupt=None):
             calls.append(preferences.seed)
             raise AssertionError("SimulatedAnnealingBackend.solve must not be called")
 

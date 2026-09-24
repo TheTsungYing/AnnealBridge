@@ -74,6 +74,11 @@ EXPECTED_CODES = [
     "POSTPROCESS_LIMIT",
     "POSTPROCESS_LIMIT_REACHED",
     "PENALTY_OVERFLOW",
+    # Batch 6 (J), time-limit spec 2026-09-24: a wall-clock limit on a
+    # backend that cannot stop part-way (refusal), and the warning on a
+    # result the limit cut short.
+    "WALL_CLOCK_LIMIT_UNSUPPORTED",
+    "WALL_CLOCK_LIMIT_REACHED",
     # Roadmap batch 5: schema errors, a document that does not fit the
     # problem schema (interfaces/problem_input.py).
     "UNKNOWN_FIELD",
@@ -112,7 +117,7 @@ class TestRecommendedActions:
         assert set(RECOMMENDED_ACTIONS) == set(EXPECTED_CODES)
 
     def test_expected_codes_are_unique(self):
-        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 53
+        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 55
 
 
 class TestRetryableCodes:
@@ -148,6 +153,8 @@ EXPECTED_VALIDATOR_CODES = {
     "INTEGER_REQUIRES_VERSION_1_1",
     # 2026-09-09 review (F-24).
     "INEQUALITY_MAGNITUDE_TOO_LARGE",
+    # Batch 6 (J): backend-dependent, raised by validate_problem_full.
+    "WALL_CLOCK_LIMIT_UNSUPPORTED",
 }
 
 

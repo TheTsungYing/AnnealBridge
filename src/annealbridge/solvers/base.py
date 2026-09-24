@@ -100,6 +100,10 @@ class RawSolverResult(BaseModel):
     energies: np.ndarray
     backend: str
     metadata: SolverExecutionMetadata | None = None
+    # Batch 6 (J): True when the backend stopped at an ``Interrupt`` with
+    # work left -- a shard or batch skipped, a sampler call cut before all
+    # its reads. The rows are then only the reads that ran to completion.
+    interrupted: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -237,7 +241,31 @@ class SolverBackend(Protocol):
         self,
         compiled_problem: CompiledProblem,
         preferences: SolverPreferences,
-    ) -> RawSolverResult: ...
+    ) -> RawSolverResult:
+        """Solve the compiled problem and return every read.
+
+        A backend whose capabilities declare ``supports_interrupt`` also
+        takes a keyword-only ``interrupt`` (an
+        :class:`~annealbridge.interrupt.Interrupt` or None) and the service
+        checks that signature when it is built. The service passes it only
+        to such a backend, and only when the solve has a wall-clock limit or
+        a cancel token; every other call is exactly the two-argument one
+        above, so a backend without the capability never sees it. The
+        contract for a backend that takes it:
+
+        - poll ``interrupt.should_stop()`` at the backend's own checkpoints
+          (between shards, reads, batches or steps); it never raises;
+        - when it says stop, do not raise: return the reads that ran to
+          completion -- possibly none, see :func:`empty_result` -- with
+          ``RawSolverResult.interrupted=True``, and never a read whose
+          schedule was cut short;
+        - with ``should_stop()`` never true, return exactly what the call
+          without ``interrupt`` returns, so a limit that does not fire
+          changes nothing;
+        - on both the normal and the interrupted path, every thread the
+          backend started has returned before ``solve`` does.
+        """
+        ...
 
 
 class BackendAliases:
@@ -332,6 +360,30 @@ def result_from_sampleset(
         energies=energies,
         backend=backend,
         metadata=metadata,
+    )
+
+
+def empty_result(
+    model: dimod.BinaryQuadraticModel,
+    *,
+    backend: str,
+    metadata: SolverExecutionMetadata | None,
+) -> RawSolverResult:
+    """A zero-read, interrupted :class:`RawSolverResult` for ``model``.
+
+    What a backend returns when an interrupt stopped it before any read
+    completed. Built directly -- the model's own variable order, an empty
+    ``int8`` matrix -- because ``dimod.concatenate([])`` raises, and an
+    empty SampleSet built from an empty list is float-typed.
+    """
+    variables = [str(variable) for variable in model.variables]
+    return RawSolverResult(
+        variables=variables,
+        samples=np.empty((0, len(variables)), dtype=np.int8),
+        energies=np.empty(0, dtype=np.float64),
+        backend=backend,
+        metadata=metadata,
+        interrupted=True,
     )
 
 
