@@ -117,7 +117,10 @@ Optimality proven: yes
 run to run; `Optimality proven` is `yes` only on an exhaustive backend.
 
 A `version: "1.1"` problem with bounded integer variables reads the same way;
-integers come back as plain `int` values inside their declared bounds:
+integers come back as plain `int` values inside their declared bounds (a
+`version: "1.2"` problem with cardinality constraints, such as
+`examples/exam_timetabling.json`, reads the same way too, each cardinality
+constraint counted among the hard or soft constraints):
 
 ```console
 $ annealbridge solve examples/integer_knapsack.json --backend exact
@@ -220,7 +223,8 @@ Objective scale: 31
 
 The estimate follows the model type the chosen backend compiles to, so the
 same problem can report different sizes on different backends. On a bqm
-backend it counts the slack bits of every inequality plus the binary-encoding
+backend it counts the slack bits of every inequality (a declared hard
+at-most-one cardinality constraint has none) plus the binary-encoding
 bits of every integer variable — which is why the bounded-integer knapsack
 compiles to 15 variables rather than its 4 business variables:
 
@@ -367,10 +371,11 @@ the schema on its own. Abridged:
 ```console
 $ annealbridge capabilities --json
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "schema_versions": [
     "1.0",
-    "1.1"
+    "1.1",
+    "1.2"
   ],
   "supported_variable_types": [
     "binary",
@@ -435,6 +440,7 @@ integer_knapsack  bounded integer knapsack with a soft constraint
 assignment        assignment (workers to tasks)
 tsp               travelling salesman over four cities
 shift_scheduling  shift scheduling (people to shifts)
+exam_timetabling  exam timetabling with cardinality constraints
 ```
 
 With a name it prints that example's JSON to stdout exactly as the file holds
@@ -449,7 +455,7 @@ An unknown name lists the available ones on stderr and exits `2`:
 
 ```console
 $ annealbridge example nope
-Error: unknown example 'nope'. Available: knapsack, integer_knapsack, assignment, tsp, shift_scheduling
+Error: unknown example 'nope'. Available: knapsack, integer_knapsack, assignment, tsp, shift_scheduling, exam_timetabling
 ```
 
 The files are package data (`annealbridge/interfaces/examples/`), so the

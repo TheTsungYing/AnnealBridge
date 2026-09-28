@@ -10,8 +10,8 @@ you can look it up in [Error reference](errors.md).
 
 - Only **binary** (`0/1`) and **bounded integer** variables are supported. Real
   variables and unbounded integers are not.
-- An integer variable requires `"version": "1.1"` at the top of the problem and
-  **both** bounds, each within `±(2³¹ − 1)`.
+- An integer variable requires `"version": "1.1"` or later at the top of the
+  problem and **both** bounds, each within `±(2³¹ − 1)`.
 - On a BQM backend an integer costs
   `(upper_bound − lower_bound).bit_length()` encoding bits. A variable that
   needs more than 10 bits raises the `LARGE_INTEGER_RANGE` warning, and a
@@ -42,6 +42,18 @@ variables.
 - The **CQM path keeps the same integer-coefficient requirement** even though
   it uses no slack variables at all. This is deliberately conservative, so both
   compilation paths accept exactly the same set of problems.
+- **Cardinality constraints** (version `1.2`) count **binary** variables only,
+  each listed once (`CARDINALITY_VARIABLE_NOT_BINARY`,
+  `DUPLICATE_CARDINALITY_VARIABLE`); a weighted count or a sum over integer
+  variables stays a linear constraint. Only a **hard at-most-one** gets the
+  slack-free pairwise encoding: a soft one, an at-most-*k* with *k* ≥ 2 and
+  an at-least-*k* keep the slack bits of the equivalent linear constraint (a
+  quadratic model cannot express at-most-*k* without them, and a pairwise soft
+  cost would under-charge the violation). A linear `<= 1` in `constraints` is
+  never switched to the pairwise encoding automatically — that would change how
+  a `1.0` document compiles — it only gets the `CARDINALITY_FORM_AVAILABLE`
+  hint. On the CQM path a one-hot group is a plain linear equality: it is not
+  marked as a discrete group for the solver.
 
 ## Soft constraints
 
@@ -73,6 +85,15 @@ variables.
   `ANNEALBRIDGE_SB_MAX_VARIABLES` (`SB_VARIABLE_LIMIT`) rather than by time,
   and its answer is reproducible on one machine but may differ across CPUs or
   BLAS builds — see [Backends](backends.md#simulated_bifurcation).
+- **`simulated_bifurcation` can collapse on packing problems with at-most-one
+  groups.** With the pairwise encoding of hard cardinality at-most-ones, its
+  samples on a weighted set-packing problem (maximize) fell to nearly all
+  zeros, and the cause is not known; on other problems the same encoding
+  helped it. An all-zero assignment satisfies every at-most-one, so the
+  result is feasible but poor, never wrong. For such problems use
+  `simulated_annealing` or `tabu`, or turn on `solver.postprocess:
+  "repair_local_search"`; see
+  [Problem format](problem-format.md#simulated_bifurcation-and-at-most-one-groups).
 - **`exact`** is a testing and debugging backend, and a ground-truth benchmark
   for the annealer. The state space doubles with every variable, so it is
   limited to small problems.
@@ -82,6 +103,26 @@ variables.
   `EMBEDDING_FAILED`.
 
 Per-backend detail lives in [Backends](backends.md).
+
+## Model size
+
+- **No interaction ceiling for binary problems.** A constraint over *n*
+  variables — linear or cardinality, hard or soft — couples all of them
+  pairwise in the BQM: `n(n−1)/2` quadratic interactions, which for a hard
+  cardinality at-most-one are exactly its penalty pairs. The
+  `INTEGER_QUADRATIC_BLOWUP` warning only fires for a problem with integer
+  variables, so an all-binary problem with a large dense group raises no size
+  warning and meets no interaction limit of its own; only the variable limits
+  of `exact` and `simulated_bifurcation` and the vendors' own limits apply.
+  `annealbridge validate` reports the compiled variable count, not the
+  interaction count.
+- **Backend recommendation enumerates coupled pairs.** To decide whether a
+  backend's declared strength on large dense models applies, `recommend`
+  lists every pair of variables a constraint couples — `O(n²)` time and
+  memory for a constraint over *n* variables — once the problem is large
+  enough and has no effective hard constraint. A single soft constraint over
+  tens of thousands of variables makes `recommend` itself slow; `validate`
+  and `solve` do not run this step.
 
 ## Fujitsu Digital Annealer
 

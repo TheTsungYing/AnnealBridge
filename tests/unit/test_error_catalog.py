@@ -84,6 +84,11 @@ EXPECTED_CODES = [
     "UNKNOWN_FIELD",
     "MISSING_FIELD",
     "INVALID_FIELD_VALUE",
+    # Schema 1.2 spec 2026-09-25 §11.1: the feature version gate and the
+    # two cardinality-specific structural errors.
+    "FEATURE_REQUIRES_NEWER_VERSION",
+    "CARDINALITY_VARIABLE_NOT_BINARY",
+    "DUPLICATE_CARDINALITY_VARIABLE",
 ]
 
 # Codes whose guidance quotes an IR *contract constant* verbatim, as 3b spec
@@ -117,7 +122,7 @@ class TestRecommendedActions:
         assert set(RECOMMENDED_ACTIONS) == set(EXPECTED_CODES)
 
     def test_expected_codes_are_unique(self):
-        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 55
+        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 58
 
 
 class TestRetryableCodes:
@@ -155,6 +160,10 @@ EXPECTED_VALIDATOR_CODES = {
     "INEQUALITY_MAGNITUDE_TOO_LARGE",
     # Batch 6 (J): backend-dependent, raised by validate_problem_full.
     "WALL_CLOCK_LIMIT_UNSUPPORTED",
+    # Schema 1.2 spec 2026-09-25 §11.1.
+    "FEATURE_REQUIRES_NEWER_VERSION",
+    "CARDINALITY_VARIABLE_NOT_BINARY",
+    "DUPLICATE_CARDINALITY_VARIABLE",
 }
 
 
@@ -374,6 +383,22 @@ class TestEmittedWarningCodesAreCatalogued:
         assert set(emitted) == set(_WARNING_RECOMMENDED_ACTIONS)
         for code, text in _WARNING_RECOMMENDED_ACTIONS.items():
             assert isinstance(text, str) and text.strip(), code
+
+    def test_cardinality_form_warning_is_emitted_with_guidance(self):
+        """Schema 1.2 spec §11.2: the one new warning code of schema 1.2."""
+        from annealbridge.validation.problem_validator import (
+            _WARNING_RECOMMENDED_ACTIONS,
+        )
+
+        emitted = literal_warning_codes()
+        assert "CARDINALITY_FORM_AVAILABLE" in emitted
+        assert all(
+            site.startswith("validation/problem_validator.py")
+            for site in emitted["CARDINALITY_FORM_AVAILABLE"]
+        )
+        text = _WARNING_RECOMMENDED_ACTIONS["CARDINALITY_FORM_AVAILABLE"]
+        assert "cardinality_constraints" in text
+        assert "rhs one" in text
 
     def test_service_warnings_reuse_the_error_catalog(self):
         """§20: warnings the *service* adds (UNKNOWN_BACKEND, ...) are catalog codes."""

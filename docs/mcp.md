@@ -3,7 +3,7 @@
 # MCP server
 
 This page covers the `annealbridge-mcp` server: how to install it, the four
-tools it exposes alongside its three prompts and six resources, how to
+tools it exposes alongside its three prompts and seven resources, how to
 configure Claude Desktop and other MCP hosts, the streamable-http transport,
 the MCP Inspector, and when an agent should call each tool.
 
@@ -188,8 +188,12 @@ problem is validated first and `get_optimization_capabilities` is for when the
 backend list with its limits or the full schema is actually needed, the schema
 only on request; a **choosing a backend** section; the rules a first document
 most often breaks
-(schema version `1.1` for integer variables, integer coefficients on
-inequalities, unknown fields being rejected); and one complete minimal problem,
+(schema version `1.1` or later for integer variables and `1.2` or later for
+cardinality constraints, `1.2` accepting everything `1.0` and `1.1` do; a
+counting rule — exactly, at most or at least *k* of a set of binary
+variables — written in `cardinality_constraints`, where a hard at-most-one
+needs no slack variable on a bqm backend; integer coefficients on
+inequalities; unknown fields being rejected); and one complete minimal problem,
 so an agent learns the document shape before its first call rather than from
 its first error. The field descriptions in `problem_json_schema` (returned when
 `get_optimization_capabilities` is called with `include_schema: true`) serve
@@ -256,11 +260,13 @@ Describes what this server accepts and which backends are usable right now.
   than the example in the server instructions shows. It performs no solving
   and no network requests.
 
-`schema_version` is the newest accepted version and `schema_versions` lists
-them all, newest last; `supported_variable_types` lists `binary` and
+`schema_version` is the newest accepted version (`"1.2"`) and
+`schema_versions` lists them all, newest last (`["1.0", "1.1", "1.2"]`), each a
+superset of the one before; `supported_variable_types` lists `binary` and
 `integer`. All three are derived from the pydantic model rather than
 hard-coded, as is the embedded JSON schema. Integer variables are only allowed
-when the problem carries `"version": "1.1"` at its top level.
+when the problem carries `"version": "1.1"` or later at its top level, and
+`cardinality_constraints` only with `"version": "1.2"` or later.
 
 Each `backends[].name` is the **registry key** — the value to put in
 `solver.backend`, and the one `ANNEALBRIDGE_ENABLED_BACKENDS` is matched
@@ -301,8 +307,13 @@ backend declares is an `INVALID_SOLVER_PREFERENCE` error, and a
 `supports_interrupt` is a `WALL_CLOCK_LIMIT_UNSUPPORTED` error. The size estimate
 follows the model type: on a bqm backend it counts the slack bits of every
 inequality plus the binary-encoding bits of
-every integer variable, so wider bounds cost more compiled variables; on a cqm
-backend integers are native and no encoding bits are counted.
+every integer variable, so wider bounds cost more compiled variables — a hard
+cardinality at-most-one has no slack bits, being a pairwise penalty; on a cqm
+backend integers are native and no encoding bits are counted. Errors and
+warnings about a cardinality constraint name their path under
+`cardinality_constraints`, and in a version `1.2` document a hard linear
+at-most-one gets the advisory `CARDINALITY_FORM_AVAILABLE` warning on a bqm
+backend (see [Problem format](problem-format.md#linear-at-most-one-constraints)).
 
 ### `recommend_backend`
 
@@ -405,8 +416,14 @@ Validates, compiles, solves, re-validates and ranks.
 Things worth knowing before calling it:
 
 - An integer variable needs `"type": "integer"` with both `lower_bound` and
-  `upper_bound`, and the problem must carry `"version": "1.1"`. Integer values
-  come back as `int`s inside their declared bounds.
+  `upper_bound`, and the problem must carry `"version": "1.1"` or later.
+  Integer values come back as `int`s inside their declared bounds.
+- A rule that exactly, at most or at least *k* of a set of binary variables
+  are chosen goes in `cardinality_constraints` (`variables`, `operator`,
+  `rhs`), which needs `"version": "1.2"` or later; a hard at-most-one there
+  compiles on a bqm backend without a slack variable. Each comes back in
+  `constraint_evaluations` under its own `id`, after the linear constraints,
+  with `actual_value` the number of its variables chosen.
 - Inequality constraints (`<=`, `>=`) require integer coefficients and
   right-hand sides. Soft constraint weights are in objective units and are not
   normalized.
@@ -494,11 +511,17 @@ smallest complete document of that shape, embedded in full. The guidance
 repeats what the [server instructions](#server-instructions) already say and
 adds no rule of its own; like them it names no configuration value and no
 limit. A test parses each embedded document, validates it against the schema
-and solves it on `exact`, so the example an agent copies is one that runs.
+and solves it on `exact` to its proven optimum, so the example an agent copies
+is one that runs. The `assign` and `schedule_shifts` documents are version
+`1.2` and write every rule as a cardinality constraint (with `"constraints":
+[]`), since each of their rules only counts chosen pairings; the
+`pick_subset` document stays version `1.0`, its weight limit being a weighted
+sum.
 
 Each shape also has fuller documents among the [resources](#resources):
 `pick_subset` the `knapsack` and `integer_knapsack` examples, `assign` the
-`assignment` example, and `schedule_shifts` the `shift_scheduling` example.
+`assignment` example, and `schedule_shifts` the `shift_scheduling` and
+`exam_timetabling` examples.
 
 A host that supports prompts — Claude Desktop, for one — lists them in its
 input menu. That makes them the one place a user sees what this server is for
@@ -515,11 +538,12 @@ then solves with the tools above.
 | `annealbridge://examples/assignment` | Three workers to three tasks: one binary per pair, a minimized cost objective, six hard `== 1` constraints |
 | `annealbridge://examples/tsp` | Travelling salesman over four cities: a quadratic objective over city/position pairs with hard `== 1` constraints |
 | `annealbridge://examples/shift_scheduling` | Three people onto four shifts: one binary per person/shift pair, a minimized dislike objective, hard `== 1` coverage per shift, hard `<= 2` shifts per person, a hard rest rule and one soft preference with a weight. Schema version `1.0` |
+| `annealbridge://examples/exam_timetabling` | Four exams into three slots, every rule a cardinality constraint: one binary per exam/slot pair, a minimized inconvenience objective, hard `== 1` per exam, hard `<= 1` per slot for exams that share students (no slack variable on a bqm backend) and one soft `<= 1` preference with a weight. Schema version `1.2` |
 | `annealbridge://schema` | The full `OptimizationProblem` JSON schema, a description on every field |
 
-All six are served as `application/json`.
+All seven are served as `application/json`.
 
-The five examples are the repository's [`examples/*.json`](../examples),
+The six examples are the repository's [`examples/*.json`](../examples),
 shipped inside the package as data files (`annealbridge/interfaces/examples/`)
 because the repository directory never reaches an installed wheel. They are
 the same files the CLI's [`annealbridge example`](cli.md#example) prints, so
@@ -672,7 +696,7 @@ Inspector:
 npx @modelcontextprotocol/inspector annealbridge-mcp
 ```
 
-Either way the Inspector lists the four tools, the three prompts and the six
+Either way the Inspector lists the four tools, the three prompts and the seven
 resources, shows the tools' generated input/output schemas, and lets you
 submit a problem JSON by hand, render a prompt and read a resource — the
 fastest way to see what an agent will see.

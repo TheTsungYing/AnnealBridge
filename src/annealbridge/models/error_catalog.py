@@ -262,6 +262,23 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "could be encoded wrongly; rescale the unit of the coefficients or "
         "the variables, or tighten the bounds."
     ),
+    # Schema 1.2 spec 2026-09-25 §11.1. The version a feature needs is named
+    # in the message only: this fixed guidance holds for every feature gate.
+    "FEATURE_REQUIRES_NEWER_VERSION": (
+        "Raise the problem's version to the one the message names, or to any "
+        "newer version listed in schema_versions; every newer version still "
+        "accepts the older syntax."
+    ),
+    "CARDINALITY_VARIABLE_NOT_BINARY": (
+        "A cardinality constraint counts chosen binary variables only; list "
+        "binary variables, or express a sum of integer variables as a linear "
+        "constraint in constraints."
+    ),
+    "DUPLICATE_CARDINALITY_VARIABLE": (
+        "Remove the repeated name; if the variable should count more than "
+        "once, write a linear constraint in constraints with that coefficient "
+        "instead."
+    ),
     # Schema errors: the document does not fit the problem schema, so it
     # never reaches the validator (interfaces/problem_input.py).
     "UNKNOWN_FIELD": (

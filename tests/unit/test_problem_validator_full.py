@@ -663,7 +663,7 @@ class TestSeedRange:
         assert result.errors == []
         assert seed_findings(result) == []
 
-    @pytest.mark.parametrize("version", ["1.0", "1.1"])
+    @pytest.mark.parametrize("version", ["1.0", "1.1", "1.2"])
     @pytest.mark.parametrize("seed", [-1, 2**40])
     def test_backend_without_seed_support_only_warns_seed_ignored(self, seed, version):
         # A backend that ignores the seed has nothing to range-check.

@@ -21,6 +21,7 @@ OPTIMA = {
     "assignment": 8.0,
     "tsp": 8.0,
     "shift_scheduling": 7.0,
+    "exam_timetabling": 6.0,
 }
 
 # shift_scheduling, worked by hand over all 81 ways to give each of the four
@@ -45,6 +46,29 @@ SHIFT_SCHEDULING_OPTIMUM = {
     "cal_mon_night": 1,
     "cal_tue_day": 0,
     "cal_tue_night": 0,
+}
+# exam_timetabling, checked by brute force over all 4096 assignments of its
+# twelve binaries through the solution validator: 12 of them are feasible.
+# Inconvenience (mon_am, mon_pm, tue_am): math 1 3 2; physics 2 1 3;
+# chemistry 3 2 1; biology 1 3 2. Math, physics and chemistry take three
+# different slots; biology avoids chemistry's slot.
+#   math mon_am, physics mon_pm, chemistry tue_am, biology mon_pm: 6    <-- optimum
+#   the same with biology mon_am: 4, but two exams on mon_am: soft 3 -> 7
+#   biology tue_am beside chemistry would score 5 (hard rule broken)
+# Every other feasible timetable scores at least 8, so the optimum is unique.
+EXAM_TIMETABLING_OPTIMUM = {
+    "math_mon_am": 1,
+    "math_mon_pm": 0,
+    "math_tue_am": 0,
+    "physics_mon_am": 0,
+    "physics_mon_pm": 1,
+    "physics_tue_am": 0,
+    "chemistry_mon_am": 0,
+    "chemistry_mon_pm": 0,
+    "chemistry_tue_am": 1,
+    "biology_mon_am": 0,
+    "biology_mon_pm": 1,
+    "biology_tue_am": 0,
 }
 # The exhaustive backend's variable limit, which the estimate (slack bits
 # included) must stay within.
@@ -112,3 +136,58 @@ class TestShiftScheduling:
         assert best.ranking_score == pytest.approx(7.0)
         # The unique optimum: the runner-up scores strictly worse.
         assert result.solutions[1].ranking_score > best.ranking_score
+
+
+class TestExamTimetabling:
+    def test_is_a_version_1_2_document_written_in_cardinality_constraints(self):
+        problem = _problem("exam_timetabling")
+
+        assert problem.version == "1.2"
+        assert problem.solver.backend == "exact"
+        assert len(problem.variables) == 12
+        assert {variable.type for variable in problem.variables} == {"binary"}
+        assert problem.constraints == []
+        shapes = [
+            (c.type, c.operator, c.rhs) for c in problem.cardinality_constraints
+        ]
+        assert shapes.count(("hard", "==", 1)) == 4
+        assert shapes.count(("hard", "<=", 1)) == 6
+        assert shapes.count(("soft", "<=", 1)) == 1
+
+    def test_compiled_estimate_counts_no_slack_for_the_hard_at_most_ones(self):
+        result = OptimizationService().validate(_problem("exam_timetabling"))
+
+        assert result.valid is True
+        assert result.warnings == []
+        # 12 binaries + 1 slack bit for the soft "<= 1" over four variables;
+        # the "== 1" constraints need none and each hard "<= 1" is a pairwise
+        # penalty with none either.
+        assert result.estimated_compiled_variables == 13
+        assert result.estimated_compiled_variables <= EXACT_MAX_VARIABLES
+
+    def test_optimum_is_proven_and_every_cardinality_constraint_is_reported(self):
+        problem = _problem("exam_timetabling")
+
+        result = OptimizationService().solve(problem)
+
+        assert result.status == "success"
+        assert result.optimality_proven is True
+        best = result.solutions[0]
+        assert best.variables == EXAM_TIMETABLING_OPTIMUM
+        assert best.objective_value == pytest.approx(6.0)
+        assert best.soft_violation_score == pytest.approx(0.0)
+        assert best.ranking_score == pytest.approx(6.0)
+        # The unique optimum: the runner-up (biology on mon_am) scores 7.
+        assert result.solutions[1].ranking_score > best.ranking_score
+        # One evaluation per cardinality constraint, in declaration order,
+        # its actual_value the number of chosen variables.
+        assert [e.constraint_id for e in best.constraint_evaluations] == [
+            c.id for c in problem.cardinality_constraints
+        ]
+        by_id = {e.constraint_id: e for e in best.constraint_evaluations}
+        assert by_id["math_once"].actual_value == pytest.approx(1.0)
+        assert by_id["math_physics_chemistry_apart_mon_pm"].actual_value == (
+            pytest.approx(1.0)
+        )
+        assert by_id["small_hall_mon_am"].actual_value == pytest.approx(1.0)
+        assert by_id["small_hall_mon_am"].satisfied is True

@@ -79,6 +79,8 @@ class TestExampleCommand:
         assert result.exit_code == 0
         lines = result.stdout.splitlines()
         assert [line.split()[0] for line in lines] == list(example_names())
+        # The schema 1.2 cardinality example is among them.
+        assert "exam_timetabling" in example_names()
         for line, entry in zip(lines, bundled_examples.EXAMPLES, strict=True):
             summary = line[len(entry.name) :].strip()
             assert summary
@@ -120,6 +122,10 @@ class TestCapabilitiesJson:
         assert payload["problem_json_schema"] is None
         # Round-trips through the model the MCP tool returns.
         OptimizationCapabilities.model_validate(payload)
+        # The accepted schema versions, newest last (schema 1.2 added
+        # cardinality_constraints).
+        assert payload["schema_version"] == "1.2"
+        assert payload["schema_versions"] == ["1.0", "1.1", "1.2"]
         assert [backend["name"] for backend in payload["backends"]] == [
             "exact",
             "simulated_annealing",

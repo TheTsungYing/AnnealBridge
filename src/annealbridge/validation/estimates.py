@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from annealbridge.models import (
     Constraint,
     LinearTerm,
+    LoweredCardinalityConstraint,
     ModelType,
     Objective,
     OptimizationProblem,
@@ -306,7 +307,7 @@ def compute_penalty_scale(problem: OptimizationProblem) -> float:
     """
     bounds = variable_bounds(problem)
     soft_bound = sum(
-        compute_soft_energy_bound(constraint, bounds) for constraint in problem.constraints
+        compute_soft_energy_bound(constraint, bounds) for constraint in problem.all_constraints()
     )
     return compute_objective_scale(problem.objective, bounds) + soft_bound
 
@@ -394,6 +395,34 @@ def analyze_inequality(
     )
 
 
+def uses_pairwise_penalty(constraint: Constraint) -> bool:
+    """Whether the BQM path encodes ``constraint`` as a pairwise penalty.
+
+    True for a *declared* hard at-most-one only: a lowered cardinality
+    constraint (schema 1.2, ``OptimizationProblem.cardinality_constraints``)
+    with ``"<=" 1`` over two or more variables, which the validator has
+    already made distinct and binary. Its penalty is
+    ``λ·Σ_{i<j} x_i x_j``: zero while at most one is chosen, at least ``λ``
+    otherwise, with no slack variable (schema 1.2 spec §7.1). Soft ones keep
+    the slack encoding, whose cost equals the validator's
+    ``weight × violation²`` (principle 6), and a linear constraint of the same
+    shape keeps it too, so no ``1.0`` / ``1.1`` document compiles
+    differently.
+
+    A BQM encoding decision, kept here beside the slack arithmetic so the
+    estimates (:func:`count_slack_bits`) and the compiler read the very same
+    predicate; validation of solutions never looks at it (the architecture
+    tests hold that).
+    """
+    return (
+        isinstance(constraint, LoweredCardinalityConstraint)
+        and constraint.type == "hard"
+        and constraint.operator == "<="
+        and constraint.rhs == 1.0
+        and len(constraint.terms) >= 2
+    )
+
+
 def count_slack_bits(
     constraint: Constraint,
     bounds: Bounds | None = None,
@@ -402,7 +431,8 @@ def count_slack_bits(
 ) -> int:
     """Number of slack variables compilation will generate for ``constraint``.
 
-    Equality constraints and redundant inequalities need none. A trivially
+    Equality constraints, redundant inequalities and a declared hard
+    at-most-one (:func:`uses_pairwise_penalty`) need none. A trivially
     infeasible *soft* inequality counts as zero bits, matching the
     compiler's explicit clamp in ``encode_slack``. A trivially infeasible
     *hard* inequality is never silently clamped: ``validate_problem`` rejects
@@ -421,6 +451,8 @@ def count_slack_bits(
     analysis of *this* constraint under *these* bounds (avoids analysing the
     same inequality twice, 2026-09-11 batch 4 performance fix).
     """
+    if uses_pairwise_penalty(constraint):
+        return 0
     if constraint.operator not in ("<=", ">="):
         return 0
     if analysis is None:
@@ -477,7 +509,7 @@ def estimate_compiled_variables(problem: OptimizationProblem) -> int:
         for name in {variable.name for variable in problem.variables}
     )
     slack_bits = 0
-    for constraint in problem.constraints:
+    for constraint in problem.all_constraints():
         if constraint.operator in ("<=", ">="):
             analysis = analyze_inequality(constraint, bounds)
             slack_bits += count_slack_bits(constraint, bounds, analysis=analysis)
@@ -502,7 +534,7 @@ def estimate_cqm_variables(problem: OptimizationProblem) -> int:
         variable.name for variable in problem.variables if variable.type == "integer"
     }
     slack_variables = 0
-    for constraint in problem.constraints:
+    for constraint in problem.all_constraints():
         if constraint.type != "soft" or constraint.operator not in ("<=", ">="):
             continue
         analysis = analyze_inequality(constraint, bounds)
@@ -554,7 +586,7 @@ def estimate_encoded_interactions(problem: OptimizationProblem) -> int:
             total += bits_1 * (bits_1 - 1) // 2
         else:
             total += bits_1 * bits_2
-    for constraint in problem.constraints:
+    for constraint in problem.all_constraints():
         analysis: InequalityAnalysis | None = None
         if constraint.operator in ("<=", ">="):
             analysis = analyze_inequality(constraint, bounds)
@@ -600,7 +632,7 @@ def effective_hard_constraints(
     bounds = variable_bounds(problem) if bounds is None else bounds
     return [
         constraint
-        for constraint in problem.constraints
+        for constraint in problem.all_constraints()
         if constraint.type == "hard" and _is_effective(constraint, bounds)
     ]
 
@@ -627,7 +659,7 @@ def coupled_variable_pairs(
         pair = frozenset((term.variable1, term.variable2))
         weights[pair] = weights.get(pair, 0.0) + term.coefficient
     pairs = {pair for pair, weight in weights.items() if weight != 0}
-    for constraint in problem.constraints:
+    for constraint in problem.all_constraints():
         if not _is_effective(constraint, bounds):
             continue
         names = sorted(nonzero_coefficients(constraint.terms))
@@ -678,9 +710,11 @@ def is_large_dense(
 def is_penalty_dominated(problem: OptimizationProblem, model_type: ModelType | None) -> bool:
     """The shape ``weak_on_penalty_dominated`` is declared for.
 
-    On the bqm path every effective hard constraint becomes a squared
-    penalty whose multiplier dominates the objective by construction (see
-    ``penalty/strategy.py``), so the shape is "bqm with at least one
+    On the bqm path every effective hard constraint becomes a penalty term
+    (a squared one, or the pairwise ``λ·Σ x_i x_j`` of a declared hard
+    at-most-one, :func:`uses_pairwise_penalty`) whose multiplier dominates
+    the objective by construction (see ``penalty/strategy.py``), so the
+    shape is "bqm with at least one
     effective hard constraint", at any size. The cqm path keeps hard
     constraints native and never has it.
     """

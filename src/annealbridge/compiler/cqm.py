@@ -173,7 +173,7 @@ class CQMCompiler:
             self._compile_constraint(
                 cqm, objective, constraint, declared, bounds, internal_variables
             )
-            for constraint in problem.constraints
+            for constraint in problem.all_constraints()
         ]
         cqm.set_objective(objective)
         # 2026-09-11 review (F06): the soft-penalty expansion and the
@@ -203,7 +203,7 @@ class CQMCompiler:
             compiled.num_variables,
             len(internal_variables),
             len(cqm.constraints),
-            sum(1 for constraint in problem.constraints if constraint.type == "soft"),
+            sum(1 for constraint in problem.all_constraints() if constraint.type == "soft"),
         )
         return compiled
 

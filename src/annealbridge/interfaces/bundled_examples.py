@@ -48,8 +48,8 @@ EXAMPLES: tuple[BundledExample, ...] = (
         description=(
             "A complete problem document with four bounded integer variables "
             "(0..3 copies each), a hard capacity constraint and one soft "
-            "constraint with a weight. Schema version 1.1, which integer "
-            "variables require. The optimum has value 34."
+            "constraint with a weight. Schema version 1.1, the first that "
+            "allows integer variables. The optimum has value 34."
         ),
     ),
     BundledExample(
@@ -83,6 +83,21 @@ EXAMPLES: tuple[BundledExample, ...] = (
             "Tuesday day) and one soft preference with a weight. Schema "
             "version 1.0. The optimum has total dislike 7 with the preference "
             "honoured."
+        ),
+    ),
+    BundledExample(
+        name="exam_timetabling",
+        title="Example: exam timetabling with cardinality constraints",
+        description=(
+            "A complete problem document placing four exams into three slots, "
+            "every rule written as a cardinality constraint: one binary "
+            "variable per exam/slot pair, a minimized inconvenience objective, "
+            "hard == 1 per exam (exactly one slot), hard <= 1 per slot for "
+            "exams that share students (at most one, which a BQM backend "
+            "encodes without a slack variable) and one soft <= 1 preference "
+            "with a weight. Schema version 1.2, which cardinality_constraints "
+            "require. The optimum has total inconvenience 6 with the "
+            "preference honoured."
         ),
     ),
 )

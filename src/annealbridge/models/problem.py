@@ -1,15 +1,17 @@
-"""Optimization problem schema — the public JSON API (versions 1.0 and 1.1).
+"""Optimization problem schema — the public JSON API (versions 1.0 to 1.2).
 
 ``"1.0"`` problems only have binary variables; ``"1.1"`` (3b spec §7) is a
-superset that also allows bounded integer variables. A 1.0 problem carrying
-an integer variable is rejected by the problem validator, never silently
-upgraded.
+superset that also allows bounded integer variables; ``"1.2"`` (schema 1.2
+spec 2026-09-25) is a superset of ``"1.1"`` that adds
+``cardinality_constraints``. A problem using a feature its version does not
+have is rejected by the problem validator, never silently upgraded.
 """
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer
 
+from annealbridge.models.cardinality import CardinalityConstraint
 from annealbridge.models.constraint import Constraint
 from annealbridge.models.objective import Objective
 from annealbridge.models.quantities import Count, Quantity
@@ -306,11 +308,14 @@ class SolverPreferences(InputModel):
 class OptimizationProblem(InputModel):
     """A structured combinatorial optimization problem."""
 
-    version: Literal["1.0", "1.1"] = Field(
+    # Oldest first: capabilities reports the last value as schema_version.
+    version: Literal["1.0", "1.1", "1.2"] = Field(
         default="1.0",
         description=(
-            'Problem schema version. "1.1" is a superset of "1.0" and is '
-            "required as soon as any variable is an integer."
+            'Problem schema version. Each version is a superset of the one '
+            'before: "1.1" or later is required as soon as any variable is an '
+            'integer, and "1.2" or later as soon as cardinality_constraints '
+            "is used."
         ),
     )
     name: str = Field(
@@ -334,9 +339,21 @@ class OptimizationProblem(InputModel):
     )
     constraints: list[Constraint] = Field(
         description=(
-            "Hard and soft constraints over the declared variables. May be "
-            "empty."
+            "Hard and soft linear constraints over the declared variables. "
+            "Required, but may be empty ([]); to limit how many of a set of "
+            "binary variables are chosen, use cardinality_constraints."
         )
+    )
+    # Schema 1.2 spec §4.3. Optional and empty by default, so a 1.0 / 1.1
+    # document parses, and reports its format errors, exactly as before.
+    cardinality_constraints: list[CardinalityConstraint] = Field(
+        default_factory=list,
+        description=(
+            "Version 1.2 or later: constraints on how many of a list of "
+            "binary variables are chosen (exactly, at most or at least k). "
+            "Ids share one namespace with constraints. Optional; may be "
+            "empty."
+        ),
     )
     solver: SolverPreferences = Field(
         default_factory=SolverPreferences,
@@ -345,3 +362,36 @@ class OptimizationProblem(InputModel):
             "a default."
         ),
     )
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_cardinality(self, handler: SerializerFunctionWrapHandler):
+        """Leave an empty ``cardinality_constraints`` out of every dump.
+
+        A ``1.0`` / ``1.1`` problem then dumps exactly as it did before the
+        field existed, and that dump is still accepted by a server that
+        does not know the field (spec §4.3). Parsing the dump back restores
+        the empty default, so the round trip is unchanged.
+        """
+        data = handler(self)
+        if isinstance(data, dict) and not self.cardinality_constraints:
+            data.pop("cardinality_constraints", None)
+        return data
+
+    def all_constraints(self) -> list[Constraint]:
+        """Every constraint in the one order the whole pipeline uses.
+
+        The linear ``constraints`` in declaration order, then each
+        ``cardinality_constraints`` entry lowered to a linear constraint
+        with every coefficient 1 (:class:`LoweredCardinalityConstraint`), in
+        declaration order (spec §5.2-§5.3). Estimates, both compilers,
+        re-validation, post-processing and routing read constraints only
+        through here, so none of them can miss a cardinality constraint;
+        ``tests/architecture`` holds the rest of ``src`` to that. The
+        lowered objects are rebuilt on every call and never cached (spec
+        §5.1). For a problem without cardinality constraints this is the
+        ``constraints`` list's own objects, in order.
+        """
+        return [
+            *self.constraints,
+            *(constraint.lowered() for constraint in self.cardinality_constraints),
+        ]

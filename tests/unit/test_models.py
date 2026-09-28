@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from annealbridge.models import (
+    CardinalityConstraint,
     Constraint,
     DWaveQPUOptions,
     FujitsuDAOptions,
@@ -123,7 +124,15 @@ class TestVersion:
         data["version"] = "1.1"
         assert OptimizationProblem.model_validate(data).version == "1.1"
 
-    @pytest.mark.parametrize("bad", ["2.0", "1.2", "1", ""])
+    def test_version_1_2_accepted(self):
+        """Schema 1.2 spec §3: 1.2 adds cardinality_constraints."""
+        data = make_problem_dict()
+        data["version"] = "1.2"
+        problem = OptimizationProblem.model_validate(data)
+        assert problem.version == "1.2"
+        assert problem.cardinality_constraints == []
+
+    @pytest.mark.parametrize("bad", ["2.0", "1.3", "1", ""])
     def test_other_versions_rejected(self, bad):
         data = make_problem_dict()
         data["version"] = bad
@@ -627,6 +636,7 @@ class TestUnknownFields:
             Variable,
             Objective,
             Constraint,
+            CardinalityConstraint,
             SolverPreferences,
             DWaveQPUOptions,
             LeapHybridBQMOptions,

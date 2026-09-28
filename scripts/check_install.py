@@ -49,7 +49,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-EXAMPLE_FILES = ("knapsack.json", "integer_knapsack.json")
+EXAMPLE_FILES = ("knapsack.json", "integer_knapsack.json", "exam_timetabling.json")
 # The examples the wheel ships as package data, in the order
 # ``annealbridge example`` lists them.
 BUNDLED_EXAMPLES = [
@@ -58,6 +58,7 @@ BUNDLED_EXAMPLES = [
     "assignment",
     "tsp",
     "shift_scheduling",
+    "exam_timetabling",
 ]
 MCP_TOOLS = [
     "get_optimization_capabilities",
@@ -111,7 +112,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="DIR",
         help=(
             "directory holding the example problems "
-            f"({' and '.join(EXAMPLE_FILES)})"
+            f"({', '.join(EXAMPLE_FILES)})"
         ),
     )
     parser.add_argument(
@@ -129,7 +130,7 @@ def resolve_examples(directory: str) -> list[Path]:
         raise CheckFailed(
             "examples directory",
             f"{root} is not a directory; pass --examples with the directory "
-            f"holding {' and '.join(EXAMPLE_FILES)}",
+            f"holding {', '.join(EXAMPLE_FILES)}",
         )
     resolved = []
     for name in EXAMPLE_FILES:
@@ -265,6 +266,9 @@ def run_common_checks(cli: str) -> str:
     with check("CLI exact integer + soft constraint optimum = 34"):
         verify_solution(json_cli("solve", "integer_knapsack.json", "--json"), 34)
 
+    with check("CLI exact schema 1.2 cardinality constraints optimum = 6"):
+        verify_solution(json_cli("solve", "exam_timetabling.json", "--json"), 6)
+
     with check("CLI simulated annealing returns feasible solutions"):
         verify_solution(
             json_cli("solve", "knapsack.json", "--backend", "simulated_annealing", "--json")
@@ -329,6 +333,7 @@ async def run_mcp_checks(problems: dict[str, dict]) -> None:
                 listed_resources = (await client.list_resources()).resources
                 assert sorted(str(resource.uri) for resource in listed_resources) == [
                     "annealbridge://examples/assignment",
+                    "annealbridge://examples/exam_timetabling",
                     "annealbridge://examples/integer_knapsack",
                     "annealbridge://examples/knapsack",
                     "annealbridge://examples/shift_scheduling",
@@ -372,6 +377,12 @@ async def run_mcp_checks(problems: dict[str, dict]) -> None:
                 verify_solution(
                     await call("solve_optimization", problems["integer_knapsack.json"]),
                     34,
+                )
+
+            with check("MCP exact schema 1.2 cardinality constraints optimum = 6"):
+                verify_solution(
+                    await call("solve_optimization", problems["exam_timetabling.json"]),
+                    6,
                 )
 
             with check("MCP simulated annealing returns feasible solutions"):

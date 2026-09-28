@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from annealbridge.models import OptimizationProblem
+from annealbridge.models import Constraint, OptimizationProblem
 from annealbridge.validation import tolerance_array, validate_batch
 
 # Operator codes of the constraint rows.
@@ -120,9 +120,14 @@ class PostprocessRun:
 # ---------------------------------------------------------------------------
 # Scan cost (pre-solve ceiling check and per-scan charge, spec §6)
 # ---------------------------------------------------------------------------
-def _supports(problem: OptimizationProblem, column: dict[str, int]):
-    """Per constraint: ``(is_hard, sorted columns with a non-zero merged coefficient)``."""
-    for constraint in problem.constraints:
+def _supports(constraints: list[Constraint], column: dict[str, int]):
+    """Per constraint: ``(is_hard, sorted columns with a non-zero merged coefficient)``.
+
+    ``constraints`` is the caller's one ``problem.all_constraints()`` list,
+    so every row it yields lines up with that list (the lowered cardinality
+    constraints are rebuilt on each ``all_constraints()`` call).
+    """
+    for constraint in constraints:
         merged: dict[int, float] = {}
         for term in constraint.terms:
             index = column[term.variable]
@@ -134,7 +139,7 @@ def _supports(problem: OptimizationProblem, column: dict[str, int]):
 
 
 def _hard_pairs(
-    problem: OptimizationProblem, column: dict[str, int], limit: int
+    constraints: list[Constraint], column: dict[str, int], limit: int
 ) -> np.ndarray | None:
     """Sorted unique keys ``i * n + j`` (``i < j``) of the variable pairs that
     share a hard constraint, or ``None`` as soon as there are more than
@@ -151,7 +156,7 @@ def _hard_pairs(
     chunks: list[np.ndarray] = []
     pending = 0
     base = 0
-    for hard, indices in _supports(problem, column):
+    for hard, indices in _supports(constraints, column):
         k = len(indices)
         if not hard or k < 2:
             continue
@@ -190,7 +195,8 @@ def _problem_costs(problem: OptimizationProblem, cap: int) -> tuple[int, int] | 
     degree = np.zeros(n, dtype=np.int64)
     entries = 0
     within = 0
-    for _, indices in _supports(problem, column):
+    constraints = problem.all_constraints()
+    for _, indices in _supports(constraints, column):
         k = len(indices)
         degree[indices] += 1
         entries += k
@@ -198,7 +204,7 @@ def _problem_costs(problem: OptimizationProblem, cap: int) -> tuple[int, int] | 
         if _scan_cost(n, entries, 0, within) > cap:
             return None
     pairs = _hard_pairs(
-        problem, column, (cap - _scan_cost(n, entries, 0, within)) // 4
+        constraints, column, (cap - _scan_cost(n, entries, 0, within)) // 4
     )
     if pairs is None:
         return None
@@ -327,7 +333,7 @@ class _Neighbourhood:
         ).astype(np.int64)
 
         # Constraints: one row each, entries merged per (variable, row).
-        constraints = problem.constraints
+        constraints = problem.all_constraints()
         m = len(constraints)
         self.m = m
         self.rhs = np.array([float(c.rhs) for c in constraints])
@@ -341,7 +347,7 @@ class _Neighbourhood:
         entry_coef: list[np.ndarray] = []
         within = 0
         for row, (constraint, (_, indices)) in enumerate(
-            zip(constraints, _supports(problem, column))
+            zip(constraints, _supports(constraints, column), strict=True)
         ):
             merged: dict[int, float] = {}
             for term in constraint.terms:
@@ -363,7 +369,7 @@ class _Neighbourhood:
         self.single_chunks = _chunks(degree, _ENTRY_CHUNK, max(n, 1))
 
         # Pair moves: variables sharing a hard constraint, in (i, j) order.
-        pair_keys = _hard_pairs(problem, column, pair_limit)
+        pair_keys = _hard_pairs(constraints, column, pair_limit)
         if pair_keys is None:
             raise ValueError("post-processing pair moves exceed the evaluation budget")
         self.num_pairs = len(pair_keys)

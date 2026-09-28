@@ -1,0 +1,131 @@
+{
+  "version": "1.2",
+  "name": "exam_timetabling",
+  "description": "Timetable 4 exams (math, physics, chemistry, biology) into 3 slots (mon_am, mon_pm, tue_am) minimizing total inconvenience. Every rule is a cardinality constraint (schema version 1.2). Each exam is held in exactly one slot. Math, physics and chemistry share students, so at most one of the three is held in any slot; chemistry and biology share students too, so they are never held in the same slot. Inconvenience per slot (mon_am, mon_pm, tue_am): math 1 3 2; physics 2 1 3; chemistry 3 2 1; biology 1 3 2. Soft preference (weight 3): only a small hall is free on mon_am, so ideally at most one exam is held then. Optimum: math=mon_am, physics=mon_pm, chemistry=tue_am, biology=mon_pm with total inconvenience 6 and the preference honoured (unique, confirmed by brute force).",
+  "variables": [
+    {"name": "math_mon_am", "type": "binary", "description": "Math is held Monday morning (inconvenience 1)"},
+    {"name": "math_mon_pm", "type": "binary", "description": "Math is held Monday afternoon (inconvenience 3)"},
+    {"name": "math_tue_am", "type": "binary", "description": "Math is held Tuesday morning (inconvenience 2)"},
+    {"name": "physics_mon_am", "type": "binary", "description": "Physics is held Monday morning (inconvenience 2)"},
+    {"name": "physics_mon_pm", "type": "binary", "description": "Physics is held Monday afternoon (inconvenience 1)"},
+    {"name": "physics_tue_am", "type": "binary", "description": "Physics is held Tuesday morning (inconvenience 3)"},
+    {"name": "chemistry_mon_am", "type": "binary", "description": "Chemistry is held Monday morning (inconvenience 3)"},
+    {"name": "chemistry_mon_pm", "type": "binary", "description": "Chemistry is held Monday afternoon (inconvenience 2)"},
+    {"name": "chemistry_tue_am", "type": "binary", "description": "Chemistry is held Tuesday morning (inconvenience 1)"},
+    {"name": "biology_mon_am", "type": "binary", "description": "Biology is held Monday morning (inconvenience 1)"},
+    {"name": "biology_mon_pm", "type": "binary", "description": "Biology is held Monday afternoon (inconvenience 3)"},
+    {"name": "biology_tue_am", "type": "binary", "description": "Biology is held Tuesday morning (inconvenience 2)"}
+  ],
+  "objective": {
+    "direction": "minimize",
+    "linear_terms": [
+      {"variable": "math_mon_am", "coefficient": 1},
+      {"variable": "math_mon_pm", "coefficient": 3},
+      {"variable": "math_tue_am", "coefficient": 2},
+      {"variable": "physics_mon_am", "coefficient": 2},
+      {"variable": "physics_mon_pm", "coefficient": 1},
+      {"variable": "physics_tue_am", "coefficient": 3},
+      {"variable": "chemistry_mon_am", "coefficient": 3},
+      {"variable": "chemistry_mon_pm", "coefficient": 2},
+      {"variable": "chemistry_tue_am", "coefficient": 1},
+      {"variable": "biology_mon_am", "coefficient": 1},
+      {"variable": "biology_mon_pm", "coefficient": 3},
+      {"variable": "biology_tue_am", "coefficient": 2}
+    ]
+  },
+  "constraints": [],
+  "cardinality_constraints": [
+    {
+      "id": "math_once",
+      "description": "Math is held in exactly one slot",
+      "type": "hard",
+      "variables": ["math_mon_am", "math_mon_pm", "math_tue_am"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "physics_once",
+      "description": "Physics is held in exactly one slot",
+      "type": "hard",
+      "variables": ["physics_mon_am", "physics_mon_pm", "physics_tue_am"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "chemistry_once",
+      "description": "Chemistry is held in exactly one slot",
+      "type": "hard",
+      "variables": ["chemistry_mon_am", "chemistry_mon_pm", "chemistry_tue_am"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "biology_once",
+      "description": "Biology is held in exactly one slot",
+      "type": "hard",
+      "variables": ["biology_mon_am", "biology_mon_pm", "biology_tue_am"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "math_physics_chemistry_apart_mon_am",
+      "description": "Math, physics and chemistry share students: at most one of them on Monday morning",
+      "type": "hard",
+      "variables": ["math_mon_am", "physics_mon_am", "chemistry_mon_am"],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "math_physics_chemistry_apart_mon_pm",
+      "description": "Math, physics and chemistry share students: at most one of them on Monday afternoon",
+      "type": "hard",
+      "variables": ["math_mon_pm", "physics_mon_pm", "chemistry_mon_pm"],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "math_physics_chemistry_apart_tue_am",
+      "description": "Math, physics and chemistry share students: at most one of them on Tuesday morning",
+      "type": "hard",
+      "variables": ["math_tue_am", "physics_tue_am", "chemistry_tue_am"],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "chemistry_biology_apart_mon_am",
+      "description": "Chemistry and biology share students: not both on Monday morning",
+      "type": "hard",
+      "variables": ["chemistry_mon_am", "biology_mon_am"],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "chemistry_biology_apart_mon_pm",
+      "description": "Chemistry and biology share students: not both on Monday afternoon",
+      "type": "hard",
+      "variables": ["chemistry_mon_pm", "biology_mon_pm"],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "chemistry_biology_apart_tue_am",
+      "description": "Chemistry and biology share students: not both on Tuesday morning",
+      "type": "hard",
+      "variables": ["chemistry_tue_am", "biology_tue_am"],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "small_hall_mon_am",
+      "description": "Only a small hall is free on Monday morning: ideally at most one exam then",
+      "type": "soft",
+      "variables": ["math_mon_am", "physics_mon_am", "chemistry_mon_am", "biology_mon_am"],
+      "operator": "<=",
+      "rhs": 1,
+      "weight": 3
+    }
+  ],
+  "solver": {
+    "backend": "exact"
+  }
+}

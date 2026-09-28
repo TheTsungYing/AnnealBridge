@@ -107,9 +107,10 @@ async def test_remote_backends_unavailable_with_categorical_reason():
 async def test_schema_metadata():
     content = (await _get_capabilities()).structured_content
     # 3b §10: schema_version is the newest version accepted, and every version
-    # in schema_versions is still accepted (1.1 is a superset of 1.0).
-    assert content["schema_version"] == "1.1"
-    assert content["schema_versions"] == ["1.0", "1.1"]
+    # in schema_versions is still accepted (each one is a superset of the one
+    # before: 1.1 adds integer variables, 1.2 cardinality_constraints).
+    assert content["schema_version"] == "1.2"
+    assert content["schema_versions"] == ["1.0", "1.1", "1.2"]
     assert content["supported_variable_types"] == ["binary", "integer"]
     assert content["supported_constraint_operators"] == ["==", "<=", ">="]
     assert content["inequality_requires_integer_coefficients"] is True

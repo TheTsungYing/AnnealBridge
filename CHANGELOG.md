@@ -124,10 +124,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the JSON; `nan` and `inf` exit `2`, any other value is validated like
   the same value in the JSON.
 - Warning code `WALL_CLOCK_LIMIT_REACHED`, and error code
-  `WALL_CLOCK_LIMIT_UNSUPPORTED` above; the catalog now has 55 codes.
+  `WALL_CLOCK_LIMIT_UNSUPPORTED` above.
+- Problem schema version `"1.2"`, a superset of `"1.1"`, and with it
+  `cardinality_constraints`: an optional top-level list of constraints on how
+  many of a set of binary variables are chosen. Each entry is
+  `{"id", "type", "variables", "operator", "rhs"}` plus `weight` when soft
+  (and an optional `description`), meaning "the number of `variables` that
+  take the value 1 `operator` `rhs`": one-hot is `"==", 1`, at most *k*
+  `"<=", k`, at least *k* `">=", k`. It means exactly what the linear
+  constraint with every coefficient 1 means — the same feasibility,
+  `violation_amount` and soft score `weight × violation²` — and shares the
+  constraint id namespace. `rhs` is an integer within ±(2³¹ − 1). Errors and
+  warnings point at `cardinality_constraints[i]...` and speak in counts;
+  every result lists the cardinality constraints in `constraint_evaluations`
+  (and the infeasibility diagnostics' `hard_violation_rates`) after the linear
+  ones, each under its own id with `actual_value` the number chosen. A
+  non-empty list needs version `"1.2"` or later; an empty one is accepted by
+  every version and left out when a problem is serialized. On the CQM path an
+  entry is the native linear constraint it means. See the Cardinality
+  constraints section of `docs/problem-format.md`.
+- A pairwise encoding for a declared hard at-most-one: on the BQM path a hard
+  cardinality constraint with `"<=", 1` over two or more variables compiles
+  to `λ · Σ_{i<j} x_i·x_j` — no slack variable, no linear term — which is zero
+  while at most one is chosen and at least λ otherwise, so the hard-penalty
+  guarantee is unchanged, and `estimated_compiled_variables` counts no slack
+  bit for it. Every other cardinality form, and every soft one, compiles bit
+  for bit like the equivalent linear constraint. Measured against the slack
+  form on six binary problems, `tabu` gained the most (it reached the proven
+  optimum where the slack form rarely did) and `simulated_annealing` held or
+  slightly improved its objective, while `simulated_bifurcation` improved on
+  two problems but collapsed to nearly all-zero samples on a weighted
+  set-packing problem, for a reason not yet understood; `docs/limitations.md`
+  and `docs/backends.md` carry that caveat. The pairwise encoding can reach
+  `PENALTY_OVERFLOW` sooner than the slack form, since it lacks the slack
+  form's negative linear term; that is still always the structured error.
+- Error codes `FEATURE_REQUIRES_NEWER_VERSION` (a field the problem's version
+  does not have: a non-empty `cardinality_constraints` below `"1.2"`, path
+  `version`), `CARDINALITY_VARIABLE_NOT_BINARY` (an integer variable listed
+  in a cardinality constraint) and `DUPLICATE_CARDINALITY_VARIABLE` (a
+  variable listed twice in one), all `invalid_problem` and not retryable; the
+  catalog now has 58 codes.
+- Warning code `CARDINALITY_FORM_AVAILABLE`: in a version `"1.2"` or later
+  document on a BQM backend, a hard linear constraint that is an at-most-one
+  over two or more distinct binary variables, every coefficient 1, is pointed
+  at `cardinality_constraints`, where it would need no slack variable. The
+  constraint itself is never re-encoded: a linear `<= 1` keeps its slack
+  encoding in every version.
+- A sixth example, `exam_timetabling` (`examples/exam_timetabling.json`),
+  version `"1.2"` with every rule a cardinality constraint: four exams into
+  three slots, one binary per exam/slot pair, a minimized inconvenience
+  objective, hard `== 1` per exam, hard `<= 1` per slot for exams that share
+  students, and one soft `<= 1` preference; the unique optimum has total
+  inconvenience 6 and it compiles to 13 variables. The MCP server serves it as
+  the new resource `annealbridge://examples/exam_timetabling` and now lists
+  seven resources; `annealbridge example` lists it, and
+  `scripts/check_install.py` solves it on an installed wheel.
 
 ### Changed
 
+- Schema version `"1.2"`, as seen from outside. Every `"1.0"` and `"1.1"`
+  document parses, validates, compiles, estimates, solves and serializes bit
+  for bit as before (pinned by tests, among them a compatibility golden
+  recorded before the change, `tests/golden/compat_a377f35.json`); what
+  changes is:
+  - the problem JSON Schema, and with it the MCP tools' input schema, gains
+    `cardinality_constraints` and `$defs.CardinalityConstraint`, the `version`
+    enum gains `"1.2"`, and the descriptions of `constraints` and of a
+    variable's `type` are reworded;
+  - the capabilities view (MCP and `capabilities --json`) reports
+    `schema_version: "1.2"` and `schema_versions: ["1.0", "1.1", "1.2"]`, and
+    the descriptions of `schema_versions` and
+    `supported_constraint_operators` are reworded;
+  - `"version": "1.2"` is accepted instead of rejected, and the schema error
+    for any other unknown version now lists `'1.2'` among the allowed
+    values;
+  - a `"1.0"` or `"1.1"` document carrying `cardinality_constraints` used to
+    get a top-level `UNKNOWN_FIELD`; now an empty list is accepted, a
+    non-empty one gets `FEATURE_REQUIRES_NEWER_VERSION`, and one whose entries
+    are malformed gets the schema errors inside it first and the version
+    error once they are fixed;
+  - the MCP server instructions, the tool descriptions and the three prompts
+    describe cardinality constraints and the version rule (`"1.1"` or later
+    for integers, `"1.2"` or later for cardinality constraints); the
+    `assign` and `schedule_shifts` prompts' embedded examples are now version
+    `"1.2"` documents written with cardinality constraints (the same optima),
+    while `pick_subset` stays `"1.0"`; the resource list and the
+    `annealbridge example` list gain `exam_timetabling`; and the output
+    schema descriptions of `ConstraintEvaluation.actual_value`,
+    `constraint_evaluations` and `hard_violation_rates` state the order and
+    the count.
 - Visible even with post-processing off, the default: every solution now
   carries `"source": "solver"`, every attempt carries `"postprocess": null`
   and `"postprocess_ms": null`, and the capabilities `limits` of every

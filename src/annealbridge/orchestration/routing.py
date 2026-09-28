@@ -99,7 +99,7 @@ REASON_DESCRIPTIONS: dict[str, str] = {
 
 
 def _has_hard_constraint(problem: OptimizationProblem) -> bool:
-    return any(constraint.type == "hard" for constraint in problem.constraints)
+    return any(constraint.type == "hard" for constraint in problem.all_constraints())
 
 
 def _has_integer_variable(problem: OptimizationProblem) -> bool:

@@ -17,6 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 from annealbridge.models import (
+    CardinalityConstraint,
     Constraint,
     DWaveQPUOptions,
     FujitsuDAOptions,
@@ -45,6 +46,19 @@ NUMERIC_FIELDS = [
     (
         Constraint,
         {"id": "c1", "type": "soft", "terms": [], "operator": "<=", "rhs": 1},
+        "weight",
+        "float",
+    ),
+    # Schema 1.2 spec §4.2: the count is an integer (bounded ±(2^31-1)).
+    (
+        CardinalityConstraint,
+        {"id": "c1", "type": "soft", "variables": ["x"], "operator": "<=", "rhs": 1},
+        "rhs",
+        "int",
+    ),
+    (
+        CardinalityConstraint,
+        {"id": "c1", "type": "soft", "variables": ["x"], "operator": "<=", "rhs": 1},
         "weight",
         "float",
     ),

@@ -34,7 +34,7 @@ class Variable(InputModel):
         default="binary",
         description=(
             '"binary" is a 0/1 choice; "integer" is a bounded integer and '
-            'requires both bounds plus problem version "1.1".'
+            'requires both bounds plus problem version "1.1" or later.'
         ),
     )
     lower_bound: Count | None = Field(

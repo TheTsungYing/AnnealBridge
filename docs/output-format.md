@@ -120,7 +120,7 @@ Reproducibility:
 | `sample_count` | integer | How many rows of this attempt's raw solver output carried this business assignment, before deduplication. Not a confidence measure: on an exhaustive backend every business assignment is enumerated once per combination of the slack and integer-encoding bits, so the count only reflects how many internal variables the compiled model happened to have. `0` for an assignment post-processing produced (`source` other than `"solver"`): the solver never returned it. |
 | `source` | `"solver"` \| `"repaired"` \| `"local_search"` \| `"repaired_local_search"` | Where the assignment came from. `solver`: returned by the backend — always, unless [`solver.postprocess`](problem-format.md#post-processing) is on. `repaired`: an infeasible solver sample greedily repaired to feasibility. `local_search`: a feasible solver sample improved by local search. `repaired_local_search`: repaired, then improved by local search. An assignment the solver also returned is always `solver`. Every source is re-validated and ranked alike. |
 | `hard_constraints_satisfied` | boolean | Always `true` for a returned solution — only feasible candidates are ranked. |
-| `constraint_evaluations` | array of [ConstraintEvaluation](#constraintevaluation) | One entry per constraint, hard and soft. |
+| `constraint_evaluations` | array of [ConstraintEvaluation](#constraintevaluation) | One entry per constraint, hard and soft: first every entry of `constraints`, then every entry of `cardinality_constraints`, each list in declaration order. |
 
 ### InfeasibilityDiagnostics
 
@@ -141,7 +141,7 @@ one that ran at the highest hard penalty. Earlier attempts are still listed in
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `closest_candidate` | [ClosestCandidate](#closestcandidate) | The candidate that came nearest to feasibility. |
-| `hard_violation_rates` | array of [HardViolationRate](#hardviolationrate) | One entry per **hard** constraint, in the problem's constraint order. Soft constraints never appear: they cannot make a candidate infeasible. |
+| `hard_violation_rates` | array of [HardViolationRate](#hardviolationrate) | One entry per **hard** constraint, in the problem's constraint order: the hard entries of `constraints` first, then those of `cardinality_constraints`, each in declaration order. Soft constraints never appear: they cannot make a candidate infeasible. |
 
 ### ClosestCandidate
 
@@ -244,14 +244,23 @@ merges attempts, never changes `unique_samples`, `feasible_samples` or the
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `constraint_id` | string | The `id` from the problem, so a result traces back to it. |
+| `constraint_id` | string | The `id` from the problem, so a result traces back to it — for a cardinality constraint too, which has no other name. |
 | `constraint_type` | `"hard"` \| `"soft"` | Echoed from the problem. |
 | `satisfied` | boolean | Whether this constraint holds for this solution. |
-| `actual_value` | number | The left-hand side evaluated at this assignment. |
+| `actual_value` | number | The left-hand side evaluated at this assignment. For a [cardinality constraint](problem-format.md#cardinality-constraints-version-12), the number of its `variables` chosen (equal to 1). |
 | `operator` | string | The constraint's operator (`==`, `<=`, `>=`). |
 | `expected_value` | number | The constraint's `rhs`. |
 | `violation_amount` | number | How far the constraint is from being satisfied. For a **hard** constraint it is `0` whenever the constraint holds. For a **soft** constraint it is always the exact residual (`\|actual − rhs\|`, or the one-sided excess/shortfall for an inequality), so it can be a tiny non-zero value while `satisfied` is still `true` — that is what the solver was charged for. |
 | `weighted_penalty` | number \| null | `weight × violation_amount²` for a soft constraint; `null` for a hard one. |
+
+The list has one entry per constraint, in one fixed order: every entry of
+`constraints` in declaration order, then every entry of
+`cardinality_constraints` in declaration order. A cardinality constraint is
+reported exactly as the linear constraint it means (every coefficient 1):
+`operator` and `expected_value` are its `operator` and `rhs`, and
+`violation_amount` is how many variables the count is off by — for example
+`actual_value: 2`, `operator: "<="`, `expected_value: 1`, `violation_amount: 1`
+when two variables of an at-most-one are chosen.
 
 ### SolveError
 
@@ -469,7 +478,7 @@ is compiled and no backend is invoked.
 | `valid` | boolean | Decided by `errors` alone. Warnings never make a problem invalid. |
 | `errors` | array of [SolveError](#solveerror) | Every error found in one pass. |
 | `warnings` | array of [SolveError](#solveerror) | Advisory findings. Only produced when there are no errors. |
-| `estimated_compiled_variables` | integer \| null | Compiled size without building a model: on the BQM path, binary variables + integer-encoding bits + slack bits; on the CQM path, variables + integer slacks. `null` when the problem is invalid. |
+| `estimated_compiled_variables` | integer \| null | Compiled size without building a model: on the BQM path, binary variables + integer-encoding bits + slack bits (none for a hard cardinality at-most-one, which is a pairwise penalty); on the CQM path, variables + integer slacks. `null` when the problem is invalid. |
 | `objective_scale` | number \| null | The upper bound on the objective's range used to size penalties and to judge soft weights. See [Soft constraint weights](problem-format.md#soft-constraint-weights). |
 | `model_type` | `"bqm"` \| `"cqm"` \| null | Which compiler path the estimate assumed. |
 
@@ -512,10 +521,10 @@ configured.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema_version` | string | The newest problem schema version this server accepts. |
-| `schema_versions` | array of string | Every accepted version. Derived from the pydantic model, not hard-coded. |
+| `schema_version` | string | The newest problem schema version this server accepts (`"1.2"`). |
+| `schema_versions` | array of string | Every accepted version, oldest first (`["1.0", "1.1", "1.2"]`); each is a superset of the one before. Derived from the pydantic model, not hard-coded. |
 | `supported_variable_types` | array of string | `binary` and `integer`. |
-| `supported_constraint_operators` | array of string | `==`, `<=`, `>=`. |
+| `supported_constraint_operators` | array of string | `==`, `<=`, `>=`, for linear and cardinality constraints alike. |
 | `supported_objective_terms` | array of string | `linear`, `quadratic`. |
 | `inequality_requires_integer_coefficients` | boolean | Whether `<=` / `>=` constraints need integral coefficients and `rhs`. |
 | `backends` | array of [BackendCapability](#backendcapability) | Every registered backend. |

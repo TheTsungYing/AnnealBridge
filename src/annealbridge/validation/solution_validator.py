@@ -68,7 +68,7 @@ def validate(problem: OptimizationProblem, sample: dict[str, int]) -> Validation
     binary variable, an integer within its bounds for an integer one), with
     internal variables already stripped.
     """
-    evaluations = [_evaluate(constraint, sample) for constraint in problem.constraints]
+    evaluations = [_evaluate(constraint, sample) for constraint in problem.all_constraints()]
     hard_violations = [
         evaluation
         for evaluation in evaluations
@@ -187,7 +187,7 @@ def validate_batch(
     hard_constraint_ids: list[str] = []
     hard_violated_counts: list[int] = []
 
-    for constraint in problem.constraints:
+    for constraint in problem.all_constraints():
         actual = np.zeros(count, dtype=np.float64)
         for term in constraint.terms:
             try:

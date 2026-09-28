@@ -4,9 +4,9 @@
 
 This page is the complete reference for the `OptimizationProblem` document —
 the only thing an agent or a caller ever writes. It covers every top-level
-field, the variable / objective / constraint models, the solver preference
-block, the rules for bounded integer variables, and how soft weights and hard
-penalties are interpreted.
+field, the variable / objective / constraint models, the cardinality
+constraints of version 1.2, the solver preference block, the rules for bounded
+integer variables, and how soft weights and hard penalties are interpreted.
 
 The document is the whole public API. There is no QUBO matrix, no penalty λ,
 no slack variable and no integer encoding anywhere in it: those are the
@@ -90,13 +90,36 @@ objective, soft constraints, and more solver preferences:
 
 | Field | Type | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `version` | `"1.0"` \| `"1.1"` | no | `"1.0"` | Schema version. `1.1` is a superset of `1.0` and is required as soon as any variable is an integer. |
+| `version` | `"1.0"` \| `"1.1"` \| `"1.2"` | no | `"1.0"` | Schema version. Each version is a superset of the one before: `1.1` or later is required as soon as any variable is an integer, `1.2` or later as soon as `cardinality_constraints` is non-empty. See [Schema versions](#schema-versions). |
 | `name` | string | **yes** | — | Problem name; echoed in CLI reports and logs. |
 | `description` | string \| null | no | `null` | Free text for humans. Never sent to a remote vendor. |
 | `variables` | array of [Variable](#variables) | **yes** | — | The decision variables. At least one is required (`NO_VARIABLES`). |
 | `objective` | [Objective](#objective) | **yes** | — | What to minimize or maximize. |
-| `constraints` | array of [Constraint](#constraints) | **yes** | — | Hard and soft constraints. May be empty (`[]`). |
+| `constraints` | array of [Constraint](#constraints) | **yes** | — | Hard and soft linear constraints. Required even when there are none: may be empty (`[]`). |
+| `cardinality_constraints` | array of [CardinalityConstraint](#cardinality-constraints-version-12) | no | `[]` | Version 1.2: how many of a set of binary variables are chosen (exactly, at most or at least *k*). |
 | `solver` | [SolverPreferences](#solver-preferences) | no | all defaults | Backend choice and search parameters. |
+
+### Schema versions
+
+| Version | Adds | Relation to the one before |
+| --- | --- | --- |
+| `"1.0"` | binary variables, linear constraints | — |
+| `"1.1"` | bounded [integer variables](#integer-variables-version-11) | superset of `1.0` |
+| `"1.2"` | [cardinality constraints](#cardinality-constraints-version-12) | superset of `1.1`; may also declare integer variables |
+
+A newer version accepts everything an older one does, with the same meaning,
+so a document can always be moved to a newer version by changing only its
+`version`; the compiled models and estimates do not change, and the only
+difference in validation is that from `1.2` on a hard linear at-most-one may
+get the advisory
+[`CARDINALITY_FORM_AVAILABLE`](#linear-at-most-one-constraints) warning. The rule is a
+minimum per feature, judged by what the document actually uses: an integer
+variable needs `1.1` or later (`INTEGER_REQUIRES_VERSION_1_1` otherwise), a
+non-empty `cardinality_constraints` list needs `1.2` or later
+(`FEATURE_REQUIRES_NEWER_VERSION` otherwise). An empty `cardinality_constraints`
+list is accepted by every version. `get_optimization_capabilities` and
+`annealbridge capabilities --json` list the accepted versions as
+`schema_versions`, oldest first.
 
 Validation collects **all** errors in one pass and returns them as a
 structured `invalid_problem` result; an invalid problem is never handed to a
@@ -161,7 +184,7 @@ Rules enforced by the validator, each with its own error code:
 
 A variable may be a bounded integer instead of a 0/1 choice. It is declared
 with `type: "integer"` plus **both** `lower_bound` and `upper_bound`, and the
-problem must then carry `"version": "1.1"` at its top level. This is the
+problem must then carry `"version": "1.1"` or later at its top level. This is the
 variable block of
 [examples/integer_knapsack.json](../examples/integer_knapsack.json) — how many
 copies of each item to take:
@@ -193,12 +216,14 @@ Rules, each enforced by the validator with its own error code:
   `Σ|coefficient| · max(|lower_bound|, |upper_bound|) + |rhs| <= 2⁵³`
   (`INEQUALITY_MAGNITUDE_TOO_LARGE`; a binary variable's bound counts as 1).
   See [Integer coefficients for inequality constraints](#integer-coefficients-for-inequality-constraints).
-- A problem that declares any integer variable must say `"version": "1.1"`;
-  with `"version": "1.0"` it is rejected with `INTEGER_REQUIRES_VERSION_1_1`.
-  Version `1.1` is a superset of `1.0`: a `1.1` problem with only binary
-  variables is legal, and every `1.0` document keeps its exact `1.0` behaviour
-  (the compiled models, estimates and penalties for `1.0` problems are pinned
-  bit for bit by a golden test — see [Testing](testing.md)).
+- A problem that declares any integer variable must say `"version": "1.1"`
+  or later; with `"version": "1.0"` it is rejected with
+  `INTEGER_REQUIRES_VERSION_1_1`. Version `1.1` is a superset of `1.0`: a
+  `1.1` problem with only binary variables is legal, and every `1.0` document
+  keeps its exact `1.0` behaviour (the compiled models, estimates and
+  penalties for `1.0` problems are pinned bit for bit by a golden test, and
+  the rest of the `1.0` and `1.1` behaviour by a compatibility golden — see
+  [Testing](testing.md)).
 - An objective term `x·x` is legal for an integer `x` (it is a genuine square);
   for a binary variable it is still rejected with `SELF_QUADRATIC_TERM`,
   because there `x·x = x`.
@@ -255,7 +280,7 @@ A **quadratic term** is
 
 | Field | Type | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `id` | string | **yes** | — | Unique per problem; results are traced back to it. |
+| `id` | string | **yes** | — | Unique per problem, across `constraints` and `cardinality_constraints` together; results are traced back to it. |
 | `description` | string \| null | no | `null` | Free text for humans. |
 | `type` | `"hard"` \| `"soft"` | **yes** | — | `hard` must be satisfied; `soft` is a weighted preference. |
 | `terms` | array of linear term | **yes** | — | The left-hand side. Must be non-empty. |
@@ -264,12 +289,17 @@ A **quadratic term** is
 | `weight` | number \| null | soft only | `null` | Cost per unit of squared violation, in objective units. |
 
 Constraints are linear in the declared variables; there is no quadratic
-constraint form.
+constraint form. A rule that only counts how many of a set of binary variables
+are chosen — exactly one, at most one, at least *k* — is better declared in
+[`cardinality_constraints`](#cardinality-constraints-version-12) (version 1.2):
+it means the same as the linear constraint with every coefficient 1, and a hard
+at-most-one compiles smaller there.
 
 Rules enforced by the validator:
 
 - An empty `terms` list is rejected with `EMPTY_CONSTRAINT`; two constraints
-  sharing an `id` with `DUPLICATE_CONSTRAINT_ID`.
+  sharing an `id` — two linear ones, two cardinality ones, or one of each —
+  with `DUPLICATE_CONSTRAINT_ID`.
 - A hard constraint that carries a `weight` is rejected with
   `HARD_CONSTRAINT_HAS_WEIGHT` — the penalty for hard constraints is decided by
   the server, never by the caller.
@@ -343,6 +373,16 @@ for integer variables and that would not be the formula the validator scores
 with. Either way the solver's soft energy equals the validator's
 `soft_violation_score`.
 
+A soft [cardinality constraint](#cardinality-constraints-version-12) is scored
+the same way, its violation being how many variables the count is off by — for
+`<=` and `>=` only the excess or the shortfall: a soft `"<=", 1` with three
+variables chosen pays `weight × 2²`. It compiles exactly like the equivalent
+linear constraint, slack bits included, so on both paths the solver's soft
+energy again equals the score. The slack-free pairwise encoding is reserved for
+*hard* at-most-ones: for three or more chosen variables it would charge less
+than `weight × violation²`, and the ranking would then prefer assignments the
+solver was paying too little for.
+
 Keeping those two equal means a soft constraint is scored from its **exact**
 residual: the feasibility tolerance that decides `satisfied` is not applied to
 the score. A residual small enough to leave `satisfied: true` therefore still
@@ -380,6 +420,19 @@ less than one unit. And the guarantee is about the model's global minimum: a
 non-exhaustive backend may not reach it, which is what the doubling retry is
 for.
 
+A declared hard at-most-one — a [cardinality constraint](#cardinality-constraints-version-12)
+with `"<="` and `rhs` 1 over two or more variables — is compiled on the BQM
+path as the pairwise penalty `λ · Σ_{i<j} x_i·x_j` rather than with a slack
+bit. It meets the two conditions the argument above rests on: it is zero for
+every assignment that satisfies the constraint, and at least λ for every one
+that violates it (`λ · k(k−1)/2` when *k* variables are chosen). It involves no
+slack or encoding bit, so the guarantee and the `penalty_scale` formula are
+unchanged. It does lack the negative linear term the slack form contributes,
+so a variable's net linear bias can come out larger than under the slack
+encoding, and a problem can reach the floating-point limit — and
+`PENALTY_OVERFLOW` — sooner than its slack form would. That is always the
+structured error below, never a silently wrong model.
+
 Soft weights are only used to *bound* the energy the penalty must dominate;
 they are never used as, or substituted for, the hard penalty itself. A penalty
 that would have to double past the floating-point range stops with a structured
@@ -399,6 +452,160 @@ ranking_score = objective_value − soft_violation_score   (maximize)
 with deterministic tie-breaking. Both components are reported separately so a
 consumer can re-rank. Only solutions that satisfy every hard constraint under
 independent re-validation are ranked at all.
+
+## Cardinality constraints (version 1.2)
+
+The most common rule in assignment, timetabling and selection problems only
+counts: each exam takes exactly one slot, two clashing exams share at most one
+slot, a team has at least two seniors. Version `1.2` declares such a rule
+directly, in the top-level list `cardinality_constraints`. Each entry counts
+how many of the binary variables it lists are chosen (take the value 1) and
+compares that count with `rhs`:
+
+| Rule | `operator` | `rhs` |
+| --- | --- | --- |
+| one-hot: exactly one | `"=="` | `1` |
+| exactly *k* | `"=="` | *k* |
+| at most *k* (at most one: *k* = 1) | `"<="` | *k* |
+| at least *k* | `">="` | *k* |
+
+An excerpt of
+[examples/exam_timetabling.json](../examples/exam_timetabling.json), whose
+rules are all cardinality constraints:
+
+```json
+{
+  "version": "1.2",
+  "constraints": [],
+  "cardinality_constraints": [
+    {
+      "id": "math_once",
+      "type": "hard",
+      "variables": ["math_mon_am", "math_mon_pm", "math_tue_am"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "chemistry_biology_apart_mon_am",
+      "type": "hard",
+      "variables": ["chemistry_mon_am", "biology_mon_am"],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "small_hall_mon_am",
+      "type": "soft",
+      "variables": ["math_mon_am", "physics_mon_am", "chemistry_mon_am", "biology_mon_am"],
+      "operator": "<=",
+      "rhs": 1,
+      "weight": 3
+    }
+  ]
+}
+```
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `id` | string | **yes** | — | Unique across `constraints` and `cardinality_constraints` together; results are traced back to it. |
+| `description` | string \| null | no | `null` | Free text for humans. Never sent to a remote vendor. |
+| `type` | `"hard"` \| `"soft"` | **yes** | — | As for a linear constraint. |
+| `variables` | array of string | **yes** | — | The binary variables counted; each one that takes the value 1 counts once. Non-empty, each name at most once. |
+| `operator` | `"=="` \| `"<="` \| `">="` | **yes** | — | How the count compares with `rhs`. |
+| `rhs` | integer | **yes** | — | The count *k*, with \|`rhs`\| ≤ 2³¹ − 1. A fractional number, a string, a boolean or a larger integer is a schema error (`INVALID_FIELD_VALUE` at `cardinality_constraints[i].rhs`). |
+| `weight` | number \| null | soft only | `null` | Cost per unit of squared violation, in objective units; the violation is how many variables the count is off by. |
+
+**Meaning.** An entry means exactly what the linear constraint over the same
+variables with every coefficient 1 means: the same feasibility, the same
+`violation_amount`, the same soft score `weight × violation²`. A weighted sum,
+or a sum over integer variables, stays a linear constraint in `constraints`,
+which is still required (use `[]` when every rule is a cardinality one). The
+field itself is optional; an empty list is the same as leaving it out, and it
+is left out when a problem is serialized, so a `1.0` or `1.1` problem dumps
+exactly as it always did.
+
+**Validation.** Paths point at what was written, under
+`cardinality_constraints[i]`, and the messages speak in counts
+(`Hard cardinality constraint too_many counts 3 variables, so between 0 and 3
+are chosen, but requires == 5`):
+
+| Condition | Code | `path` |
+| --- | --- | --- |
+| a non-empty list in a `1.0` or `1.1` document | `FEATURE_REQUIRES_NEWER_VERSION` | `version` |
+| `variables` is empty | `EMPTY_CONSTRAINT` | `cardinality_constraints[i]` |
+| a name is not declared | `UNKNOWN_VARIABLE` | `cardinality_constraints[i].variables[j]` |
+| a name is an integer variable | `CARDINALITY_VARIABLE_NOT_BINARY` | `cardinality_constraints[i].variables[j]` |
+| a name is listed again | `DUPLICATE_CARDINALITY_VARIABLE` | `cardinality_constraints[i].variables[j]` (the repeat) |
+| the `id` is already used, by either list | `DUPLICATE_CONSTRAINT_ID` | `cardinality_constraints[i]` |
+| a hard entry carries a `weight` | `HARD_CONSTRAINT_HAS_WEIGHT` | `cardinality_constraints[i].weight` |
+| a soft entry has no positive `weight` | `SOFT_CONSTRAINT_MISSING_WEIGHT` | `cardinality_constraints[i].weight` |
+| the `weight` is NaN or infinite | `NON_FINITE_COEFFICIENT` | `cardinality_constraints[i].weight` |
+| a hard entry no count from 0 to *n* satisfies (`"==", 5` over 3 variables, `"<=", -1`) | `TRIVIALLY_INFEASIBLE` | `cardinality_constraints[i]` |
+
+Once an entry is free of those errors, the warnings a linear constraint gets
+apply to it too, judged over the count range 0 to *n*: `SOFT_ALWAYS_VIOLATED`
+for a soft entry no count satisfies, `REDUNDANT_CONSTRAINT` for one every count
+satisfies (`"<=", n`, `">=", 0`, or an at-most-one over a single variable), and
+`SOFT_WEIGHT_SMALL`. `FEATURE_REQUIRES_NEWER_VERSION` adds to its message that
+`version` defaults to `"1.0"` when it was left out, and, for a `1.0` document
+that also has integer variables, that `"1.2"` allows those too (the
+`INTEGER_REQUIRES_VERSION_1_1` error is still reported beside it). See
+[Errors and warnings](errors.md) for the recommended actions.
+
+**Encoding.** The caller never sees it, but it decides the compiled size:
+
+- **Hard at-most-one, BQM path.** A hard `"<="` with `rhs` 1 over two or more
+  variables compiles to the pairwise penalty `λ · Σ_{i<j} x_i·x_j` — no slack
+  variable, no linear term, no constant, the pairs added in the order of
+  `variables`. It is zero while at most one variable is chosen and at least λ
+  otherwise, the same zero set and the same smallest violation cost as the
+  slack form, without the slack bit a linear `<= 1` needs (see
+  [Hard constraint penalties](#hard-constraint-penalties)).
+  `estimated_compiled_variables` counts no slack bit for it.
+- **Every other form** compiles exactly like the linear constraint with every
+  coefficient 1, bit for bit: `"=="` as `λ·(Σx − k)²`, `"<="` / `">="` with
+  binary slack bits (or not at all when redundant), and every soft entry as
+  `weight × violation²` with its slack bits — see
+  [Soft constraint weights](#soft-constraint-weights) for why a soft
+  at-most-one keeps its slack.
+- **CQM path** (`leap_hybrid_cqm`). Each entry is added as the native linear
+  constraint it means — hard ones as hard constraints, soft ones with their
+  weight and a quadratic penalty — exactly as the equivalent linear constraint
+  would be.
+
+**Order.** Wherever constraints are listed or processed, the linear
+`constraints` come first and the `cardinality_constraints` after them, each in
+declaration order: in `constraint_evaluations`, in the infeasibility
+diagnostics' `hard_violation_rates`, and in the compiled model. Each entry is
+evaluated under its own `id`, with `actual_value` the number of its variables
+chosen (see [Output format](output-format.md#constraintevaluation)).
+
+#### Linear at-most-one constraints
+
+The pairwise encoding is only ever applied to a *declared* cardinality
+constraint. A linear `<= 1` in `constraints` keeps its slack encoding in every
+version, so no `1.0` or `1.1` document compiles differently than before. In a
+document of version `1.2` or later on a BQM backend, a hard linear constraint
+that could be declared instead — operator `"<="`, `rhs` 1, every coefficient
+exactly 1, over two or more distinct binary variables — gets the advisory
+warning `CARDINALITY_FORM_AVAILABLE`, whose `path` names it. Moving it into
+`cardinality_constraints` keeps its meaning and drops its slack bit; nothing
+changes by itself.
+
+#### `simulated_bifurcation` and at-most-one groups
+
+The pairwise encoding was adopted after a comparison against the slack form on
+six binary problems with `simulated_annealing`, `tabu` and
+`simulated_bifurcation`, every result re-validated against the original
+problem. `tabu` gained the most — it reached the proven optimum on problems
+where the slack form rarely did — and `simulated_annealing` held its objective
+or improved it slightly. `simulated_bifurcation` improved on two problems, but
+on one weighted set-packing problem (maximize) its samples collapsed to nearly
+all zeros, and the cause is not understood. An all-zero assignment satisfies
+every at-most-one, so such a result is feasible but poor, never wrong. For a
+packing-style maximize problem with many at-most-one groups, prefer
+`simulated_annealing` or `tabu`, or turn on
+[`repair_local_search`](#post-processing); see
+[Limitations](limitations.md).
 
 ## Solver preferences
 
@@ -461,8 +668,8 @@ spends CPU time here and no vendor quota.
 
 A move changes one variable by ±1 inside its bounds (a flip, for a binary
 variable), or two variables by ±1 each when both appear with a non-zero
-coefficient in the same hard constraint — which covers a swap inside a
-one-hot group and trading one item for another in a knapsack. A problem
+coefficient in the same hard constraint, linear or cardinality — which covers
+a swap inside a one-hot group and trading one item for another in a knapsack. A problem
 without hard constraints only gets single-variable moves. Each repair and each
 local search takes at most `4 · n` steps, `n` being the number of variables.
 The search is deterministic — no random numbers, fixed tie-breaking, ceilings
@@ -559,8 +766,8 @@ not an error, and it is only reported when work was actually left undone.
   before anything runs, never silently ignored; `validate` and `recommend`
   report the same error. The supporting backends are `simulated_annealing`,
   `tabu` and `simulated_bifurcation`.
-- **Both schema versions.** It is a solver preference, so `"1.0"` and `"1.1"`
-  accept it alike.
+- **Every schema version.** It is a solver preference, so `"1.0"`, `"1.1"`
+  and `"1.2"` accept it alike.
 - **No server-side ceiling.** There is no policy key for it: a larger value
   only makes the limit less likely to fire.
 - **It can be overrun.** Some stages cannot be interrupted and add their full
@@ -634,7 +841,7 @@ Only these four values are ever forwarded to Fujitsu; `num_reads`,
 
 ## Bundled examples
 
-Five ready-to-run problems ship with the repository, and inside the
+Six ready-to-run problems ship with the repository, and inside the
 installed package as well: `annealbridge example` lists them and
 `annealbridge example <name>` prints one (see [CLI](cli.md#example)), and the
 MCP server serves the same files as `annealbridge://examples/<name>`.
@@ -664,8 +871,21 @@ MCP server serves the same files as `annealbridge://examples/<name>`.
   with the preference honoured. It compiles to 21 variables on the BQM path,
   close enough to the `exact` limit that validating or solving it on `exact`
   adds an `EXACT_NEAR_LIMIT` warning.
+- [examples/exam_timetabling.json](../examples/exam_timetabling.json) — a
+  `version: "1.2"` document whose rules are all
+  [cardinality constraints](#cardinality-constraints-version-12): 4 exams ×
+  3 slots, one binary per exam/slot pair, minimizing total inconvenience.
+  Hard constraints: every exam in exactly one slot (`== 1`), at most one of
+  math, physics and chemistry per slot and never chemistry beside biology
+  (`<= 1`, which the BQM path encodes without slack); one soft preference (at
+  most one exam in the small Monday-morning hall, weight 3). The unique
+  global optimum, math=mon_am, physics=mon_pm, chemistry=tue_am,
+  biology=mon_pm, has total inconvenience 6 with the preference honoured (the
+  cheaper timetable with biology on Monday morning scores 4 + 3 = 7). It
+  compiles to 13 variables on the BQM path: the 12 binaries plus one slack
+  bit for the soft preference.
 
-All five declare a local backend; try `--backend simulated_annealing` to
+All six declare a local backend; try `--backend simulated_annealing` to
 compare against `exact` (simulated annealing is heuristic — without a fixed
 `seed` and enough `num_reads` it may return a feasible but sub-optimal integer
 knapsack). With remote execution configured, `--backend leap_hybrid_cqm` runs

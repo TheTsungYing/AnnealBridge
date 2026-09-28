@@ -32,6 +32,7 @@ from annealbridge.models import (
 from annealbridge.validation.estimates import (
     Bounds,
     compute_objective_scale,
+    uses_pairwise_penalty,
     variable_bounds,
 )
 
@@ -160,6 +161,22 @@ def _add_expansion(
     model.offset += offset
 
 
+def _add_pairwise(model: _BiasAccumulator, names: tuple[str, ...], lam: float) -> None:
+    """Add ``lam * sum(x_i * x_j for i < j)`` over ``names`` to ``model``.
+
+    The encoding of a declared hard at-most-one (schema 1.2 spec §7.1):
+    zero while at most one variable is chosen, ``lam * C(k, 2) >= lam``
+    once ``k >= 2`` are, so the hard-penalty dominance argument holds as it
+    does for the slack encoding, with no slack variable and no linear or
+    constant part. The pairs go in declaration order, ``(0, 1), (0, 2),
+    ..., (1, 2), ...``, like every other contribution (accumulated, never
+    overwritten).
+    """
+    for position, first in enumerate(names):
+        for second in names[position + 1 :]:
+            model.add_quadratic(first, second, lam)
+
+
 def _check_finite(
     bqm: dimod.BinaryQuadraticModel, problem: OptimizationProblem, hard_penalty: float
 ) -> None:
@@ -188,8 +205,11 @@ class _ConstraintStep:
     soft constraint's term does not depend on the hard penalty, so it is
     expanded once with the constraint's own weight (``soft_weight``) into
     ``soft_expansion``; a hard one is expanded per compile. A redundant
-    inequality adds nothing. Read only: every :meth:`PreparedBQM.compile`
-    replays the same steps.
+    inequality adds nothing. A declared hard at-most-one
+    (``uses_pairwise_penalty``) carries its variables in ``pairwise_names``
+    and no squared term (empty ``coefficients``, ``constant`` 0.0): its
+    penalty is :func:`_add_pairwise` at the compile's hard penalty. Read
+    only: every :meth:`PreparedBQM.compile` replays the same steps.
     """
 
     constraint: Constraint
@@ -200,6 +220,7 @@ class _ConstraintStep:
     redundant: bool
     soft_weight: float | None
     soft_expansion: tuple[Linear, Quadratic, float] | None
+    pairwise_names: tuple[str, ...] = ()
 
 
 def _replay_step(
@@ -221,7 +242,9 @@ def _replay_step(
         for name in step.slack_variables:
             model.add_variable(name)
         internal_variables.update(step.slack_variables)
-        if step.soft_expansion is None:
+        if step.pairwise_names:
+            _add_pairwise(model, step.pairwise_names, lam)
+        elif step.soft_expansion is None:
             _add_squared_penalty(model, step.coefficients, step.constant, lam)
         else:
             _add_expansion(model, *step.soft_expansion)
@@ -375,7 +398,7 @@ class BQMCompiler:
 
         steps = tuple(
             self._prepare_constraint(constraint, bounds, forms)
-            for constraint in problem.constraints
+            for constraint in problem.all_constraints()
         )
         return PreparedBQM(
             problem=problem,
@@ -444,12 +467,51 @@ class BQMCompiler:
             model.add_quadratic(u, v, float(bias))
         model.offset += float(objective_bqm.offset)
 
+    def _prepare_pairwise(
+        self, constraint: Constraint, forms: Mapping[str, AffineForm]
+    ) -> _ConstraintStep:
+        """The step of a declared hard at-most-one (schema 1.2 spec §7.1).
+
+        No slack and no squared term: the variables are kept for
+        :func:`_add_pairwise`, which runs at each compile's hard penalty.
+        The validator guarantees distinct binary variables; a problem that
+        skipped it gets a plain :class:`CompilationError` here rather than
+        a model with a self-interaction or an encoding bit in the pairs.
+        """
+        names = tuple(term.variable for term in constraint.terms)
+        if len(set(names)) != len(names):
+            raise CompilationError(
+                f"Cardinality constraint {constraint.id} lists a variable more "
+                "than once; validate_problem must reject it before compiling"
+            )
+        for name in names:
+            if forms.get(name) != AffineForm(constant=0.0, coefficients={name: 1.0}):
+                raise CompilationError(
+                    f"Cardinality constraint {constraint.id} counts {name!r}, "
+                    "which is not a declared binary variable; validate_problem "
+                    "must reject it before compiling"
+                )
+        return _ConstraintStep(
+            constraint=constraint,
+            slack_variables=(),
+            coefficients={},
+            constant=0.0,
+            slack_range=None,
+            redundant=False,
+            soft_weight=None,
+            soft_expansion=None,
+            pairwise_names=names,
+        )
+
     def _prepare_constraint(
         self,
         constraint: Constraint,
         bounds: Bounds,
         forms: Mapping[str, AffineForm],
     ) -> _ConstraintStep:
+        if uses_pairwise_penalty(constraint):
+            return self._prepare_pairwise(constraint, forms)
+
         # §10.4: a soft constraint's lambda is its own weight, never the
         # hard penalty; a hard constraint's is supplied per compile.
         soft_weight: float | None = None

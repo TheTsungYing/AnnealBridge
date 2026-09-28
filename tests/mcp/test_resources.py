@@ -1,7 +1,7 @@
-"""The six MCP resources, through a real client.
+"""The seven MCP resources, through a real client.
 
 An agent reads a resource instead of guessing what a complete document looks
-like, so the five examples must be the repository's own ``examples/*.json``
+like, so the six examples must be the repository's own ``examples/*.json``
 — shipped inside the package because the repository directory never reaches
 an installed wheel — and the schema must be the one the CLI's
 ``export-schema`` prints. The drift guard below holds the two copies of each
@@ -31,6 +31,7 @@ EXAMPLE_NAMES = (
     "assignment",
     "tsp",
     "shift_scheduling",
+    "exam_timetabling",
 )
 EXAMPLE_URIS = tuple(f"annealbridge://examples/{name}" for name in EXAMPLE_NAMES)
 ALL_URIS = EXAMPLE_URIS + ("annealbridge://schema",)
@@ -51,7 +52,7 @@ async def _read(uri: str):
     return result.contents[0]
 
 
-async def test_the_six_resources_are_listed_with_their_metadata():
+async def test_the_seven_resources_are_listed_with_their_metadata():
     async with Client(mcp) as client:
         listed = (await client.list_resources()).resources
 
@@ -101,7 +102,7 @@ def test_the_packaged_example_has_not_drifted_from_the_repository_one(name):
     ).read_bytes()
 
 
-def test_the_package_ships_exactly_the_five_examples():
+def test_the_package_ships_exactly_the_six_examples():
     assert sorted(path.name for path in PACKAGED_EXAMPLES.glob("*.json")) == sorted(
         f"{name}.json" for name in EXAMPLE_NAMES
     )

@@ -80,24 +80,27 @@ EXAMPLE_PROBLEM: dict = {
 SERVER_INSTRUCTIONS = (
     """AnnealBridge solves combinatorial optimization problems that you write
 as a structured JSON document (binary or bounded-integer variables, a linear
-or quadratic objective, hard and soft linear constraints). Use it when the
-user asks, in whatever words, which items to take within a budget, weight
-or capacity; how to assign people or jobs to seats, shifts or machines; in
-which order to visit a handful of places; or how to split things into
-groups or pick a subset that meets several requirements at once - anything
-that can be written as yes/no or bounded-count decisions with a linear or
-quadratic score and linear rules, even when the user never says
-"optimization". Every result is re-validated against the original
-document; nothing is ever silently substituted, clamped or dropped.
+or quadratic objective, hard and soft linear constraints, and hard and soft
+cardinality constraints on how many of a set of binary variables are
+chosen). Use it when the user asks, in whatever words, which items to take
+within a budget, weight or capacity; how to assign people or jobs to seats,
+shifts or machines; in which order to visit a handful of places; or how to
+split things into groups or pick a subset that meets several requirements
+at once - anything that can be written as yes/no or bounded-count
+decisions with a linear or quadratic score and linear rules, even when the
+user never says "optimization". Every result is re-validated against the
+original document; nothing is ever silently substituted, clamped or
+dropped.
 
 When to call each tool:
 - get_optimization_capabilities - when you need to know which backends are
   available and enabled and which limits apply, or the accepted schema
-  versions. The full problem JSON schema (problem_json_schema) is only
-  included when you pass include_schema: true; ask for it when the
-  document needs more than the example below shows. For a small binary
-  problem on a local backend the example already shows the whole document
-  shape.
+  versions (schema_versions: "1.0", "1.1" and "1.2", each accepting
+  everything the one before it does). The full problem JSON schema
+  (problem_json_schema) is only included when you pass include_schema:
+  true; ask for it when the document needs more than the example below
+  shows. For a small binary problem on a local backend the example already
+  shows the whole document shape.
 - validate_optimization_problem - before solving on a remote backend, or
   when the problem is large (many variables, wide integer ranges): it
   returns every semantic error at once, each with a recommended_action,
@@ -117,8 +120,8 @@ Three prompts (pick_subset, assign, schedule_shifts) walk through turning a
 request of one of those shapes into a document, each ending in a complete
 example.
 The resources under annealbridge://examples/ (knapsack, integer_knapsack,
-assignment, tsp, shift_scheduling) are complete example documents, and
-annealbridge://schema is the full problem JSON schema.
+assignment, tsp, shift_scheduling, exam_timetabling) are complete example
+documents, and annealbridge://schema is the full problem JSON schema.
 
 Choosing solver.backend:
 - If the user named a backend, use it; it is never substituted.
@@ -140,7 +143,22 @@ Rules a first document most often breaks:
   (valid: false) result like any other error; it is never ignored, so an
   invented field can never silently change the problem.
 - An integer variable needs "type": "integer" with both lower_bound and
-  upper_bound, and the document must then carry "version": "1.1".
+  upper_bound.
+- Schema version: "version": "1.0" covers binary variables and linear
+  constraints. Integer variables need "version": "1.1" or later, and any
+  cardinality_constraints entry needs "version": "1.2" or later; "1.2"
+  accepts everything a "1.0" or "1.1" document may contain, with the same
+  meaning.
+- A rule that exactly, at most or at least k of a set of binary variables
+  are chosen (each exam in exactly one slot, at most one of two clashing
+  picks, at least two of these) belongs in cardinality_constraints, not in
+  constraints: an entry names the counted binary variables in "variables"
+  and takes "operator" ("==", "<=" or ">=") and "rhs" k, plus a weight when
+  soft. It means the same as a linear constraint with every coefficient 1,
+  but a hard at-most-one ("<=" with rhs 1) is then compiled on a bqm backend
+  without a slack variable. A weighted sum, or a sum over integer
+  variables, stays a linear constraint. constraints itself is still
+  required: write "constraints": [] when every rule is a cardinality one.
 - Inequality constraints (<=, >=) need integer coefficients and an integer
   rhs. Soft constraints need a positive weight in objective-value units;
   hard constraints must not carry one.

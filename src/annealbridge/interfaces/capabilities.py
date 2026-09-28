@@ -121,15 +121,20 @@ class OptimizationCapabilities(BaseModel):
     )
     schema_versions: list[str] = Field(
         description=(
-            "Every accepted problem schema version. Derived from the model, "
-            'not hard-coded; "1.1" is a superset of "1.0".'
+            "Every accepted problem schema version, oldest first. Derived "
+            "from the model, not hard-coded. Each version is a superset of "
+            'the one before it: "1.1" adds integer variables and "1.2" adds '
+            "cardinality_constraints, and a document valid under an older "
+            "version keeps its meaning under a newer one."
         )
     )
     supported_variable_types: list[str] = Field(
         description="The variable types a problem may declare."
     )
     supported_constraint_operators: list[str] = Field(
-        description="The operators a constraint may use."
+        description=(
+            "The operators a constraint may use, linear or cardinality alike."
+        )
     )
     supported_objective_terms: list[str] = Field(
         description="The kinds of objective term a problem may carry."

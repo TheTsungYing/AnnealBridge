@@ -26,7 +26,9 @@ from collections import Counter
 from pydantic import BaseModel, Field
 
 from annealbridge.models import (
+    CardinalityConstraint,
     Constraint,
+    LoweredCardinalityConstraint,
     ModelType,
     Objective,
     OptimizationProblem,
@@ -87,9 +89,12 @@ _DEFAULT_SOLVER_PREFERENCES = SolverPreferences()
 VALIDATOR_ERROR_CODES: frozenset[str] = frozenset(
     {
         "BOUNDS_ON_BINARY",
+        "CARDINALITY_VARIABLE_NOT_BINARY",
+        "DUPLICATE_CARDINALITY_VARIABLE",
         "DUPLICATE_CONSTRAINT_ID",
         "DUPLICATE_VARIABLE",
         "EMPTY_CONSTRAINT",
+        "FEATURE_REQUIRES_NEWER_VERSION",
         "HARD_CONSTRAINT_HAS_WEIGHT",
         "INEQUALITY_MAGNITUDE_TOO_LARGE",
         "INTEGER_BOUNDS_INVALID",
@@ -225,7 +230,21 @@ _WARNING_RECOMMENDED_ACTIONS: dict[str, str] = {
         "the smallest violation; remove it, or fix its bound or coefficients "
         "if it was meant to be attainable."
     ),
+    # Schema 1.2 spec §6.3: only a declared cardinality constraint gets the
+    # slack-free pairwise encoding, so an equivalent linear one is pointed
+    # at the declaration. The count is spelled out: this text holds no
+    # digit (tests/unit/test_error_catalog.py).
+    "CARDINALITY_FORM_AVAILABLE": (
+        "Declare this constraint in cardinality_constraints with operator "
+        '"<=" and rhs one to let a BQM backend encode it without a slack '
+        "variable; the meaning is unchanged."
+    ),
 }
+
+# Schema versions that predate cardinality_constraints (schema 1.2 spec
+# §6.4). Gated on the list being non-empty, never on the key being present:
+# a dump / validate round trip always carries the empty default.
+_VERSIONS_WITHOUT_CARDINALITY: frozenset[str] = frozenset({"1.0", "1.1"})
 
 
 class ProblemValidationResult(BaseModel):
@@ -314,10 +333,13 @@ def _collect(
 
     _check_variables(problem, errors)
     _check_version(problem, errors)
+    _check_feature_versions(problem, errors)
     _check_constraint_ids(problem, errors)
     _check_objective(problem, known_variables, variable_types, errors)
     for index, constraint in enumerate(problem.constraints):
         _check_constraint(constraint, index, known_variables, safe_bounds, errors)
+    for index, cardinality in enumerate(problem.cardinality_constraints):
+        _check_cardinality_constraint(cardinality, index, variable_types, errors)
     _check_solver_preferences(problem, errors)
 
     duplicate_warnings: list[SolveError] = []
@@ -377,6 +399,7 @@ def validate_problem_full(
     _warn_soft_weights(problem, objective_scale, warnings)
     _warn_inequalities(problem, bounds, warnings)
     _warn_constraint_ranges(problem, bounds, warnings)
+    _warn_cardinality_form(problem, model_type, warnings)
     _warn_integer_encoding(problem, bounds, model_type, warnings)
     if capabilities is not None:
         _warn_exact_limits(estimated, capabilities, max_compiled_variables, warnings)
@@ -409,18 +432,42 @@ def _error(*, code: str, path: str | None, message: str) -> SolveError:
     return catalog_error(code, message, path=path)
 
 
+def _constraint_paths(problem: OptimizationProblem) -> list[tuple[str, Constraint]]:
+    """``all_constraints()`` paired with the path each one was written at.
+
+    ``constraints[i]`` for a linear constraint, ``cardinality_constraints[i]``
+    for a lowered cardinality one (schema 1.2 spec §6.1), in
+    ``all_constraints()`` order. For a problem without cardinality
+    constraints this is exactly the old ``enumerate(problem.constraints)``
+    paths, so every advisory keeps its path.
+    """
+    return [
+        (f"constraints[{index}]", constraint)
+        for index, constraint in enumerate(problem.constraints)
+    ] + [
+        (f"cardinality_constraints[{index}]", cardinality.lowered())
+        for index, cardinality in enumerate(problem.cardinality_constraints)
+    ]
+
+
+def _count_phrase(count: int) -> str:
+    """``"counts n variables, so between 0 and n are chosen"`` (spec §6.5)."""
+    noun = "variable" if count == 1 else "variables"
+    return f"counts {count} {noun}, so between 0 and {count} are chosen"
+
+
 def _warn_soft_weights(
     problem: OptimizationProblem, objective_scale: float, warnings: list[SolveError]
 ) -> None:
     threshold = objective_scale * SOFT_WEIGHT_SMALL_RATIO
-    for index, constraint in enumerate(problem.constraints):
+    for base, constraint in _constraint_paths(problem):
         if constraint.type != "soft" or constraint.weight is None:
             continue
         if constraint.weight < threshold:
             warnings.append(
                 _warning(
                     "SOFT_WEIGHT_SMALL",
-                    f"constraints[{index}].weight",
+                    f"{base}.weight",
                     (
                         f"Soft constraint {constraint.id} has weight "
                         f"{constraint.weight}, below {SOFT_WEIGHT_SMALL_RATIO} "
@@ -434,31 +481,35 @@ def _warn_soft_weights(
 def _warn_inequalities(
     problem: OptimizationProblem, bounds: Bounds, warnings: list[SolveError]
 ) -> None:
-    for index, constraint in enumerate(problem.constraints):
+    for base, constraint in _constraint_paths(problem):
         if constraint.operator not in ("<=", ">="):
             continue
+        is_cardinality = isinstance(constraint, LoweredCardinalityConstraint)
         analysis = analyze_inequality(constraint, bounds)
         if analysis.redundant:
-            warnings.append(
-                _warning(
-                    "REDUNDANT_CONSTRAINT",
-                    f"constraints[{index}]",
-                    (
-                        f"Inequality constraint {constraint.id} is always "
-                        f"satisfied: lhs maximum {analysis.lhs_max} never "
-                        f"exceeds the bound"
-                    ),
+            if is_cardinality:
+                message = (
+                    f"Cardinality constraint {constraint.id} "
+                    f"{_count_phrase(len(constraint.terms))}, and requires "
+                    f"{constraint.operator} {int(constraint.rhs)}, which always holds"
                 )
-            )
+            else:
+                message = (
+                    f"Inequality constraint {constraint.id} is always "
+                    f"satisfied: lhs maximum {analysis.lhs_max} never "
+                    f"exceeds the bound"
+                )
+            warnings.append(_warning("REDUNDANT_CONSTRAINT", base, message))
             continue
         slack_bits = count_slack_bits(constraint, bounds, analysis=analysis)
         if slack_bits > LARGE_SLACK_BITS_THRESHOLD:
+            noun = "Cardinality" if is_cardinality else "Inequality"
             warnings.append(
                 _warning(
                     "LARGE_SLACK_RANGE",
-                    f"constraints[{index}]",
+                    base,
                     (
-                        f"Inequality constraint {constraint.id} would need "
+                        f"{noun} constraint {constraint.id} would need "
                         f"{slack_bits} slack bits on a BQM backend (more than "
                         f"{LARGE_SLACK_BITS_THRESHOLD}); the compiled model "
                         "grows accordingly"
@@ -489,16 +540,30 @@ def _warn_constraint_ranges(
     (``tests/golden/phase3a_compile.json``) pins the full validator output of
     a 1.0 problem containing one, and that recording is a contract.
     """
-    for index, constraint in enumerate(problem.constraints):
+    for path, constraint in _constraint_paths(problem):
         coefficients = accumulate_terms(constraint.terms)
         lhs_min, lhs_max = lhs_bounds(coefficients, bounds)
         constant = not any(value != 0.0 for value in coefficients.values())
         rhs = constraint.rhs
-        path = f"constraints[{index}]"
 
         if constraint.type == "soft" and _never_satisfiable(
             constraint.operator, lhs_min, lhs_max, rhs
         ):
+            if isinstance(constraint, LoweredCardinalityConstraint):
+                # Schema 1.2 spec §6.5: the count, not the lhs range.
+                warnings.append(
+                    _warning(
+                        "SOFT_ALWAYS_VIOLATED",
+                        path,
+                        (
+                            f"Soft cardinality constraint {constraint.id} can "
+                            f"never be satisfied: it {_count_phrase(len(constraint.terms))}, "
+                            f"but requires {constraint.operator} {int(rhs)}; "
+                            f"every solution pays weight {constraint.weight}"
+                        ),
+                    )
+                )
+                continue
             if constant:
                 detail = (
                     "its coefficients sum to zero for every variable, so the "
@@ -537,6 +602,51 @@ def _warn_constraint_ranges(
                     ),
                 )
             )
+
+
+def _warn_cardinality_form(
+    problem: OptimizationProblem, model_type: ModelType, warnings: list[SolveError]
+) -> None:
+    """Schema 1.2 spec §6.3: a linear at-most-one that could be declared.
+
+    Only a declared cardinality constraint gets the slack-free pairwise
+    encoding (never a linear one: that would change how a ``1.0`` document
+    compiles), so a hard ``"<=" 1`` over two or more distinct binary
+    variables, every coefficient exactly 1, is pointed at the declaration.
+    From version 1.2 on only (older documents cannot declare it, and their
+    advisories must not change) and on the BQM path only (the CQM path
+    compiles both forms alike).
+    """
+    if problem.version in _VERSIONS_WITHOUT_CARDINALITY or model_type != "bqm":
+        return
+    binary = {variable.name for variable in problem.variables if variable.type == "binary"}
+    for index, constraint in enumerate(problem.constraints):
+        if (
+            constraint.type != "hard"
+            or constraint.operator != "<="
+            or constraint.rhs != 1
+        ):
+            continue
+        names = [term.variable for term in constraint.terms]
+        if (
+            len(names) < 2
+            or len(set(names)) != len(names)
+            or any(term.coefficient != 1 for term in constraint.terms)
+            or any(name not in binary for name in names)
+        ):
+            continue
+        warnings.append(
+            _warning(
+                "CARDINALITY_FORM_AVAILABLE",
+                f"constraints[{index}]",
+                (
+                    f"Hard constraint {constraint.id} is an at-most-one over "
+                    f"{len(names)} binary variables; declared in "
+                    'cardinality_constraints (operator "<=", rhs 1) it compiles '
+                    "on a BQM backend without a slack variable"
+                ),
+            )
+        )
 
 
 def _warn_integer_encoding(
@@ -639,7 +749,7 @@ def _warn_embedding_density(
         max_constraint_variables = max(
             (
                 constraint_bit_count(constraint, bounds)
-                for constraint in problem.constraints
+                for constraint in problem.all_constraints()
             ),
             default=0,
         )
@@ -932,20 +1042,180 @@ def _check_version(problem: OptimizationProblem, errors: list[SolveError]) -> No
         )
 
 
+def _check_feature_versions(
+    problem: OptimizationProblem, errors: list[SolveError]
+) -> None:
+    """Schema 1.2 spec §6.4: a feature is only legal from its own version on.
+
+    ``cardinality_constraints`` needs ``"1.2"`` or later. The integer rule
+    of ``"1.1"`` keeps its own code (:func:`_check_version`) so a ``1.0``
+    document's output is unchanged; when both apply, the message says that
+    the one version fixes both, so an agent can correct it in one step.
+    """
+    if not problem.cardinality_constraints:
+        return
+    if problem.version not in _VERSIONS_WITHOUT_CARDINALITY:
+        return
+    notes: list[str] = []
+    if "version" not in problem.model_fields_set:
+        notes.append('version defaults to "1.0" when omitted')
+    if problem.version == "1.0" and any(
+        variable.type == "integer" for variable in problem.variables
+    ):
+        notes.append('"1.2" also allows the integer variables')
+    message = (
+        'cardinality_constraints requires version "1.2" or later, but version '
+        f"is {problem.version!r}"
+    )
+    if notes:
+        message += "; " + "; ".join(notes)
+    errors.append(
+        _error(code="FEATURE_REQUIRES_NEWER_VERSION", path="version", message=message)
+    )
+
+
 def _check_constraint_ids(
     problem: OptimizationProblem, errors: list[SolveError]
 ) -> None:
+    """Every constraint id is unique across both constraint lists.
+
+    Reads the ids only (never ``lowered()``), so it holds for any document
+    the schema accepted (schema 1.2 spec §6.2).
+    """
+    entries = [
+        (f"constraints[{index}]", constraint.id)
+        for index, constraint in enumerate(problem.constraints)
+    ] + [
+        (f"cardinality_constraints[{index}]", cardinality.id)
+        for index, cardinality in enumerate(problem.cardinality_constraints)
+    ]
     seen: set[str] = set()
-    for index, constraint in enumerate(problem.constraints):
-        if constraint.id in seen:
+    for path, constraint_id in entries:
+        if constraint_id in seen:
             errors.append(
                 _error(
                     code="DUPLICATE_CONSTRAINT_ID",
-                    path=f"constraints[{index}]",
-                    message=f"Constraint id {constraint.id} is used more than once",
+                    path=path,
+                    message=f"Constraint id {constraint_id} is used more than once",
                 )
             )
-        seen.add(constraint.id)
+        seen.add(constraint_id)
+
+
+def _check_cardinality_constraint(
+    cardinality: CardinalityConstraint,
+    index: int,
+    variable_types: dict[str, str],
+    errors: list[SolveError],
+) -> None:
+    """Schema 1.2 spec §6.2: a cardinality constraint in its own terms.
+
+    The paths point into ``cardinality_constraints`` and the messages talk
+    about counting chosen variables; the recommended actions are the
+    catalog's, shared with linear constraints. The range verdict runs only
+    on a declaration without structural errors, where exactly
+    ``len(variables)`` distinct binary variables are counted and the count
+    ranges over ``[0, n]``; it is :func:`_never_satisfiable`, the judgement
+    ``TRIVIALLY_INFEASIBLE`` applies to linear constraints, over the same
+    range the lowered linear constraint has, so it agrees with
+    ``validate_solution``.
+    """
+    base = f"cardinality_constraints[{index}]"
+    errors_before = len(errors)
+
+    if not cardinality.variables:
+        errors.append(
+            _error(
+                code="EMPTY_CONSTRAINT",
+                path=base,
+                message=f"Cardinality constraint {cardinality.id} lists no variables",
+            )
+        )
+
+    seen: set[str] = set()
+    for position, name in enumerate(cardinality.variables):
+        path = f"{base}.variables[{position}]"
+        variable_type = variable_types.get(name)
+        if variable_type is None:
+            errors.append(
+                _error(
+                    code="UNKNOWN_VARIABLE",
+                    path=path,
+                    message=(
+                        f"Cardinality constraint {cardinality.id} counts variable "
+                        f"{name!r}, which is not declared in variables"
+                    ),
+                )
+            )
+        elif variable_type != "binary":
+            errors.append(
+                _error(
+                    code="CARDINALITY_VARIABLE_NOT_BINARY",
+                    path=path,
+                    message=(
+                        f"Cardinality constraint {cardinality.id} counts {name!r}, "
+                        f"which is an {variable_type} variable; only binary "
+                        "variables can be counted"
+                    ),
+                )
+            )
+        if name in seen:
+            errors.append(
+                _error(
+                    code="DUPLICATE_CARDINALITY_VARIABLE",
+                    path=path,
+                    message=(
+                        f"Cardinality constraint {cardinality.id} lists variable "
+                        f"{name!r} more than once; each variable is counted once"
+                    ),
+                )
+            )
+        seen.add(name)
+
+    if cardinality.type == "hard":
+        if cardinality.weight is not None:
+            errors.append(
+                _error(
+                    code="HARD_CONSTRAINT_HAS_WEIGHT",
+                    path=f"{base}.weight",
+                    message=(
+                        f"Hard constraint {cardinality.id} must not carry a weight; "
+                        "hard penalty strength is chosen by the penalty strategy"
+                    ),
+                )
+            )
+    else:
+        if cardinality.weight is None or cardinality.weight <= 0:
+            errors.append(
+                _error(
+                    code="SOFT_CONSTRAINT_MISSING_WEIGHT",
+                    path=f"{base}.weight",
+                    message=(
+                        f"Soft constraint {cardinality.id} requires a weight > 0, "
+                        f"got {cardinality.weight}"
+                    ),
+                )
+            )
+        elif not math.isfinite(cardinality.weight):
+            errors.append(
+                _non_finite(f"weight {cardinality.weight}", f"{base}.weight")
+            )
+
+    if len(errors) != errors_before or cardinality.type != "hard":
+        return
+    count = len(cardinality.variables)
+    if _never_satisfiable(cardinality.operator, 0.0, float(count), float(cardinality.rhs)):
+        errors.append(
+            _error(
+                code="TRIVIALLY_INFEASIBLE",
+                path=base,
+                message=(
+                    f"Hard cardinality constraint {cardinality.id} "
+                    f"{_count_phrase(count)}, but requires "
+                    f"{cardinality.operator} {cardinality.rhs}"
+                ),
+            )
+        )
 
 
 def _check_objective(

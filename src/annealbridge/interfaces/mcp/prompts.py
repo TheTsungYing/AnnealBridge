@@ -61,7 +61,7 @@ EXAMPLES: dict[str, dict] = {
         "solver": {"backend": "exact"},
     },
     "assign": {
-        "version": "1.0",
+        "version": "1.2",
         "name": "assign_workers",
         "description": (
             "Assign two workers to two tasks, one task each and one worker "
@@ -83,44 +83,33 @@ EXAMPLES: dict[str, dict] = {
                 {"variable": "bo_drive", "coefficient": 5},
             ],
         },
-        "constraints": [
+        "constraints": [],
+        "cardinality_constraints": [
             {
                 "id": "ann_one_task",
                 "type": "hard",
-                "terms": [
-                    {"variable": "ann_cook", "coefficient": 1},
-                    {"variable": "ann_drive", "coefficient": 1},
-                ],
+                "variables": ["ann_cook", "ann_drive"],
                 "operator": "==",
                 "rhs": 1,
             },
             {
                 "id": "bo_one_task",
                 "type": "hard",
-                "terms": [
-                    {"variable": "bo_cook", "coefficient": 1},
-                    {"variable": "bo_drive", "coefficient": 1},
-                ],
+                "variables": ["bo_cook", "bo_drive"],
                 "operator": "==",
                 "rhs": 1,
             },
             {
                 "id": "cook_one_worker",
                 "type": "hard",
-                "terms": [
-                    {"variable": "ann_cook", "coefficient": 1},
-                    {"variable": "bo_cook", "coefficient": 1},
-                ],
+                "variables": ["ann_cook", "bo_cook"],
                 "operator": "==",
                 "rhs": 1,
             },
             {
                 "id": "drive_one_worker",
                 "type": "hard",
-                "terms": [
-                    {"variable": "ann_drive", "coefficient": 1},
-                    {"variable": "bo_drive", "coefficient": 1},
-                ],
+                "variables": ["ann_drive", "bo_drive"],
                 "operator": "==",
                 "rhs": 1,
             },
@@ -128,7 +117,7 @@ EXAMPLES: dict[str, dict] = {
         "solver": {"backend": "exact"},
     },
     "schedule_shifts": {
-        "version": "1.0",
+        "version": "1.2",
         "name": "schedule_shifts",
         "description": (
             "Cover a morning and an evening shift with exactly one person "
@@ -151,51 +140,40 @@ EXAMPLES: dict[str, dict] = {
                 {"variable": "bo_evening", "coefficient": 1},
             ],
         },
-        "constraints": [
+        "constraints": [],
+        "cardinality_constraints": [
             {
                 "id": "morning_covered",
                 "type": "hard",
-                "terms": [
-                    {"variable": "ann_morning", "coefficient": 1},
-                    {"variable": "bo_morning", "coefficient": 1},
-                ],
+                "variables": ["ann_morning", "bo_morning"],
                 "operator": "==",
                 "rhs": 1,
             },
             {
                 "id": "evening_covered",
                 "type": "hard",
-                "terms": [
-                    {"variable": "ann_evening", "coefficient": 1},
-                    {"variable": "bo_evening", "coefficient": 1},
-                ],
+                "variables": ["ann_evening", "bo_evening"],
                 "operator": "==",
                 "rhs": 1,
             },
             {
                 "id": "ann_at_most_one_shift",
                 "type": "hard",
-                "terms": [
-                    {"variable": "ann_morning", "coefficient": 1},
-                    {"variable": "ann_evening", "coefficient": 1},
-                ],
+                "variables": ["ann_morning", "ann_evening"],
                 "operator": "<=",
                 "rhs": 1,
             },
             {
                 "id": "bo_at_most_one_shift",
                 "type": "hard",
-                "terms": [
-                    {"variable": "bo_morning", "coefficient": 1},
-                    {"variable": "bo_evening", "coefficient": 1},
-                ],
+                "variables": ["bo_morning", "bo_evening"],
                 "operator": "<=",
                 "rhs": 1,
             },
             {
                 "id": "bo_prefers_not_morning",
                 "type": "soft",
-                "terms": [{"variable": "bo_morning", "coefficient": 1}],
+                "variables": ["bo_morning"],
                 "operator": "<=",
                 "rhs": 0,
                 "weight": 2,
@@ -215,10 +193,22 @@ Request = Annotated[
 # Shared by the three prompts: how a document is finished and which tool
 # runs it. Mirrors the server instructions; it adds no rule of its own.
 _COMMON_TAIL = """\
-Schema version: declare "version": "1.0" when every variable is binary. If any
-decision is a bounded count rather than yes/no, declare it with "type":
-"integer" plus integer lower_bound and upper_bound, and then the document must
-carry "version": "1.1" at its top level.
+Schema version: declare "version": "1.0" when every variable is binary and
+every constraint is a linear one in constraints. If any decision is a bounded
+count rather than yes/no, declare it with "type": "integer" plus integer
+lower_bound and upper_bound, and then the document must carry "version": "1.1"
+or later at its top level. Any cardinality_constraints entry needs "version":
+"1.2" or later; "1.2" accepts everything a "1.0" or "1.1" document may
+contain, with the same meaning.
+
+Cardinality: a rule that exactly, at most or at least k of a set of binary
+variables are chosen is an entry of cardinality_constraints (its id, type, the
+counted "variables", "operator" "==", "<=" or ">=", and "rhs" k, plus a weight
+when soft) rather than a linear constraint with every coefficient 1. It means
+the same, but a hard at-most-one ("<=" with rhs 1) is then compiled on a bqm
+backend without a slack variable. A weighted sum, or a sum over integer
+variables, stays a linear constraint in constraints; constraints is required
+even when it is empty ([]).
 
 Rules: a hard constraint must hold; a soft constraint is only penalized and
 needs a positive weight in objective-value units (a hard one must not carry a
@@ -288,9 +278,12 @@ value (or cost); direction "maximize" for value, "minimize" for cost.
 
 Constraints: one hard constraint per limit (budget, weight, volume, slots)
 with one term per item whose coefficient is that item's contribution, operator
-"<=" and the limit as rhs. A requirement such as "at least two of these" is a
-hard constraint with operator ">=". A preference ("ideally not both A and B")
-is a soft constraint with a weight."""
+"<=" and the limit as rhs. A requirement that only counts items, such as "at
+least two of these", is a hard cardinality constraint over those items with
+operator ">=" and rhs 2. A preference ("ideally not both A and B") is a soft
+cardinality constraint over A and B with operator "<=", rhs 1 and a weight.
+A document with any cardinality constraint declares "version": "1.2" (the
+example below has none, so it stays "1.0")."""
     return _render(intro, body, "pick_subset", request)
 
 
@@ -299,8 +292,9 @@ is a soft constraint with a weight."""
     title="Assign people or jobs to seats, shifts or machines",
     description=(
         "Guide for a request of the form 'who does what' or 'what goes where' "
-        "(an assignment): one binary per pairing, exactly-one constraints per "
-        "side, a cost or preference objective, and which tools to call. "
+        "(an assignment): one binary per pairing, exactly-one cardinality "
+        "constraints per side, a cost or preference objective, and which tools "
+        "to call. "
         "Optionally takes the user's request in their own words."
     ),
 )
@@ -321,12 +315,13 @@ Where the cost of a pairing depends on another pairing being chosen too, add
 an entry to the objective's quadratic_terms (variable1, variable2,
 coefficient) over the two variables.
 
-Constraints: for each member of the first group, one hard constraint summing
-its pairings with operator "==" and rhs 1 (everyone gets exactly one task);
-for each member of the second group, one hard constraint summing its pairings
-with "==" 1 (every task gets exactly one person), or "<=" 1 when a task may
-stay unfilled, or "<=" with a larger rhs when it takes several people.
-Preferences that may be broken are soft constraints with a weight."""
+Constraints, each a cardinality constraint whose variables are pairings: for
+each member of the first group, one hard constraint over its pairings with
+operator "==" and rhs 1 (everyone gets exactly one task); for each member of
+the second group, one hard constraint over its pairings with "==" 1 (every
+task gets exactly one person), or "<=" 1 when a task may stay unfilled, or
+"<=" with a larger rhs when it takes several people. Preferences that may be
+broken are soft constraints with a weight."""
     return _render(intro, body, "assign", request)
 
 
@@ -336,7 +331,8 @@ Preferences that may be broken are soft constraints with a weight."""
     description=(
         "Guide for a request of the form 'who works which shift' (a roster): "
         "one binary per person/shift, coverage and workload limits as hard "
-        "constraints, preferences as soft ones, and which tools to call. "
+        "cardinality constraints, preferences as soft ones, and which tools to "
+        "call. "
         "Optionally takes the user's request in their own words."
     ),
 )
@@ -357,14 +353,14 @@ for a disliked one), or "maximize" with a preference score; if every
 assignment is equally fine, keep every coefficient 0 and let the constraints
 decide.
 
-Constraints, all hard unless the user says a rule may bend: for each shift,
-one constraint summing that shift's pairs with operator "==" and rhs equal to
-the number of people it needs (or "<=" the number it can hold, or ">=" the
-minimum it must have); for each person, one constraint summing their pairs
-with "<=" and rhs equal to the most shifts they may work (and ">=" for a
-minimum). Two shifts the same person must not work back to back are one
-constraint over those two pairs with "<=" 1. A preference (someone would
-rather not work evenings) is a soft constraint over those pairs with operator
-"<=", rhs 0 and a weight that says how much it matters relative to the
-objective."""
+Constraints, each a cardinality constraint whose variables are person/shift
+pairs, all hard unless the user says a rule may bend: for each shift, one over
+that shift's pairs with operator "==" and rhs equal to the number of people it
+needs (or "<=" the number it can hold, or ">=" the minimum it must have); for
+each person, one over their pairs with "<=" and rhs equal to the most shifts
+they may work (and ">=" for a minimum). Two shifts the same person must not
+work back to back are one constraint over those two pairs with "<=" 1. A
+preference (someone would rather not work evenings) is a soft constraint over
+those pairs with operator "<=", rhs 0 and a weight that says how much it
+matters relative to the objective."""
     return _render(intro, body, "schedule_shifts", request)

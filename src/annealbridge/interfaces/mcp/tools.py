@@ -176,14 +176,19 @@ async def get_optimization_capabilities(
     The full problem JSON schema is several times the size of everything
     else, so problem_json_schema is null unless include_schema is true. Ask
     for it when the document needs more than the example shows — integer
-    variables, soft constraints, solver preferences — or before inventing a
-    field; every field description is in it.
+    variables, soft constraints, cardinality constraints, solver
+    preferences — or before inventing a field; every field description is
+    in it.
 
     supported_variable_types lists the variable types a problem may declare —
     "binary" and "integer" — and schema_versions lists every problem schema
-    version this server accepts, newest last. Integer variables are only
-    allowed when the problem carries "version": "1.1" at its top level;
-    "version": "1.0" accepts binary variables only.
+    version this server accepts, newest last; each version accepts everything
+    the one before it does. Integer variables are only allowed when the
+    problem carries "version": "1.1" or later at its top level, and
+    cardinality_constraints (exactly, at most or at least k of a set of
+    binary variables chosen) only with "version": "1.2" or later;
+    "version": "1.0" accepts binary variables and linear constraints only.
+    supported_constraint_operators applies to cardinality constraints too.
     """
     state = get_state()
     return build_capabilities(
@@ -217,11 +222,22 @@ async def validate_optimization_problem(
     schema (get_optimization_capabilities with include_schema: true returns
     it as problem_json_schema) before inventing a field.
 
+    Cardinality constraints are checked in their own terms: an error or
+    warning about one names its path under cardinality_constraints (for
+    example cardinality_constraints[0].variables[2]). In a document of
+    version "1.2" or later, a hard linear constraint that is an at-most-one
+    (two or more distinct binary variables, every coefficient 1, operator
+    "<=", rhs 1) gets the advisory warning CARDINALITY_FORM_AVAILABLE on a
+    bqm backend: declared in cardinality_constraints it would need no slack
+    variable.
+
     The estimate follows the model type the chosen backend compiles to. On a
     bqm backend it counts the slack bits of every inequality constraint plus
     the binary-encoding bits of every integer variable, so a wider
-    lower_bound..upper_bound range costs more compiled variables. On a cqm
-    backend integer variables are native and no encoding bits are counted.
+    lower_bound..upper_bound range costs more compiled variables; a hard
+    cardinality constraint with operator "<=" and rhs 1 (at most one) is a
+    pairwise penalty there and has no slack bits. On a cqm backend integer
+    variables are native and no encoding bits are counted.
     """
     parsed = _parse("validate_optimization_problem", problem)
     if not isinstance(parsed, OptimizationProblem):
@@ -286,15 +302,23 @@ async def solve_optimization(
 
     Call this only after translating the user's request into explicit binary or
     bounded-integer variables, an objective (linear/quadratic, minimize or
-    maximize), and hard or soft linear constraints. Do not pass natural-language
-    requirements.
+    maximize), and hard or soft linear or cardinality constraints. Do not pass
+    natural-language requirements.
+
+    A rule that exactly, at most or at least k of a set of binary variables are
+    chosen is written in cardinality_constraints (the counted "variables",
+    "operator" and "rhs" k), which needs "version": "1.2" or later; a hard
+    at-most-one written there compiles on a bqm backend without a slack
+    variable. Each one is evaluated in constraint_evaluations under its own
+    id, after the linear constraints, with actual_value the number of chosen
+    variables.
 
     An integer variable is declared with "type": "integer" plus integer
     lower_bound and upper_bound (both required), and the problem must then carry
-    "version": "1.1" at its top level. A backend that compiles to bqm encodes
-    each integer in binary, so the compiled size grows with the range of the
-    bounds; a backend that compiles to cqm takes integers natively. Integer
-    values come back as ints inside their declared bounds.
+    "version": "1.1" or later at its top level. A backend that compiles to bqm
+    encodes each integer in binary, so the compiled size grows with the range
+    of the bounds; a backend that compiles to cqm takes integers natively.
+    Integer values come back as ints inside their declared bounds.
 
     Inequality constraints (<=, >=) require integer coefficients and right-hand
     sides. Soft constraint weights are in objective units.

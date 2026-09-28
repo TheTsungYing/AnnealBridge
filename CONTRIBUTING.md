@@ -152,7 +152,17 @@ models ← validation ← penalty ← compiler ← solvers ← orchestration ←
 - imports a third-party HTTP client anywhere in the core;
 - requires a pipeline change to run a new backend (a fake extra backend is
   plugged in during the test and the service, validator and interfaces must
-  work unchanged).
+  work unchanged);
+- reads `problem.constraints` directly anywhere in `src/` outside the
+  allowlist in `tests/architecture/test_constraint_access.py` — every other
+  reader goes through `OptimizationProblem.all_constraints()`, so a
+  cardinality constraint (schema 1.2) can never be skipped. The check is
+  deny-by-default, per (file, function): a new helper in an allowlisted file
+  is still a violation;
+- makes `validation/solution_validator.py`, `orchestration/candidates.py` or
+  `orchestration/postprocess.py` refer to `uses_pairwise_penalty`: judging and
+  post-processing a candidate must not depend on how a constraint was
+  encoded.
 
 Read [docs/architecture.md](docs/architecture.md) before touching anything
 below `interfaces/`.

@@ -9,6 +9,10 @@ from annealbridge.models.capabilities import (
     ParameterLimit,
     SolverCapabilities,
 )
+from annealbridge.models.cardinality import (
+    CardinalityConstraint,
+    LoweredCardinalityConstraint,
+)
 from annealbridge.models.compiled import (
     CompiledProblem,
     ConstraintTrace,
@@ -52,6 +56,7 @@ __all__ = [
     "catalog_error",
     "AvailabilityCategory",
     "AvailabilityStatus",
+    "CardinalityConstraint",
     "ClosestCandidate",
     "CompiledProblem",
     "HardViolationRate",
@@ -67,6 +72,7 @@ __all__ = [
     "LeapHybridBQMOptions",
     "LeapHybridCQMOptions",
     "LinearTerm",
+    "LoweredCardinalityConstraint",
     "ModelType",
     "Objective",
     "OptimizationProblem",

@@ -35,7 +35,11 @@ class ConstraintEvaluation(BaseModel):
         )
     )
     actual_value: float = Field(
-        description="The constraint's left-hand side evaluated at this assignment."
+        description=(
+            "The constraint's left-hand side evaluated at this assignment; "
+            "for a cardinality constraint, the number of its variables that "
+            "are chosen (equal to 1)."
+        )
     )
     operator: str = Field(
         description='The constraint\'s operator: "==", "<=" or ">=".'
@@ -71,7 +75,10 @@ class ValidationResult(BaseModel):
         )
     )
     evaluations: list[ConstraintEvaluation] = Field(
-        description="One entry per constraint, hard and soft, in problem order."
+        description=(
+            "One entry per constraint, hard and soft, in problem order: "
+            "constraints first, then cardinality_constraints."
+        )
     )
     hard_violations: list[ConstraintEvaluation] = Field(
         description=(
@@ -177,7 +184,10 @@ class Solution(BaseModel):
         )
     )
     constraint_evaluations: list[ConstraintEvaluation] = Field(
-        description="One entry per constraint, hard and soft, in problem order."
+        description=(
+            "One entry per constraint, hard and soft, in problem order: "
+            "constraints first, then cardinality_constraints."
+        )
     )
 
 
@@ -259,8 +269,9 @@ class InfeasibilityDiagnostics(BaseModel):
     hard_violation_rates: list[HardViolationRate] = Field(
         description=(
             "One entry per hard constraint, in the problem's constraint "
-            "order. Soft constraints never appear: they cannot make a "
-            "candidate infeasible."
+            "order: constraints first, then cardinality_constraints, each in "
+            "declaration order. Soft constraints never appear: they cannot "
+            "make a candidate infeasible."
         )
     )
 

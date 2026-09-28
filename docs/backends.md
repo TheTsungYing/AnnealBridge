@@ -302,6 +302,24 @@ configured. See [CLI](cli.md#capabilities).
   knapsack example needs roughly 2000 reads to be reliable. Neither more
   integration steps nor a steepest-descent polish improved that when measured,
   so no polish is applied.
+- **Hard at-most-one groups: mixed results, one collapse.** A hard
+  [cardinality](problem-format.md#cardinality-constraints-version-12)
+  at-most-one (schema `1.2`) compiles to a pairwise penalty without slack
+  bits. Measured against the slack form on six binary problems, that
+  encoding improved this backend's best objective on a weighted independent
+  set and on a timetabling problem, but on a weighted set-packing problem
+  (maximize) its samples collapsed to nearly all zeros — a feasible, poor
+  answer, since all zeros satisfies every at-most-one. The cause is not
+  known — a stronger field does not explain it, because with the pairwise
+  coefficient doubled, which gives the business spins exactly the fields and
+  couplings of the slack form, the result was still far below the slack
+  form's. On two other problems it was already degenerate with the slack
+  form. For a
+  packing-style maximize problem with many at-most-one groups, prefer
+  `simulated_annealing` or `tabu` (which gained the most from the encoding),
+  or turn on `solver.postprocess: "repair_local_search"`. Every result is
+  re-validated against the original problem either way, so the weakness shows
+  up as a low objective, never as a wrong one.
 - `num_reads` is bounded by `ANNEALBRIDGE_MAX_LOCAL_READS`
   (`LOCAL_READS_LIMIT`) and `num_sweeps` by `ANNEALBRIDGE_MAX_SWEEPS`
   (`SWEEPS_LIMIT`). There is no time-limit ceiling, because the dynamics read
@@ -484,7 +502,9 @@ other two D-Wave backends, but its solving model differs in several ways.
 `dimod.ConstrainedQuadraticModel`, so hard constraints are submitted natively:
 no penalty λ, no slack variables. Soft constraints become weighted constraints
 (`weight × violation²`, the same formula the validator uses for
-`soft_violation_score`).
+`soft_violation_score`). A cardinality constraint (schema `1.2`) is submitted
+as the native linear constraint it means, exactly like the equivalent linear
+constraint; a one-hot group is not marked as a discrete group.
 
 **No retries.** Because there is no penalty to double, there is always exactly
 one attempt, `SolveAttempt.penalty` is `null`, and no `REMOTE_RETRIES_DISABLED`

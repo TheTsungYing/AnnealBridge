@@ -34,6 +34,18 @@ NAMED_TOOLS = (
     "get_optimization_capabilities",
 )
 
+# The optimum each embedded example is proven to reach, worked by hand:
+# pick_subset takes A and C (value 17, weight 10; A and B weigh 11); assign
+# gives ann cook and bo drive (2 + 5, the other matching costs 15);
+# schedule_shifts puts ann on the morning and bo on the evening (1 + 1, the
+# other roster costs 6 plus the soft weight 2 for bo's morning).
+PROVEN_OPTIMA = {"pick_subset": 17.0, "assign": 7.0, "schedule_shifts": 2.0}
+
+# The schema version each example declares: the two whose rules only count
+# chosen pairings are written in cardinality_constraints (schema 1.2); the
+# knapsack's weight limit is a weighted sum and stays a 1.0 linear constraint.
+EXAMPLE_VERSIONS = {"pick_subset": "1.0", "assign": "1.2", "schedule_shifts": "1.2"}
+
 
 async def _prompt_text(name: str, arguments: dict | None = None) -> str:
     """The single user message of ``name``, rendered with ``arguments``."""
@@ -109,6 +121,22 @@ async def test_the_embedded_example_solves_to_a_proven_optimum(name):
     assert result.optimality_proven is True
     assert result.solutions
     assert result.solutions[0].hard_constraints_satisfied is True
+    assert result.solutions[0].objective_value == PROVEN_OPTIMA[name]
+    assert result.solutions[0].soft_violation_score == 0.0
+
+
+@pytest.mark.parametrize("name", PROMPT_NAMES)
+def test_counting_rules_are_written_as_cardinality_constraints(name):
+    example = prompts.EXAMPLES[name]
+
+    assert example["version"] == EXAMPLE_VERSIONS[name]
+    if example["version"] == "1.2":
+        # Every rule only counts chosen pairings, so none is a linear one;
+        # constraints is still present because the schema requires it.
+        assert example["constraints"] == []
+        assert example["cardinality_constraints"]
+    else:
+        assert "cardinality_constraints" not in example
 
 
 @pytest.mark.parametrize("name", PROMPT_NAMES)

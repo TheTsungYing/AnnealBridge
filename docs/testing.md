@@ -57,11 +57,11 @@ fixture with a no-op — it is the one place that needs the real credentials.
 | --- | --- |
 | `tests/unit/` | Models, validators, the bounds-aware size estimates (checked against brute-force enumeration), slack and integer encoding, both compilers including their integer paths, the `decode` step, the penalty strategy, the policy limits, backend routing, candidate arrays over integer rows, and each solver backend |
 | `tests/scenarios/` | The full JSON → validate → compile → solve → re-validate → rank pipeline on the shipped examples, including the integer knapsack down all five paths (exact, simulated annealing, tabu, simulated bifurcation, a fake CQM backend) reaching the same optimum |
-| `tests/mcp/` | The four MCP tools, three prompts and six resources driven through an in-memory MCP client, plus the tool list, the generated schemas, the thread offload, the progress notifications and the stdio entry point (a few real subprocess checks; the rest of its argument and settings handling in-process) |
+| `tests/mcp/` | The four MCP tools, three prompts and seven resources driven through an in-memory MCP client, plus the tool list, the generated schemas, the thread offload, the progress notifications and the stdio entry point (a few real subprocess checks; the rest of its argument and settings handling in-process) |
 | `tests/remote_mock/` | The D-Wave backends against mocked samplers (with the contract all three Ocean backends share written once, in `ocean_contract.py`) and the Fujitsu backend against a scripted HTTP transport — request shape, polling, delete / cancel, every error mapping — plus the real `UrllibTransport` against a loopback server and the credential-leak suite |
 | `tests/remote_live/` | Opt-in tests against real vendor hardware (see above) |
-| `tests/architecture/` | The import boundaries, the no-backend-name rule, the no-third-party-HTTP rule and the fifth-backend rule, all described in [Architecture](architecture.md#enforced-boundaries) |
-| `tests/golden/` | The recorded snapshot the golden test compares against, and the script that recorded it |
+| `tests/architecture/` | The import boundaries, the no-backend-name rule, the no-third-party-HTTP rule, the fifth-backend rule and the constraint-access rule (every constraint read goes through `all_constraints()`, and solution checking never looks at the encoding decision), all described in [Architecture](architecture.md#enforced-boundaries) |
+| `tests/golden/` | The recorded snapshots the golden tests compare against, and the scripts that recorded them |
 | `tests/fakes/` | Shared test doubles: a declared fake backend, a local CQM backend and a scripted Fujitsu transport |
 
 ## The GPU path
@@ -90,6 +90,49 @@ sides so tuples and lists compare alike, and floats survive that round-trip
 exactly. The test also asserts that the recorded problem list and the script's
 list still describe the same problems, so a problem added on one side without
 re-recording the other is a failure rather than a silent gap.
+
+### The compatibility golden
+
+Before cardinality constraints (schema `1.2`) touched the validator, the
+solution validator, post-processing, routing and the compilers, a second,
+wider snapshot was recorded from commit `a377f35`:
+`tests/golden/compat_a377f35.json`, written by
+`tests/golden/record_compat_golden.py` and replayed by
+`tests/unit/test_golden_compat.py`. It covers a fixed list of `1.0` **and**
+`1.1` problems — the `1.0` problems of the first golden, the shipped
+examples (three of them also relabelled `1.1`), integer problems with negative
+bounds, soft integer inequalities and integer squares, and problems built to
+end `infeasible` — and records for each:
+
+- the same compiled-model snapshot as the first golden (both compiled models,
+  the estimates, the penalty scale, both full validations), plus the CQM
+  variable domains and each constraint's one-hot marking;
+- the solution validator on fixed sample rows (all-lower, all-upper and 16
+  rows drawn with a fixed seed, stored in the golden so the inputs never
+  depend on the random stream): the full `ValidationResult` and the batch
+  arrays;
+- the backend recommendation over the four local backends;
+- the post-processing move costs;
+- the `exact` solve of every problem that compiles to at most 20 variables,
+  keeping only the fields that cannot vary between runs, including the
+  infeasibility diagnostics;
+- the schema errors of a set of malformed documents. The two whose outcome
+  was expected to change — `"version": "1.2"`, and a `cardinality_constraints`
+  key in a `1.0` document, both schema errors before version `1.2` existed —
+  are kept apart as a record of the difference rather than asserted.
+
+Each problem and each section is its own test case, so a failure names the
+section that moved, and every recorded problem must be `1.0` or `1.1`. Like
+the first golden it is never re-recorded to make a test pass.
+
+The behaviour of schema `1.2` itself — the pairwise encoding, `==` / `<=` /
+`>=` cardinality constraints, soft ones, mixes with linear constraints and
+integer variables, redundant ones and the `exam_timetabling` example — is
+frozen by `tests/golden/schema_1_2_compile.json`, recorded by
+`tests/golden/record_schema_1_2_golden.py` and replayed by
+`tests/unit/test_golden_schema_1_2.py`. Its correctness is proven by the unit
+tests (equivalence with the linear form, exhaustive dominance and soft-score
+checks); the golden only keeps it from drifting afterwards.
 
 ## Rules the suite holds itself to
 
