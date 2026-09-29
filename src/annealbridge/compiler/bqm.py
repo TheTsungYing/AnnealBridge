@@ -375,6 +375,7 @@ class BQMCompiler:
         :meth:`compile` itself is ``prepare(problem).compile(hard_penalty)``,
         so there is one code path.
         """
+        problem.require_expanded("BQMCompiler.prepare")
         bounds = variable_bounds(problem)
         forms, encodings = encode_integer_variables(problem)
         # The biases accumulate in Python and dimod builds the model once at

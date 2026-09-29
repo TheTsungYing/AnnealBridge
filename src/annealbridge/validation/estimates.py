@@ -46,6 +46,7 @@ def variable_bounds(problem: OptimizationProblem) -> dict[str, tuple[int, int]]:
     Binary variables map to ``(0, 1)``. Only meaningful after the validator's
     error pass (``Variable.bounds()`` raises for incomplete integer bounds).
     """
+    problem.require_expanded("variable_bounds")
     return {variable.name: variable.bounds() for variable in problem.variables}
 
 
@@ -220,6 +221,7 @@ def compute_objective_scale(objective: Objective, bounds: Bounds | None = None) 
     it. With a range that excludes zero the magnitude bound was larger than
     needed; the scale is now the range either way.
     """
+    objective.require_expanded("compute_objective_scale")
     total = sum(
         abs(term.coefficient) * _linear_width(bounds, term.variable)
         for term in objective.linear_terms
@@ -676,6 +678,7 @@ def estimate_interaction_density(problem: OptimizationProblem) -> float:
     the number of declared variables. Fewer than two variables have no pair
     and give 0.0.
     """
+    problem.require_expanded("estimate_interaction_density")
     count = len(problem.variables)
     pairs = count * (count - 1) // 2
     if pairs <= 0:

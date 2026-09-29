@@ -73,7 +73,8 @@ EXAMPLE_PROBLEM: dict = {
 # directly, a remote one or a large problem is validated first — how to turn
 # a recommendation into the one backend the request carries, including when
 # to put that choice to the user instead of deciding alone, the rules a
-# first document most often breaks, and one complete example. Like every
+# first document most often breaks, how a large regular problem is written
+# as schema 1.3 templates, and one complete example. Like every
 # recommended_action it names no configuration values and no limits — those
 # come from get_optimization_capabilities, and the reason codes it points at
 # are categorical, so nothing here goes stale when a setting changes.
@@ -82,7 +83,9 @@ SERVER_INSTRUCTIONS = (
 as a structured JSON document (binary or bounded-integer variables, a linear
 or quadratic objective, hard and soft linear constraints, and hard and soft
 cardinality constraints on how many of a set of binary variables are
-chosen). Use it when the user asks, in whatever words, which items to take
+chosen; from schema "1.3" a large, regular problem can instead be written
+once over index sets as templates, which the server expands into those same
+entries). Use it when the user asks, in whatever words, which items to take
 within a budget, weight or capacity; how to assign people or jobs to seats,
 shifts or machines; in which order to visit a handful of places; or how to
 split things into groups or pick a subset that meets several requirements
@@ -95,7 +98,7 @@ dropped.
 When to call each tool:
 - get_optimization_capabilities - when you need to know which backends are
   available and enabled and which limits apply, or the accepted schema
-  versions (schema_versions: "1.0", "1.1" and "1.2", each accepting
+  versions (schema_versions: "1.0", "1.1", "1.2" and "1.3", each accepting
   everything the one before it does). The full problem JSON schema
   (problem_json_schema) is only included when you pass include_schema:
   true; ask for it when the document needs more than the example below
@@ -120,8 +123,9 @@ Three prompts (pick_subset, assign, schedule_shifts) walk through turning a
 request of one of those shapes into a document, each ending in a complete
 example.
 The resources under annealbridge://examples/ (knapsack, integer_knapsack,
-assignment, tsp, shift_scheduling, exam_timetabling) are complete example
-documents, and annealbridge://schema is the full problem JSON schema.
+assignment, tsp, shift_scheduling, exam_timetabling, tsp_template) are
+complete example documents, and annealbridge://schema is the full problem
+JSON schema.
 
 Choosing solver.backend:
 - If the user named a backend, use it; it is never substituted.
@@ -145,10 +149,12 @@ Rules a first document most often breaks:
 - An integer variable needs "type": "integer" with both lower_bound and
   upper_bound.
 - Schema version: "version": "1.0" covers binary variables and linear
-  constraints. Integer variables need "version": "1.1" or later, and any
-  cardinality_constraints entry needs "version": "1.2" or later; "1.2"
-  accepts everything a "1.0" or "1.1" document may contain, with the same
-  meaning.
+  constraints. Integer variables need "version": "1.1" or later, any
+  cardinality_constraints entry needs "version": "1.2" or later, and a
+  document that uses index_sets, parameters, variable_families or any
+  *_templates field needs "version": "1.3". Each version accepts everything
+  the ones before it may contain, with the same meaning, so "1.3" accepts
+  every "1.2" document.
 - A rule that exactly, at most or at least k of a set of binary variables
   are chosen (each exam in exactly one slot, at most one of two clashing
   picks, at least two of these) belongs in cardinality_constraints, not in
@@ -169,6 +175,25 @@ Rules a first document most often breaks:
   which often helps a heuristic backend whose samples are infeasible or far
   from optimal, at some extra solve time; every such solution is
   re-validated and marked by its source field.
+
+Templates ("version": "1.3"), for a problem too large or too regular to list
+entry by entry (every city at every tour position, every person on every
+shift): declare index_sets (named lists of elements), parameters (numbers
+keyed by elements, one {"key": [...], "value": n} row each) and
+variable_families (one variable per combination of index sets), then write
+objective.linear_term_templates, objective.quadratic_term_templates,
+constraint_templates or cardinality_constraint_templates. A template binds
+indexes with for_each items such as "i in city", keeps the bindings whose
+where conditions all hold ("i != j", "i < j", "dist[i,j] > 0"), and refers
+to a variable as x[i,p+1] and to a parameter as dist[i,j]; a shift such as
+p+1 needs an index set with "order": "linear" or "cyclic". A template cannot
+name a literal element such as x[a,0]: bind an index and filter it with
+where or a 0/1 parameter. Templates are expanded before anything else, into
+generated names such as x[a,0] and ids such as city_once[a] that solutions
+and constraint_evaluations use; a generated variable no term or constraint
+uses is left out, with a warning, and an error names the template's own
+path. Read the tsp_template resource before writing a first template
+document.
 
 A minimal complete problem (maximize value under a weight limit):
 """

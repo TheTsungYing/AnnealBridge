@@ -30,6 +30,7 @@ from annealbridge.models import (
     SolverPreferences,
     Variable,
 )
+from annealbridge.models.templates import Parameter, ParameterValue, VariableFamily
 from tests.conftest import EXAMPLES_DIR
 
 # (model, legal base payload, field under test, "int" | "float")
@@ -64,6 +65,13 @@ NUMERIC_FIELDS = [
     ),
     (Variable, {"name": "x", "type": "integer"}, "lower_bound", "int"),
     (Variable, {"name": "x", "type": "integer"}, "upper_bound", "int"),
+    # Schema 1.3 spec §14: the purely numeric template fields. The
+    # coefficient / rhs / weight of a template is a number or a parameter
+    # reference string, so it has no single kind and is not listed here.
+    (ParameterValue, {"key": ["a"]}, "value", "float"),
+    (Parameter, {"name": "p", "indices": ["I"]}, "default", "float"),
+    (VariableFamily, {"name": "x", "indices": ["I"], "type": "integer"}, "lower_bound", "int"),
+    (VariableFamily, {"name": "x", "indices": ["I"], "type": "integer"}, "upper_bound", "int"),
     (SolverPreferences, {}, "num_reads", "int"),
     (SolverPreferences, {}, "num_sweeps", "int"),
     (SolverPreferences, {}, "seed", "int"),

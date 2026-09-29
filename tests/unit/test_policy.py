@@ -212,6 +212,27 @@ class TestLimitsValidation:
         assert policy.limit("bits") == 2048.0
 
 
+class TestTemplateBindingsLimit:
+    """Batch 8 (I), schema 1.3 spec §14.9: the template expansion ceiling."""
+
+    def test_default_equals_the_expanders_default(self):
+        # The policy field and the expander's own default must not drift:
+        # a caller of expand_problem without a policy gets the same ceiling
+        # a default service enforces.
+        from annealbridge.validation import DEFAULT_MAX_TEMPLATE_BINDINGS
+
+        assert ExecutionPolicy().max_template_bindings == DEFAULT_MAX_TEMPLATE_BINDINGS
+        assert ExecutionPolicy().limit("template_bindings") == DEFAULT_MAX_TEMPLATE_BINDINGS
+
+    def test_template_bindings_in_limits_is_rejected(self):
+        # A built-in key: its one source is the max_template_bindings field.
+        with pytest.raises(ValidationError) as exc_info:
+            ExecutionPolicy(limits={"template_bindings": 5})
+
+        assert [error["loc"] for error in exc_info.value.errors()] == [("limits",)]
+        assert "template_bindings" in str(exc_info.value)
+
+
 class TestLimitsFor:
     """§12.3: the single source for the capabilities view and the service."""
 
@@ -227,12 +248,15 @@ class TestLimitsFor:
         # The declared keys come first; the two service-level ceilings added
         # by the 2026-09-09 review (retries by the ``remote`` flag, then
         # top_k) follow, and the two post-processing ceilings (batch 4 G)
-        # close every non-exhaustive backend's view.
+        # come next on every non-exhaustive backend. The template expansion
+        # ceiling (batch 8 I, schema 1.3 spec §14.9) is applied before any
+        # backend runs, so it closes every backend's view, exact included.
         assert limits == {
             "exact": {
                 "max_variables": 24,
                 "max_local_retries": 10,
                 "max_top_k": 1000,
+                "max_template_bindings": 250_000,
             },
             "simulated_annealing": {
                 "max_local_reads": 100000,
@@ -241,6 +265,7 @@ class TestLimitsFor:
                 "max_top_k": 1000,
                 "max_postprocess_candidates": 100,
                 "max_postprocess_evaluations": 20_000_000,
+                "max_template_bindings": 250_000,
             },
             # ``tabu`` declares only a read ceiling: its sampler takes no
             # sweeps, so no sweep key is published for it.
@@ -250,6 +275,7 @@ class TestLimitsFor:
                 "max_top_k": 1000,
                 "max_postprocess_candidates": 100,
                 "max_postprocess_evaluations": 20_000_000,
+                "max_template_bindings": 250_000,
             },
             # ``simulated_bifurcation`` reads sweeps as integration steps,
             # so it is capped under both local keys, like the annealer.
@@ -261,6 +287,7 @@ class TestLimitsFor:
                 "max_top_k": 1000,
                 "max_postprocess_candidates": 100,
                 "max_postprocess_evaluations": 20_000_000,
+                "max_template_bindings": 250_000,
             },
             "dwave_qpu": {
                 "max_reads": 1000,
@@ -269,6 +296,7 @@ class TestLimitsFor:
                 "max_top_k": 1000,
                 "max_postprocess_candidates": 100,
                 "max_postprocess_evaluations": 20_000_000,
+                "max_template_bindings": 250_000,
             },
             "leap_hybrid_bqm": {
                 "max_time_seconds": 300,
@@ -276,6 +304,7 @@ class TestLimitsFor:
                 "max_top_k": 1000,
                 "max_postprocess_candidates": 100,
                 "max_postprocess_evaluations": 20_000_000,
+                "max_template_bindings": 250_000,
             },
             "leap_hybrid_cqm": {
                 "max_time_seconds": 300,
@@ -283,6 +312,7 @@ class TestLimitsFor:
                 "max_top_k": 1000,
                 "max_postprocess_candidates": 100,
                 "max_postprocess_evaluations": 20_000_000,
+                "max_template_bindings": 250_000,
             },
             "fujitsu_da": {
                 "max_time_seconds": 300,
@@ -290,6 +320,7 @@ class TestLimitsFor:
                 "max_top_k": 1000,
                 "max_postprocess_candidates": 100,
                 "max_postprocess_evaluations": 20_000_000,
+                "max_template_bindings": 250_000,
             },
         }
         # Key order feeds the CLI table, so it is pinned too.
@@ -300,6 +331,7 @@ class TestLimitsFor:
             "max_top_k",
             "max_postprocess_candidates",
             "max_postprocess_evaluations",
+            "max_template_bindings",
         ]
         assert list(limits["simulated_annealing"]) == [
             "max_local_reads",
@@ -308,6 +340,7 @@ class TestLimitsFor:
             "max_top_k",
             "max_postprocess_candidates",
             "max_postprocess_evaluations",
+            "max_template_bindings",
         ]
         assert list(limits["tabu"]) == [
             "max_local_reads",
@@ -315,6 +348,7 @@ class TestLimitsFor:
             "max_top_k",
             "max_postprocess_candidates",
             "max_postprocess_evaluations",
+            "max_template_bindings",
         ]
         assert list(limits["simulated_bifurcation"]) == [
             "max_variables",
@@ -324,6 +358,13 @@ class TestLimitsFor:
             "max_top_k",
             "max_postprocess_candidates",
             "max_postprocess_evaluations",
+            "max_template_bindings",
+        ]
+        assert list(limits["exact"]) == [
+            "max_variables",
+            "max_local_retries",
+            "max_top_k",
+            "max_template_bindings",
         ]
 
     def test_values_follow_the_policy(self):
@@ -338,12 +379,14 @@ class TestLimitsFor:
             max_local_retries=2,
             max_remote_retries=1,
             max_top_k=50,
+            max_template_bindings=4000,
         )
 
         assert policy.limits_for(registry.get("exact").capabilities) == {
             "max_variables": 8,
             "max_local_retries": 2,
             "max_top_k": 50,
+            "max_template_bindings": 4000,
         }
         assert policy.limits_for(
             registry.get("simulated_annealing").capabilities
@@ -354,6 +397,7 @@ class TestLimitsFor:
             "max_top_k": 50,
             "max_postprocess_candidates": 100,
             "max_postprocess_evaluations": 20_000_000,
+            "max_template_bindings": 4000,
         }
         assert policy.limits_for(registry.get("dwave_qpu").capabilities) == {
             "max_reads": 10,
@@ -362,6 +406,7 @@ class TestLimitsFor:
             "max_top_k": 50,
             "max_postprocess_candidates": 100,
             "max_postprocess_evaluations": 20_000_000,
+            "max_template_bindings": 4000,
         }
         assert policy.limits_for(registry.get("leap_hybrid_bqm").capabilities) == {
             "max_time_seconds": 30,
@@ -369,6 +414,7 @@ class TestLimitsFor:
             "max_top_k": 50,
             "max_postprocess_candidates": 100,
             "max_postprocess_evaluations": 20_000_000,
+            "max_template_bindings": 4000,
         }
 
     def test_hybrid_cqm_style_declaration_yields_one_time_limit(self):
@@ -395,6 +441,7 @@ class TestLimitsFor:
             "max_top_k": 1000,
             "max_postprocess_candidates": 100,
             "max_postprocess_evaluations": 20_000_000,
+            "max_template_bindings": 250_000,
         }
 
     def test_custom_declared_key_is_reported_from_limits(self):
@@ -416,13 +463,15 @@ class TestLimitsFor:
             "max_top_k": 1000,
             "max_postprocess_candidates": 100,
             "max_postprocess_evaluations": 20_000_000,
+            "max_template_bindings": 250_000,
         }
 
     def test_remote_with_num_reads_but_no_declaration_has_only_service_limits(self):
         # The Phase 2 drift (spec §0 item 1) is gone: without a declaration
         # the view reports no read ceiling, and the service enforces none.
-        # Only the two service-level ceilings (spec §11.4), which belong to
-        # no backend, remain.
+        # Only the service-level ceilings (spec §11.4, then the two
+        # post-processing ceilings and the template expansion ceiling of
+        # schema 1.3 spec §14.9), which belong to no backend, remain.
         caps = make_capabilities(remote=True, supports_num_reads=True)
 
         assert ExecutionPolicy().limits_for(caps) == {
@@ -430,6 +479,7 @@ class TestLimitsFor:
             "max_top_k": 1000,
             "max_postprocess_candidates": 100,
             "max_postprocess_evaluations": 20_000_000,
+            "max_template_bindings": 250_000,
         }
 
 

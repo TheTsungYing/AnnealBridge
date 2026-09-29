@@ -38,6 +38,7 @@ from annealbridge.orchestration import OptimizationService
 from annealbridge.validation import (
     BackendRecommendationResult,
     ProblemValidationResult,
+    expand_problem,
 )
 from annealbridge.version import package_version
 
@@ -114,13 +115,17 @@ def _read_stdin() -> str:
         raise typer.Exit(code=2)
 
 
+def _source_name(path: Path) -> str:
+    """What a message about the problem file names: the path, or ``<stdin>``."""
+    source = str(path)
+    return "<stdin>" if source == STDIN_ARGUMENT else source
+
+
 def _load_problem(path: Path) -> OptimizationProblem:
     """Load and parse a problem JSON file (``-`` for stdin), exiting with a
     friendly error on failure."""
-    # What every message below names: the path, or ``<stdin>``.
-    source = str(path)
-    if source == STDIN_ARGUMENT:
-        source = "<stdin>"
+    source = _source_name(path)
+    if str(path) == STDIN_ARGUMENT:
         text = _read_stdin()
     else:
         try:
@@ -132,6 +137,24 @@ def _load_problem(path: Path) -> OptimizationProblem:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
         typer.echo(f"Error: '{source}' is not valid JSON: {exc}", err=True)
+        raise typer.Exit(code=2)
+    # Two inputs the decoder refuses with other exceptions: nesting deeper
+    # than the interpreter's recursion limit, and an integer literal longer
+    # than its integer-string conversion limit (the only ValueError that is
+    # not a JSONDecodeError). Fixed messages, so nothing of the document is
+    # echoed and no traceback is printed.
+    except RecursionError:
+        typer.echo(
+            f"Error: '{source}' is not valid JSON: it is nested too deeply to read",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    except ValueError:
+        typer.echo(
+            f"Error: '{source}' is not valid JSON: it holds a number with too "
+            "many digits to read",
+            err=True,
+        )
         raise typer.Exit(code=2)
     parsed = parse_problem(data)
     if isinstance(parsed, OptimizationProblem):
@@ -197,10 +220,10 @@ def _override_wall_clock_limit(
 def _render_errors(items: Sequence[SolveError], lines: list[str], title: str) -> None:
     """Append an ``[CODE] path: message`` block with recommended actions.
 
-    The single renderer for structured errors and warnings shared by all three
-    commands: ``solve`` (:func:`_render_human`), ``validate``
-    (:func:`_render_validation`) and ``recommend``
-    (:func:`_render_recommendation`).
+    The single renderer for structured errors and warnings shared by every
+    command that reports them: ``solve`` (:func:`_render_human`),
+    ``validate`` (:func:`_render_validation`), ``recommend``
+    (:func:`_render_recommendation`) and ``expand`` (on stderr).
     """
     lines.append("")
     lines.append(f"{title} ({len(items)}):")
@@ -326,9 +349,9 @@ def _render_human(problem: OptimizationProblem, result: SolveResult) -> str:
     return "\n".join(lines)
 
 
-# The arguments ``solve``, ``validate`` and ``recommend`` share, declared
-# once. Each ``--json`` option keeps its own declaration: its help names the
-# result model that command prints.
+# The arguments ``solve``, ``validate`` and ``recommend`` share (``expand``
+# takes the problem file too), declared once. Each ``--json`` option keeps
+# its own declaration: its help names the result model that command prints.
 ProblemFileArgument = Annotated[
     Path,
     typer.Argument(
@@ -514,6 +537,44 @@ def recommend(
         render=_render_recommendation,
         failed=lambda result: not result.valid,
     )
+
+
+@app.command()
+def expand(problem_file: ProblemFileArgument) -> None:
+    """Print the explicit problem a schema 1.3 document's templates expand to.
+
+    Only expands, under the server's max_template_bindings; run validate for
+    every other check. The expanded problem goes to stdout as JSON, labelled
+    version 1.2 when the input was 1.3; warnings and errors go to stderr.
+    """
+    problem = _load_problem(problem_file)
+    # The same ceiling the service expands under; a one-shot CLI process
+    # has no concurrent expansions, so it takes no gate.
+    policy = _build_state().policy
+    expansion = expand_problem(
+        problem,
+        max_template_bindings=int(policy.required_limit("template_bindings")),
+    )
+    if expansion.errors:
+        # stdout carries only the expanded JSON, so the report goes to
+        # stderr; exit 1 is the CLI's "the answer is no" code.
+        report = [f"Error: '{_source_name(problem_file)}' could not be expanded."]
+        _render_errors(expansion.errors, report, "Expansion errors")
+        typer.echo("\n".join(report), err=True)
+        raise typer.Exit(code=1)
+
+    expanded = expansion.problem
+    if expanded.version == "1.3":
+        # Expansion leaves no template field behind (the empty ones are not
+        # serialized), so the document is one every server accepting "1.2"
+        # reads the same way. Other versions are kept as they are.
+        expanded = expanded.model_copy(update={"version": "1.2"})
+    _echo_json(expanded.model_dump_json(indent=2))
+    if expansion.warnings:
+        notes: list[str] = []
+        _render_errors(expansion.warnings, notes, "Warnings")
+        # Without the blank line that separates the block inside a report.
+        typer.echo("\n".join(notes[1:]), err=True)
 
 
 def _format_limits(limits: dict[str, float | int]) -> str:

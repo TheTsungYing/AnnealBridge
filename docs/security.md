@@ -50,6 +50,27 @@ credentials: all three have to be true before a remote backend runs. See
   request is refused with `POSTPROCESS_LIMIT` before solving, and a budget
   that runs out part-way stops the search with a `POSTPROCESS_LIMIT_REACHED`
   warning rather than running on.
+- **Templates cannot be used to amplify a request without bound.** A version
+  `1.3` document describes its model with index sets and templates that the
+  server expands, so a request of under 1 KB can ask for hundreds of thousands
+  of variables, terms and constraints — what would otherwise take tens of
+  megabytes of JSON to send. Expansion is therefore bounded by
+  `ANNEALBRIDGE_MAX_TEMPLATE_BINDINGS` (default `250000`), checked before
+  anything is generated on the number of bindings the templates would
+  iterate, and again while generating on the work done, which counts every
+  pair of members in a generated constraint as well. A document over the
+  ceiling is refused whole with `TEMPLATE_EXPANSION_LIMIT` — never truncated
+  or partly expanded — and the error lists are capped, so even a template that
+  is wrong for every entry it would generate cannot make the answer grow
+  with it. Expanding and validating such a document also takes one of a
+  limited number of slots, as many as `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES`,
+  before any solve slot is involved, so parallel `validate` or `recommend`
+  calls — which take no solve slot — cannot multiply that memory either; a
+  full server answers `CONCURRENCY_LIMIT`. The template strings are parsed by
+  a small hand-written grammar and never evaluated. What the ceiling does not
+  bound is what a large expanded problem costs afterwards — the solve time and
+  the size of the response — which the read, sweep and `top_k` ceilings still
+  govern.
 - **The penalty ladder cannot run away.** A hard penalty that would have to
   double past the floating-point range stops with a structured
   `PENALTY_OVERFLOW` error instead of a solver error, and no backend is ever

@@ -37,6 +37,8 @@ ENV_SUFFIXES = [
     # Batch 4 (G): the two post-processing ceilings.
     "MAX_POSTPROCESS_CANDIDATES",
     "MAX_POSTPROCESS_EVALUATIONS",
+    # Batch 8 (I), schema 1.3 spec §14.9: the template expansion ceiling.
+    "MAX_TEMPLATE_BINDINGS",
     # The local samplers' worker counts: speed knobs, not policy limits.
     "SA_WORKERS",
     "TABU_WORKERS",

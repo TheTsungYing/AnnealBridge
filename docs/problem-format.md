@@ -5,7 +5,8 @@
 This page is the complete reference for the `OptimizationProblem` document —
 the only thing an agent or a caller ever writes. It covers every top-level
 field, the variable / objective / constraint models, the cardinality
-constraints of version 1.2, the solver preference block, the rules for bounded
+constraints of version 1.2, the index sets, parameters, variable families and
+templates of version 1.3, the solver preference block, the rules for bounded
 integer variables, and how soft weights and hard penalties are interpreted.
 
 The document is the whole public API. There is no QUBO matrix, no penalty λ,
@@ -90,14 +91,24 @@ objective, soft constraints, and more solver preferences:
 
 | Field | Type | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `version` | `"1.0"` \| `"1.1"` \| `"1.2"` | no | `"1.0"` | Schema version. Each version is a superset of the one before: `1.1` or later is required as soon as any variable is an integer, `1.2` or later as soon as `cardinality_constraints` is non-empty. See [Schema versions](#schema-versions). |
+| `version` | `"1.0"` \| `"1.1"` \| `"1.2"` \| `"1.3"` | no | `"1.0"` | Schema version. Each version is a superset of the one before: `1.1` or later is required as soon as any variable is an integer, `1.2` or later as soon as `cardinality_constraints` is non-empty, `1.3` as soon as any [template field](#templates-version-13) is non-empty. See [Schema versions](#schema-versions). |
 | `name` | string | **yes** | — | Problem name; echoed in CLI reports and logs. |
 | `description` | string \| null | no | `null` | Free text for humans. Never sent to a remote vendor. |
 | `variables` | array of [Variable](#variables) | **yes** | — | The decision variables. At least one is required (`NO_VARIABLES`). |
 | `objective` | [Objective](#objective) | **yes** | — | What to minimize or maximize. |
 | `constraints` | array of [Constraint](#constraints) | **yes** | — | Hard and soft linear constraints. Required even when there are none: may be empty (`[]`). |
 | `cardinality_constraints` | array of [CardinalityConstraint](#cardinality-constraints-version-12) | no | `[]` | Version 1.2: how many of a set of binary variables are chosen (exactly, at most or at least *k*). |
+| `index_sets` | array of [IndexSet](#index_sets) | no | `[]` | Version 1.3: ordered sets of elements that template indices range over. |
+| `parameters` | array of [Parameter](#parameters) | no | `[]` | Version 1.3: tables of numbers keyed by index set elements. |
+| `variable_families` | array of [VariableFamily](#variable_families) | no | `[]` | Version 1.3: one variable per combination of index set elements. |
+| `constraint_templates` | array of [ConstraintTemplate](#constraint_templates) | no | `[]` | Version 1.3: linear constraints repeated over index sets. |
+| `cardinality_constraint_templates` | array of [CardinalityConstraintTemplate](#cardinality_constraint_templates) | no | `[]` | Version 1.3: cardinality constraints repeated over index sets. |
 | `solver` | [SolverPreferences](#solver-preferences) | no | all defaults | Backend choice and search parameters. |
+
+The objective carries the other two [template fields](#templates-version-13),
+`linear_term_templates` and `quadratic_term_templates`. All seven are optional,
+empty by default and left out of a serialized problem while empty, so a
+document written for an older version dumps exactly as before.
 
 ### Schema versions
 
@@ -106,18 +117,24 @@ objective, soft constraints, and more solver preferences:
 | `"1.0"` | binary variables, linear constraints | — |
 | `"1.1"` | bounded [integer variables](#integer-variables-version-11) | superset of `1.0` |
 | `"1.2"` | [cardinality constraints](#cardinality-constraints-version-12) | superset of `1.1`; may also declare integer variables |
+| `"1.3"` | [index sets, parameters, variable families and templates](#templates-version-13) | superset of `1.2`; may also declare integer variables and cardinality constraints |
 
 A newer version accepts everything an older one does, with the same meaning,
 so a document can always be moved to a newer version by changing only its
 `version`; the compiled models and estimates do not change, and the only
 difference in validation is that from `1.2` on a hard linear at-most-one may
 get the advisory
-[`CARDINALITY_FORM_AVAILABLE`](#linear-at-most-one-constraints) warning. The rule is a
+[`CARDINALITY_FORM_AVAILABLE`](#linear-at-most-one-constraints) warning. A
+`1.3` document without templates behaves exactly like the same document
+labelled `1.2`. The rule is a
 minimum per feature, judged by what the document actually uses: an integer
 variable needs `1.1` or later (`INTEGER_REQUIRES_VERSION_1_1` otherwise), a
 non-empty `cardinality_constraints` list needs `1.2` or later
-(`FEATURE_REQUIRES_NEWER_VERSION` otherwise). An empty `cardinality_constraints`
-list is accepted by every version. `get_optimization_capabilities` and
+(`FEATURE_REQUIRES_NEWER_VERSION` otherwise), and a non-empty template field
+needs `1.3` (`FEATURE_REQUIRES_NEWER_VERSION` too, its message naming every
+template field the document uses). An empty `cardinality_constraints` list, or
+an empty template field, is accepted by every version.
+`get_optimization_capabilities` and
 `annealbridge capabilities --json` list the accepted versions as
 `schema_versions`, oldest first.
 
@@ -130,18 +147,29 @@ a flag and `"10"` is text, so either one in a coefficient, a right-hand side, a
 weight or a count is a schema error (`INVALID_FIELD_VALUE`, with a message such
 as `coefficient must be a number, not a boolean`). An integer is still accepted where a float
 is expected (`2` → `2.0`), and an integral float where an integer is expected
-(`10.0` → `10`).
+(`10.0` → `10`). The one place a string is a legal value for a number is a
+template's `coefficient`, `rhs` or `weight`, where it names a
+[parameter](#parameters) (`"dist[i,j]"`); a number written as a string is
+refused there too (`TEMPLATE_REFERENCE_INVALID`).
 
 ### Unknown fields are rejected
 
 Every object in the document — the problem, a variable, a term, a constraint,
-the solver block and its option blocks — accepts only the fields listed on
+the index sets, parameters, families and templates of version 1.3, the solver
+block and its option blocks — accepts only the fields listed on
 this page. A field the schema does not declare is a schema error naming its
 path, never dropped: a `"variable3"` on a quadratic term, a `"cubic_terms"`
 block, or a `"num_restarts"` in `solver` would otherwise vanish silently and
 the server would solve a *different* problem that passes every check. The
 published JSON Schema carries `additionalProperties: false` on every object
-for the same reason.
+for the same reason; even a parameter table is a typed list of rows, never a
+free-form object.
+
+A field that only a newer version has — `cardinality_constraints` before `1.2`,
+a template field before `1.3` — is not an unknown field either. As an empty
+list it is accepted by every version; a non-empty one is not a schema error but
+`FEATURE_REQUIRES_NEWER_VERSION` at `version`, and one whose entries are
+malformed gets the schema errors inside it first.
 
 It is reported as `UNKNOWN_FIELD`, one of the three
 [schema error](errors.md#schema-errors) codes, alongside `MISSING_FIELD` and
@@ -607,6 +635,524 @@ packing-style maximize problem with many at-most-one groups, prefer
 [`repair_local_search`](#post-processing); see
 [Limitations](limitations.md).
 
+## Templates (version 1.3)
+
+A problem with structure repeats itself: every city is visited at exactly one
+position, every pair of consecutive positions pays the distance between its
+two cities. Written out, a 4-city tour already takes 16 variables, 48
+quadratic terms and 8 constraints, and the count grows with the cube of the
+cities. Version `1.3` lets a document state each pattern once: an *index set*
+is an ordered list of elements, a *parameter* a table of numbers keyed by
+elements, a *variable family* one variable per combination of elements, and
+every explicit list has a *template* sibling that repeats one entry for each
+combination of bound indices, filtered by conditions.
+
+| Explicit list | Template list |
+| --- | --- |
+| `variables` | `variable_families` |
+| `objective.linear_terms` | `objective.linear_term_templates` |
+| `objective.quadratic_terms` | `objective.quadratic_term_templates` |
+| `constraints` | `constraint_templates` |
+| `cardinality_constraints` | `cardinality_constraint_templates` |
+
+Together with `index_sets` and `parameters` these are the seven **template
+fields**. Before anything else reads the document, the server **expands** the
+templates into an ordinary problem: the explicit entries first, then every
+generated one. Validation, compilation, solving, re-validation and ranking only
+ever see that expanded problem, exactly as if the document had listed every
+entry itself; nothing downstream knows templates exist. Explicit and template
+entries can be mixed, and an explicit entry may name a generated variable.
+
+There is no expression language. A template string is one of two tiny
+grammars — a reference with optional index shifts, or a comparison of two
+operands — parsed once, never evaluated as code (see [The grammar](#the-grammar)).
+
+### A complete example
+
+[examples/tsp_template.json](../examples/tsp_template.json) is the 4-city
+travelling salesman problem of [examples/tsp.json](../examples/tsp.json),
+written with templates (the `description` strings are left out here):
+
+```json
+{
+  "version": "1.3",
+  "name": "tsp_4_cities_template",
+  "index_sets": [
+    {"name": "city", "elements": ["a", "b", "c", "d"]},
+    {"name": "pos", "elements": [0, 1, 2, 3], "order": "cyclic"}
+  ],
+  "parameters": [
+    {"name": "dist", "indices": ["city", "city"], "values": [
+      {"key": ["a", "b"], "value": 1}, {"key": ["a", "c"], "value": 3},
+      {"key": ["a", "d"], "value": 4}, {"key": ["b", "a"], "value": 1},
+      {"key": ["b", "c"], "value": 2}, {"key": ["b", "d"], "value": 5},
+      {"key": ["c", "a"], "value": 3}, {"key": ["c", "b"], "value": 2},
+      {"key": ["c", "d"], "value": 1}, {"key": ["d", "a"], "value": 4},
+      {"key": ["d", "b"], "value": 5}, {"key": ["d", "c"], "value": 1}
+    ]}
+  ],
+  "variable_families": [
+    {"name": "x", "indices": ["city", "pos"], "type": "binary"}
+  ],
+  "variables": [],
+  "objective": {
+    "direction": "minimize",
+    "linear_terms": [],
+    "quadratic_term_templates": [
+      {"for_each": ["p in pos", "i in city", "j in city"], "where": ["i != j"],
+       "coefficient": "dist[i,j]", "variable1": "x[i,p]", "variable2": "x[j,p+1]"}
+    ]
+  },
+  "constraints": [],
+  "cardinality_constraint_templates": [
+    {"id": "city_once", "type": "hard", "for_each": ["i in city"],
+     "variables": [{"for_each": ["p in pos"], "variable": "x[i,p]"}],
+     "operator": "==", "rhs": 1},
+    {"id": "position_once", "type": "hard", "for_each": ["p in pos"],
+     "variables": [{"for_each": ["i in city"], "variable": "x[i,p]"}],
+     "operator": "==", "rhs": 1}
+  ],
+  "solver": {"backend": "exact", "top_k": 5}
+}
+```
+
+It expands to:
+
+- 16 variables, `x[a,0]`, `x[a,1]`, … `x[d,3]`, city outermost;
+- 48 quadratic terms `dist[i,j] · x[i,p] · x[j,p+1]`, one per position and
+  ordered pair of different cities. `pos` is `cyclic`, so the position after
+  `3` is `0` and the tour closes;
+- 8 cardinality constraints, `city_once[a]` … `city_once[d]` and
+  `position_once[0]` … `position_once[3]`.
+
+That is `examples/tsp.json` term for term, with `x_a_0` renamed `x[a,0]`: the
+same compiled model and the same optimal tour length, 8. `variables` and
+`constraints` are still required, and empty here. The distance table has no
+row for a city paired with itself: `where: ["i != j"]` never asks for one, and
+the parameter deliberately has no `default`, which would have silently turned
+a forgotten row into 0.
+
+### Fields
+
+Every object below accepts only the fields listed (see
+[Unknown fields are rejected](#unknown-fields-are-rejected)). A *name* — of an
+index set, a parameter, a family, a template id or an index — is an
+identifier: ASCII letters, digits and underscores, not starting with a digit,
+at most 64 characters, and never the word `in`.
+
+#### `index_sets`
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `name` | string | **yes** | — | A name, unique among index sets, parameters and families. |
+| `elements` | array of string \| integer | **yes** | — | The elements in order, at least one, each listed once, all strings or all integers. A string is 1 to 64 of the characters `A–Z a–z 0–9 _ . -`; an integer lies within ±(2³¹ − 1). They appear in generated names, e.g. `x[a,0]`. |
+| `order` | `"none"` \| `"linear"` \| `"cyclic"` | no | `"none"` | Whether an index over this set may be shifted (`p+1`, `d-2`): `none` forbids shifts; `linear` allows them, and an entry whose shifted index runs past either end is left out; `cyclic` wraps around. |
+| `description` | string \| null | no | `null` | Free text for humans. Never sent to a remote vendor. |
+
+An element that is a boolean, a number written with a fraction or an
+exponent (`2.0` included) or any other JSON type is a schema error
+(`INVALID_FIELD_VALUE`, `index set elements must be strings or integers`);
+every other rule on elements is `INDEX_SET_INVALID`, at
+`index_sets[s].elements[k]` (at `elements` itself for an empty set).
+
+A shift moves by **positions** in `elements`, not by numeric value: with
+`"elements": [0, 5, 10]`, the element after `5` is `10`. Integers are written
+in generated names in decimal (`x[a,-1]`).
+
+#### `parameters`
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `name` | string | **yes** | — | A name, unique among index sets, parameters and families. |
+| `indices` | array of string | **yes** | — | The index sets its keys range over, one to eight; a reference gives one bound index per entry, e.g. `dist[i,j]`. |
+| `values` | array of row | no | `[]` | The table as rows `{"key": [e1, …], "value": n}`. |
+| `default` | number \| null | no | `null` | A finite value for every key that has no row. |
+| `description` | string \| null | no | `null` | Free text for humans. Never sent to a remote vendor. |
+
+A **row** has exactly two fields: `key`, one element of each of the
+parameter's index sets in the order of `indices`, and `value`, a finite JSON
+number. A key element of the wrong JSON type, or a `value` that is a boolean
+or a string, is a schema error, as for index set elements. Each key element must be an
+element of its set, of the same type — in an integer set `1` is an element and
+`"1"` is not — and each key may appear in one row only. Rows may leave keys
+out: a table is allowed to be sparse. Violations are `PARAMETER_TABLE_INVALID`
+at `parameters[p].values[r].key[d]`, `.key` or `.value`.
+
+A key that has no row takes `default`. Without a default, a key that is
+actually used is the error `PARAMETER_VALUE_MISSING`, whose `path` is the
+field that used it (a `coefficient`, a `where[k]`, an `rhs` or a `weight`) and
+whose message names the parameter and the key. **A default also hides a row
+left out by mistake**, so give one only when most keys genuinely share the
+value. A parameter used as a cardinality template's `rhs` must hold whole
+numbers within ±(2³¹ − 1) in every row and in its default
+(`PARAMETER_TABLE_INVALID` at the offending row).
+
+There are no scalar parameters: a single number is written as a JSON number
+where it is used.
+
+#### `variable_families`
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `name` | string | **yes** | — | A name, unique among index sets, parameters and families. It must not start with `__` (`RESERVED_VARIABLE_NAME`) or equal the name of an explicit variable (`DUPLICATE_TEMPLATE_NAME`, since a template could then no longer tell the two apart). |
+| `indices` | array of string | **yes** | — | The index sets, one to eight. One variable is generated for every combination of their elements, the first set outermost, named `name[e1,e2,…]`. |
+| `type` | `"binary"` \| `"integer"` | no | `"binary"` | As for a [variable](#variables). |
+| `lower_bound` | integer \| null | integer only | `null` | As for a variable. |
+| `upper_bound` | integer \| null | integer only | `null` | As for a variable. |
+| `description` | string \| null | no | `null` | Copied to every generated variable. Never sent to a remote vendor. |
+
+The type and bounds are checked once per family, with the rules, codes and
+messages of an explicit variable (`BOUNDS_ON_BINARY`,
+`INTEGER_BOUNDS_MISSING`, `INTEGER_BOUNDS_INVALID`,
+`INTEGER_RANGE_TOO_LARGE`, path `variable_families[f]`), and an integer family
+needs version `1.3` like any template. A family always covers the full
+product of its sets; a generated variable that nothing uses is
+[left out](#unused-generated-variables-are-left-out).
+
+#### `objective.linear_term_templates`
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `for_each` | array of string | no | `[]` | The indices to repeat the term over, outermost first, each `"index in set"`, at most eight. Without it the term is generated once. |
+| `where` | array of string | no | `[]` | Conditions, at most eight, all of which must hold for a term to be generated. |
+| `coefficient` | number \| string | **yes** | — | A JSON number, or a parameter reference such as `"cost[i]"`. |
+| `variable` | string | **yes** | — | A family reference with one bound index per family index, e.g. `"x[i,p+1]"`, or the name of an explicit variable. |
+
+#### `objective.quadratic_term_templates`
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `for_each` | array of string | no | `[]` | As for a linear term template. |
+| `where` | array of string | no | `[]` | As for a linear term template. |
+| `coefficient` | number \| string | **yes** | — | A JSON number, or a parameter reference. |
+| `variable1` | string | **yes** | — | A family reference or the name of an explicit variable. |
+| `variable2` | string | **yes** | — | A family reference or the name of an explicit variable. |
+
+`variable1` and `variable2` written as the same reference on a binary family or
+variable (`x[i,p]` twice) is `SELF_QUADRATIC_TERM`, reported once for the
+template. Two references that only coincide for some bindings (`x[i,p]` and
+`x[j,p]` without `where: ["i != j"]`) are reported by the validator for each
+generated term it concerns.
+
+#### `constraint_templates`
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `id` | string | **yes** | — | A name, unique among the templates and the explicit constraint ids. A generated constraint is named `id[e1,…]` by its `for_each` elements, or `id` itself without `for_each`. |
+| `description` | string \| null | no | `null` | Copied to every generated constraint. |
+| `type` | `"hard"` \| `"soft"` | **yes** | — | As for a constraint. |
+| `for_each` | array of string | no | `[]` | The indices to repeat the constraint over; without it one constraint is generated. |
+| `where` | array of string | no | `[]` | Conditions on the constraint's own indices. |
+| `terms` | array of linear term template | **yes** | — | The left-hand side. Each entry is a `linear_term_templates` entry that contributes its terms for each of its own bindings, which may use the constraint's indices. |
+| `operator` | `"=="` \| `"<="` \| `">="` | **yes** | — | As for a constraint. |
+| `rhs` | number \| string | **yes** | — | A JSON number, or a parameter reference. |
+| `weight` | number \| string \| null | soft only | `null` | A positive JSON number or a parameter reference; a hard template carries none. |
+
+#### `cardinality_constraint_templates`
+
+| Field | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `id` | string | **yes** | — | As for a constraint template. |
+| `description` | string \| null | no | `null` | Copied to every generated constraint. |
+| `type` | `"hard"` \| `"soft"` | **yes** | — | As for a constraint. |
+| `for_each` | array of string | no | `[]` | As for a constraint template. |
+| `where` | array of string | no | `[]` | As for a constraint template. |
+| `variables` | array of string \| member | **yes** | — | The counted variables. A member `{"for_each": […], "where": […], "variable": "x[i,p]"}` repeats its variable over its own bindings (`for_each` and `where` optional); a plain string is a single reference, short for `{"variable": "…"}`. |
+| `operator` | `"=="` \| `"<="` \| `">="` | **yes** | — | As for a cardinality constraint. |
+| `rhs` | integer \| string | **yes** | — | An integer within ±(2³¹ − 1), or a reference to a parameter whose values are all whole numbers. |
+| `weight` | number \| string \| null | soft only | `null` | As for a constraint template. |
+
+A member must reference a binary family or a binary explicit variable
+(`CARDINALITY_VARIABLE_NOT_BINARY` otherwise). An error in a member's
+`variable` has the path `cardinality_constraint_templates[t].variables[m]`;
+one in its `for_each` or `where` points at `…variables[m].for_each[k]` or
+`…variables[m].where[k]`.
+
+A hard template with a `weight`, a soft one without a positive literal
+`weight`, and an inequality template whose literal coefficient or `rhs` is not
+an integer are reported once, at the template, with the codes a constraint
+gets (`HARD_CONSTRAINT_HAS_WEIGHT`, `SOFT_CONSTRAINT_MISSING_WEIGHT`,
+`NON_INTEGER_INEQUALITY`). The same rules applied to a value taken from a
+parameter are checked on each generated constraint.
+
+### The grammar
+
+```text
+for_each item   index in set
+reference       name    or    name[index, index, …]
+index           a bound index name, optionally shifted: p+1, d-2
+where condition operand CMP operand
+operand         a bound index name | a parameter reference without shifts | a number
+CMP             ==   !=   <   <=   >   >=
+```
+
+- Everything is ASCII: names are identifiers as above, a shift is a whole
+  number of one to nine digits without leading zeros, a number is a JSON
+  number (`3`, `-2`, `0.5`, `1e3`). Spaces may separate the tokens; `in` needs
+  at least one on each side. Each string is at most 256 characters (longer is
+  a schema error). Any other character is a syntax error whose message gives
+  its position.
+- Nothing is evaluated: no arithmetic, no function call, no code. A string
+  that looks like one (`__import__('os')`) is simply a syntax error.
+- `for_each`, `where` and `indices` hold at most eight entries each.
+- **`in` is reserved**: it cannot name an index or an index set.
+- **References.** A family reference gives one bound index per index set of
+  the family, each bound to that very set (`x[i,p]` for `x` over `city, pos`).
+  A parameter reference does the same for the parameter's `indices`. A name
+  without brackets must be a declared explicit variable (`UNKNOWN_VARIABLE`
+  otherwise); a family or parameter name without brackets is an error. An
+  explicit variable whose name is not an identifier (`a-b`) cannot be
+  referenced from a template.
+- **Shifts** are allowed only on an index over a `linear` or `cyclic` set, and
+  never inside a `where` condition.
+- **No literal elements.** `x[a,0]` in a template, or `p == 0` in a `where`,
+  is refused: bind an index with `for_each` and filter with a 0/1 parameter —
+  `where: ["is_first[p] == 1"]`. The error message suggests exactly that.
+- **`coefficient`, `rhs` and `weight`** take a JSON number as a literal, or a
+  string that is a parameter reference. A number written as a string (`"2"`)
+  is refused with `TEMPLATE_REFERENCE_INVALID`: write it as a JSON number.
+- **Conditions.** Two indices must range over the same set: `==` and `!=`
+  compare the elements, `<`, `<=`, `>` and `>=` their positions in `elements`
+  (so `i < j` lists each unordered pair once, whatever the set's `order`). A
+  number or a parameter value compares as a number, exactly, with no
+  tolerance — it filters data, it does not judge a solution. Comparing an
+  index with a number is an error.
+
+Every one of these, and every unknown or mismatched name, is
+`TEMPLATE_REFERENCE_INVALID` at the field that holds the string (for example
+`objective.quadratic_term_templates[0].variable2` or
+`constraint_templates[1].where[0]`), with a message that says what was
+expected:
+
+```text
+[TEMPLATE_REFERENCE_INVALID] objective.quadratic_term_templates[0].variable2: Index p is shifted, but index set pos has no order; declare its order "linear" or "cyclic" to allow shifts
+```
+
+#### Scopes and indices
+
+- A template's `for_each` binds the outer indices, first item outermost. The
+  terms of a constraint template and the members of a cardinality template
+  are inner scopes: their own `for_each` may use the outer indices but not
+  bind the same name again. Two sibling terms or members may each bind the
+  same name.
+- An index name must differ from every index set, parameter and family name,
+  and from the other indices in scope (`DUPLICATE_TEMPLATE_NAME`).
+- **Every bound index must be used**: in a reference — a `variable`,
+  `coefficient`, `rhs` or `weight` — of its scope or an inner one, or in the
+  `where` of an inner scope. An index that only appears in its own scope's
+  `where` would repeat the same entry once per element (an objective term
+  counted several times, or identical constraints), so it is refused
+  (`TEMPLATE_REFERENCE_INVALID` at its `for_each` item). Filtering an inner
+  list by an outer index is fine: an outer `for_each: ["g in groups", "t in
+  slots"]` with a member `{"for_each": ["e in exams"], "where":
+  ["in_group[g,e] == 1"], "variable": "x[e,t]"}` counts the exams of group `g`
+  placed in slot `t`, although `g` appears in no reference.
+
+### How templates expand
+
+**Order of evaluation.** For an objective template, each binding goes through:
+
+1. the `where` conditions, left to right, stopping at the first that fails;
+2. the shifts of its references: on a `linear` set, one that runs past either
+   end leaves this term out;
+3. the `coefficient` lookup;
+4. the generated term.
+
+For a constraint template, each binding of the outer indices goes through:
+
+1. the outer `where` conditions, the same way;
+2. the shifts in `rhs` and `weight`: past the end, the whole constraint is
+   left out;
+3. each term or member template in order, each binding of its own indices:
+   its `where`, then the shifts of its references — the **first** that runs
+   past the end leaves the **whole constraint** out, and nothing more of it is
+   looked at;
+4. the lookups of `rhs`, `weight` and every term coefficient, then the
+   generated constraint.
+
+A parameter value a `where` condition needs counts as *used* as soon as the
+condition is evaluated, before any shift is checked: it must exist (or the
+parameter have a default), or the binding is reported with
+`PARAMETER_VALUE_MISSING`. A `coefficient`, `rhs` or `weight` is only looked
+up for an entry that is actually generated, so an entry left out at a boundary
+needs no row.
+
+**Boundaries.** On a `cyclic` set a shift wraps around modulo the set's size.
+On a `linear` set an objective term with an out-of-range reference is left
+out on its own, but a constraint is left out **entirely**. Leaving out only
+the member that fell off the end would quietly change the feasible set:
+`x[d] + x[d+1] >= 1` would become `x[last] >= 1` on the last day and force it
+to 1, and `x[p+1] - x[p] >= 0` would become `-x[last] >= 0` and force it to
+0. Leaving the whole constraint out relaxes the rule at the boundary instead,
+so it is always reported: one `TEMPLATE_BOUNDARY_SKIPPED` warning per
+template, with the count. Declare the set `cyclic` if the rule should wrap
+around.
+
+**Names.** A generated variable is `family[e1,e2,…]`, its elements in the
+order of the family's `indices`, separated by commas **without spaces**. A
+generated constraint is `id[e1,…]`, its elements in the order of the
+template's outer `for_each`, or plain `id` without `for_each`. Names and
+elements cannot contain brackets or commas, so different combinations always
+give different names. An explicit entry may use a generated name, but must
+spell it exactly as generated: `x[a,0]`, not `x[a, 0]` — the
+`UNKNOWN_VARIABLE` message points that out. (Inside a template string, spaces
+between tokens are fine.) A generated name that equals an explicit one is
+`DUPLICATE_VARIABLE` or `DUPLICATE_CONSTRAINT_ID`, as for two explicit
+entries.
+
+**Order.** Every expanded list holds the explicit entries first, then each
+template's entries in the order of the template list; within a template, in
+binding order (first `for_each` item outermost); within a generated
+constraint, the terms or members in the order of their templates, each in its
+own binding order. All of it comes from arrays — `for_each`, `elements` and
+the lists themselves. A parameter table is only looked up, never iterated, so
+the order of its rows does not matter. The same document always expands to
+the same problem.
+
+**Repeats and empty results.**
+
+- A generated linear constraint that names the same variable more than once
+  (typically a cyclic shift that wraps onto itself) keeps every term, and the
+  compiler sums the coefficients, as for an explicit constraint; one
+  `TEMPLATE_TERMS_MERGED` warning per template gives the count and the first
+  example. An explicit constraint never gets this warning.
+- Repeated objective terms get the usual `DUPLICATE_TERM_MERGED`, attributed
+  to the template.
+- A variable listed twice in one generated cardinality constraint is
+  `DUPLICATE_CARDINALITY_VARIABLE`, at the member template.
+- A generated constraint left with no terms or members (all filtered out by
+  `where`) is `EMPTY_CONSTRAINT` — never silently dropped, since dropping an
+  empty `== 1` would turn an infeasible problem into a feasible one.
+- A template that generates nothing at all gets the
+  `EMPTY_TEMPLATE_EXPANSION` warning.
+
+### Unused generated variables are left out
+
+A family generates the full product of its sets, and a generated variable no
+objective term and no constraint references would be free in the model: a
+solver could set it either way, and a reader could mistake its value for a
+decision — a forbidden assignment "taken", say. So after expanding, every
+generated variable that nothing references is **left out** of the problem, and
+one `UNUSED_TEMPLATE_VARIABLES` warning per family gives how many and the
+first five names. A generated variable with the same name as an explicit one
+is kept, so the clash is still reported. Explicit variables are never left out,
+used or not, and get no warning.
+
+The consequences for results:
+
+- Solutions carry only the variables that were kept, not every key of the
+  family's product.
+- For every assignment of the kept variables, feasibility, the objective and
+  the soft score are exactly what they would be with the unused variables
+  declared.
+- The returned solutions and the order among equally ranked ones can still
+  differ from a document that declares those variables explicitly: samples
+  that differ only in a free variable are distinct solutions there and one
+  solution here, ties are broken on the full assignment, and a smaller model
+  changes a seeded sampler's path. `sample_count` and the denominators of
+  `hard_violation_rates` change with it. Usually the result is better: no
+  `top_k` slot and no share of `exact`'s variable limit is spent on a free
+  variable.
+
+When every generated variable is left out and nothing else is declared, the
+problem fails with `NO_VARIABLES`, whose message then says why.
+
+### Errors point at the template
+
+Validation reports two kinds of errors for a document with templates.
+
+- **Expansion errors** — a malformed name, index set, parameter row, family
+  or template string, a missing parameter value, the size ceiling — point
+  into the template itself: `constraint_templates[1].terms[0].variable`,
+  `…for_each[2]`, `…where[0]`, `parameters[0].values[3].key[1]`. Every one
+  found is reported at once. With any of them nothing further is validated
+  and no warning is reported.
+- **Errors and warnings on generated entries**, found by the ordinary
+  validator on the expanded problem, are mapped back: `variables[k]` becomes
+  `variable_families[f]`, a generated term the term template, a generated
+  constraint `constraint_templates[t]` or `cardinality_constraint_templates[t]`
+  (its terms, members, `rhs` and `weight` their template's), and the message
+  ends with ` (generated by <template path>)`, plus the outer binding for a
+  constraint:
+
+  ```text
+  [SOFT_CONSTRAINT_MISSING_WEIGHT] constraint_templates[0].weight: Soft constraint pref[i0] requires a weight > 0, got 0.0 (generated by constraint_templates[0] with i=i0)
+  ```
+
+  An issue on an explicit entry keeps its own path.
+
+A template with a systematic mistake would otherwise produce one error per
+generated entry, so the lists are bounded. Expansion errors stop at 20 per
+source (one index set, parameter or top-level template) and 100 in all;
+validator errors on generated entries stop at 20 per template. The last one
+listed then ends with `; 10 more errors from constraint_templates[0] are not
+listed (SOFT_CONSTRAINT_MISSING_WEIGHT ×10)`: every code is still named, with
+its count. A warning on generated entries is reported once per code and
+template path, ending with `; 6 generated entries from this template get
+this warning` when it applies to more than one. As for any problem, warnings
+(the expansion's own first) are only reported when there is no error at all.
+
+### Size ceiling and concurrency
+
+A template of a few hundred bytes can ask for hundreds of thousands of
+entries, so expansion is bounded by the server setting
+`ANNEALBRIDGE_MAX_TEMPLATE_BINDINGS` (default `250000`, reported as
+`max_template_bindings` in every backend's capabilities `limits`). It is
+checked twice, against the same number:
+
+- **Before anything is generated**, the number of bindings the templates would
+  iterate, U: for each family the product of its set sizes; for each
+  objective template the product of its `for_each` set sizes; for each
+  constraint template the product of its outer sets times one plus the sum,
+  over its term or member templates, of the product of their own sets. It is
+  computed without iterating, so an enormous request is refused at once.
+- **While generating**, the work W: one unit per generated variable,
+  objective term and constraint and per term or member of a generated
+  constraint, plus, for each generated constraint, one unit per *pair* of its
+  terms or members — a constraint over *k* variables costs *k*(*k* − 1)/2 on
+  top. W catches the single huge constraint that a small U can still hide, and
+  expansion stops the moment it passes the ceiling (a constraint is charged
+  while its members are collected, so one later left out at a boundary keeps
+  its charge).
+
+Either way the answer is the single error `TEMPLATE_EXPANSION_LIMIT` at the
+template being expanded — `resource_limit_exceeded` from `solve`,
+`valid: false` from `validate` and `recommend` — and nothing is generated or
+kept: a document is expanded in full or not at all, never truncated. The
+static checks come first: a document with a malformed template gets those
+errors, not the ceiling.
+
+Expanding and validating a document with templates also takes a slot of its
+own, one of as many as `ANNEALBRIDGE_MAX_CONCURRENT_SOLVES` allows, in
+`validate`, `recommend` and `solve` alike. When every slot is taken the answer
+is `CONCURRENCY_LIMIT` (retryable): `resource_limit_exceeded` from `solve`,
+`valid: false` from the other two. A document without templates never takes
+this slot. Expansion runs inside a solve's [wall-clock limit](#wall-clock-limit)
+and its `elapsed_ms`, and cannot be interrupted. A library caller of
+`annealbridge.validation.expand_problem`, `validate_problem` or
+`validate_problem_full` is not gated; those take the ceiling as the keyword
+`max_template_bindings`, `250000` unless given.
+
+### Seeing the expanded problem
+
+`annealbridge expand problem.json` prints the expanded document as JSON (see
+[CLI](cli.md#expand)); `annealbridge.validation.expand_problem(problem)`
+returns it to a Python caller, together with the expansion's errors and
+warnings. Results always speak in generated names: a solution's variables are
+`x[a,0]` … and a `constraint_evaluations` entry's `constraint_id` is
+`city_once[a]` (see [Output format](output-format.md)).
+
+### Not supported
+
+- Scalar parameters: write the number itself.
+- Sparse families: a family always covers the full product of its sets; the
+  variables nothing uses are left out afterwards.
+- Literal elements inside a template string: bind an index and filter with a
+  0/1 parameter.
+- Arithmetic of any kind, beyond shifting an index by a constant.
+- Referencing from a template an explicit variable whose name is not an
+  identifier.
+
 ## Solver preferences
 
 The `solver` block is optional; every field has a default.
@@ -766,12 +1312,13 @@ not an error, and it is only reported when work was actually left undone.
   before anything runs, never silently ignored; `validate` and `recommend`
   report the same error. The supporting backends are `simulated_annealing`,
   `tabu` and `simulated_bifurcation`.
-- **Every schema version.** It is a solver preference, so `"1.0"`, `"1.1"`
-  and `"1.2"` accept it alike.
+- **Every schema version.** It is a solver preference, so `"1.0"`, `"1.1"`,
+  `"1.2"` and `"1.3"` accept it alike.
 - **No server-side ceiling.** There is no policy key for it: a larger value
   only makes the limit less likely to fire.
 - **It can be overrun.** Some stages cannot be interrupted and add their full
-  duration on top of the limit: validating the problem, compiling it, decoding
+  duration on top of the limit: expanding a document's
+  [templates](#templates-version-13), validating the problem, compiling it, decoding
   and re-validating the samples, the infeasibility diagnostics and setting up
   post-processing. Each backend also finishes the unit of work it is in when
   the limit runs out — a read, a shard of 25 reads for `tabu`, one integration
@@ -841,7 +1388,7 @@ Only these four values are ever forwarded to Fujitsu; `num_reads`,
 
 ## Bundled examples
 
-Six ready-to-run problems ship with the repository, and inside the
+Seven ready-to-run problems ship with the repository, and inside the
 installed package as well: `annealbridge example` lists them and
 `annealbridge example <name>` prints one (see [CLI](cli.md#example)), and the
 MCP server serves the same files as `annealbridge://examples/<name>`.
@@ -884,8 +1431,16 @@ MCP server serves the same files as `annealbridge://examples/<name>`.
   cheaper timetable with biology on Monday morning scores 4 + 3 = 7). It
   compiles to 13 variables on the BQM path: the 12 binaries plus one slack
   bit for the soft preference.
+- [examples/tsp_template.json](../examples/tsp_template.json) — a
+  `version: "1.3"` document: the 4-city traveling salesman problem of
+  `tsp.json` written with [templates](#templates-version-13) — two index sets
+  (`city`, and a cyclic `pos`), a distance table, one variable family and
+  three templates instead of 16 variables, 48 terms and 8 constraints. It
+  expands to exactly that model, with the variables named `x[a,0]` … `x[d,3]`
+  and the constraints `city_once[a]` … `position_once[3]`, and the optimal
+  tour length is again 8.
 
-All six declare a local backend; try `--backend simulated_annealing` to
+All seven declare a local backend; try `--backend simulated_annealing` to
 compare against `exact` (simulated annealing is heuristic — without a fixed
 `seed` and enough `num_reads` it may return a feasible but sub-optimal integer
 knapsack). With remote execution configured, `--backend leap_hybrid_cqm` runs

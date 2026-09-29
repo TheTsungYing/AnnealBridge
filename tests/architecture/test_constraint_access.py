@@ -40,6 +40,33 @@ ALLOWED_CONSTRAINT_READS: dict[tuple[str, str], str] = {
     ("validation/problem_validator.py", "_warn_cardinality_form"): (
         "advises on linear constraints only: a declared one needs no advice"
     ),
+    # Schema 1.3 spec §14: the validator maps an error on the expanded
+    # problem back to what the user wrote, so it indexes the two lists by
+    # the constraints[i] / cardinality_constraints[i] path of the error.
+    ("validation/problem_validator.py", "_generated_id_note"): (
+        "for a DUPLICATE_CONSTRAINT_ID on an explicit cardinality constraint, "
+        "reads the ids of both lists to find the generated linear constraint "
+        "sharing it and name its template"
+    ),
+    ("validation/problem_validator.py", "_names_at"): (
+        "reads the variable name at the explicit constraints[i].terms[j] path "
+        "of an UNKNOWN_VARIABLE error, to add a note when it looks like a "
+        "family's generated name"
+    ),
+    # Schema 1.3 spec §14: the expander builds the two lists that
+    # all_constraints() later reads, so it works on them directly.
+    ("validation/expansion.py", "_explicit_constraint_ids"): (
+        "reads only the ids of both explicit lists, to check template ids "
+        "against the constraint id namespace"
+    ),
+    ("validation/expansion.py", "_assemble"): (
+        "assembles the explicit constraints ahead of the generated ones and "
+        "records how many explicit entries precede each generated span"
+    ),
+    ("validation/expansion.py", "_binding"): (
+        "reads the id of the generated constraint at a constraints[i] path of "
+        "the expanded problem, to report the binding that produced it"
+    ),
     # dimod's ConstrainedQuadraticModel.constraints, not the problem's.
     ("compiler/cqm.py", "_check_finite"): "dimod cqm.constraints",
     ("compiler/cqm.py", "compile"): "dimod cqm.constraints",

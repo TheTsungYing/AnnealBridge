@@ -162,7 +162,26 @@ models ← validation ← penalty ← compiler ← solvers ← orchestration ←
 - makes `validation/solution_validator.py`, `orchestration/candidates.py` or
   `orchestration/postprocess.py` refer to `uses_pairwise_penalty`: judging and
   post-processing a candidate must not depend on how a constraint was
-  encoded.
+  encoded;
+- makes the template expander (`validation/expansion.py`) import anything but
+  `annealbridge.models`, `validation/issues.py`,
+  `validation/template_grammar.py` and the standard library, makes the
+  grammar module import anything but the standard library, or makes either
+  call `eval`, `exec`, `compile` or `__import__`. What the expander shares
+  with the problem validator lives in `validation/issues.py`, never in the
+  validator itself.
+
+Tests elsewhere in the suite hold one more line: a problem whose schema 1.3
+templates are not yet expanded must never be read as if it were an ordinary
+problem, since an ignored constraint template would let an infeasible
+assignment pass re-validation. `OptimizationProblem.all_constraints()` and
+every public function that reads variables, an objective or constraints
+without going through it — the compilers, integer encoding, the objective
+builders and evaluators, the solution validator, candidate processing and
+the estimates — call `require_expanded` first and raise
+`TemplatesNotExpandedError`. A new function of that kind must do the same,
+before any early return; the list is in
+[docs/architecture.md](docs/architecture.md#templates-are-expanded-first).
 
 Read [docs/architecture.md](docs/architecture.md) before touching anything
 below `interfaces/`.

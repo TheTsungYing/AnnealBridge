@@ -14,7 +14,7 @@ problem, include a small example JSON.
 ## Proposed change
 
 What should AnnealBridge do instead. If it touches the problem JSON contract,
-say whether it is backwards compatible with schema versions `1.0` / `1.1` / `1.2`.
+say whether it is backwards compatible with schema versions `1.0` / `1.1` / `1.2` / `1.3`.
 
 ## Design principles check
 

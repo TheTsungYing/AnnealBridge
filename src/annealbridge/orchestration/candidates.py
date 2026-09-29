@@ -34,6 +34,7 @@ def evaluate_objective(objective: Objective, sample: dict[str, int]) -> float:
     Always uses the original coefficients and constant; the value is the
     same regardless of direction (direction only says how to interpret it).
     """
+    objective.require_expanded("evaluate_objective")
     value = objective.constant
     for term in objective.linear_terms:
         value += term.coefficient * sample[term.variable]
@@ -52,6 +53,7 @@ def evaluate_objective_batch(
     version (constant first, then linear, then quadratic), so the two agree
     bit for bit; the unit tests assert that equality.
     """
+    objective.require_expanded("evaluate_objective_batch")
     column = {name: index for index, name in enumerate(variables)}
     value = np.full(samples.shape[0], objective.constant, dtype=np.float64)
     for term in objective.linear_terms:
@@ -333,6 +335,7 @@ def diagnose_infeasibility(
     ranked solution's. Only the original problem is consulted; the
     solver's energy plays no part (overview principle 2).
     """
+    problem.require_expanded("diagnose_infeasibility")
     closest = int(np.argmin(verdict.hard_violation_total))
     sample = candidates.sample_dict(closest)
     validation = validate_solution(problem, sample)
@@ -472,6 +475,7 @@ def process_candidates(
     ``feasible_samples`` and the infeasibility diagnostics stay about the
     solver's samples only.
     """
+    problem.require_expanded("process_candidates")
     candidates = deduplicate_samples(raw, internal_variables)
     if len(candidates) == 0:
         if postprocess is None:

@@ -123,9 +123,10 @@ class TestCapabilitiesJson:
         # Round-trips through the model the MCP tool returns.
         OptimizationCapabilities.model_validate(payload)
         # The accepted schema versions, newest last (schema 1.2 added
-        # cardinality_constraints).
-        assert payload["schema_version"] == "1.2"
-        assert payload["schema_versions"] == ["1.0", "1.1", "1.2"]
+        # cardinality_constraints, 1.3 index sets, parameters, variable
+        # families and templates).
+        assert payload["schema_version"] == "1.3"
+        assert payload["schema_versions"] == ["1.0", "1.1", "1.2", "1.3"]
         assert [backend["name"] for backend in payload["backends"]] == [
             "exact",
             "simulated_annealing",

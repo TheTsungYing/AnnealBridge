@@ -33,8 +33,9 @@ from annealbridge.solvers.registry import SolverRegistry
 from annealbridge.validation import (
     BackendRecommendation,
     BackendRecommendationResult,
-    validate_problem,
-    validate_problem_full,
+    ExpandedProblem,
+    expand_problem,
+    validate_expanded,
 )
 from annealbridge.validation.estimates import is_large_dense, is_penalty_dominated
 
@@ -170,7 +171,7 @@ def _structure_fit(
 
 
 def _assess(
-    problem: OptimizationProblem,
+    expansion: ExpandedProblem,
     backend_name: str,
     registry: SolverRegistry,
     policy: ExecutionPolicy,
@@ -179,8 +180,11 @@ def _assess(
     """Spec §23.3 step 2 for one backend.
 
     Returns its sort key (registry order excluded) and its still-unranked
-    recommendation entry.
+    recommendation entry. Everything is judged on the expanded problem;
+    its validation maps paths back to the templates (schema 1.3 spec §14.8).
     """
+    problem = expansion.problem
+    assert problem is not None  # recommend() refused an expansion error
     backend = registry.get(backend_name)
     caps = backend.capabilities
 
@@ -202,8 +206,8 @@ def _assess(
         blocking.append(no_compiler_error(backend_name, caps, path="solver.backend"))
 
     variable_limit = int(policy.required_limit("variables"))
-    validation = validate_problem_full(
-        problem,
+    validation = validate_expanded(
+        expansion,
         capabilities=caps,
         max_compiled_variables=variable_limit,
         model_type=model_type,
@@ -286,13 +290,22 @@ def recommend(
     :func:`_structure_fit`), then registry order. ``rank`` counts from 1.
     Integer variables add a reason (native or binary-encoded) but no tier
     (3b §17).
+
+    A problem with schema 1.3 templates is expanded here first, under the
+    policy's ``max_template_bindings`` (spec §14.8): an expansion error is
+    the answer, and otherwise every backend is assessed on the expanded
+    problem, the expansion's warnings leading each backend's warnings.
     """
-    errors = validate_problem(problem)
+    expansion = expand_problem(
+        problem,
+        max_template_bindings=int(policy.required_limit("template_bindings")),
+    )
+    errors = validate_expanded(expansion, errors_only=True).errors
     if errors:
         return BackendRecommendationResult(valid=False, errors=errors)
 
     assessed = [
-        (_assess(problem, name, registry, policy, compilers), index)
+        (_assess(expansion, name, registry, policy, compilers), index)
         for index, name in enumerate(registry.names())
     ]
     assessed.sort(key=lambda item: (*item[0][0], item[1]))

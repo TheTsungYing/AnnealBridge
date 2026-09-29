@@ -123,9 +123,10 @@ class OptimizationCapabilities(BaseModel):
         description=(
             "Every accepted problem schema version, oldest first. Derived "
             "from the model, not hard-coded. Each version is a superset of "
-            'the one before it: "1.1" adds integer variables and "1.2" adds '
-            "cardinality_constraints, and a document valid under an older "
-            "version keeps its meaning under a newer one."
+            'the one before it: "1.1" adds integer variables, "1.2" adds '
+            'cardinality_constraints and "1.3" adds index sets, parameters, '
+            "variable families and templates, and a document valid under an "
+            "older version keeps its meaning under a newer one."
         )
     )
     supported_variable_types: list[str] = Field(

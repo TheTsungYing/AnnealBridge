@@ -210,6 +210,19 @@ backend without a slack variable. A weighted sum, or a sum over integer
 variables, stays a linear constraint in constraints; constraints is required
 even when it is empty ([]).
 
+Templates: when the request is too large or too regular to list entry by
+entry (many people times many shifts, every city at every position), write it
+once over index sets instead, with "version": "1.3" ("1.3" accepts everything
+a "1.2" document may contain): index_sets name the elements, parameters hold
+the numbers as {"key": [...], "value": n} rows, variable_families declare
+one variable per combination, and objective.linear_term_templates,
+objective.quadratic_term_templates, constraint_templates and
+cardinality_constraint_templates bind indexes with for_each ("i in city"),
+filter them with where ("i != j") and refer to x[i,p+1] or dist[i,j]. The
+server expands them first; solutions use the generated names, such as
+x[a,0]. The resource annealbridge://examples/tsp_template is a complete
+template document; read it before writing a first one.
+
 Rules: a hard constraint must hold; a soft constraint is only penalized and
 needs a positive weight in objective-value units (a hard one must not carry a
 weight). Inequality constraints (<=, >=) need integer coefficients and an

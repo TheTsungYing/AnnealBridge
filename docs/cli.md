@@ -2,7 +2,7 @@
 
 # Command-line interface
 
-This page documents the `annealbridge` command: its seven subcommands, their
+This page documents the `annealbridge` command: its eight subcommands, their
 options and output, and the exit codes a script can rely on. The CLI is
 installed by the core package — no extra required, though `mcp` needs the
 `[mcp]` extra to do anything.
@@ -10,13 +10,15 @@ installed by the core package — no extra required, though `mcp` needs the
 It is a presentation layer only. It parses arguments, loads the problem JSON,
 calls the service, and formats the result; no optimization logic lives in it.
 
-The seven commands, as `annealbridge --help` describes them (the real output
+The eight commands, as `annealbridge --help` describes them (the real output
 is rendered in Rich panels; only the text is shown here):
 
 ```text
   solve          Solve an optimization problem loaded from a JSON file.
   validate       Validate an optimization problem without solving it.
   recommend      Rank the backends for a problem without solving it.
+  expand         Print the explicit problem a schema 1.3 document's templates
+                 expand to.
   capabilities   List backends with availability, policy status and limits.
   example        List the shipped example problems, or print one as JSON.
   export-schema  Print the OptimizationProblem JSON schema.
@@ -52,8 +54,9 @@ value.
 ## Output encoding
 
 Machine-readable output — `--json` on `solve`, `validate`, `recommend` and
-`capabilities`, and `export-schema` — is always UTF-8 with `\n` newlines,
-whether stdout is a terminal, a file or a pipe, and on Windows too: it does
+`capabilities`, and the output of `expand` and `export-schema` — is always
+UTF-8 with `\n` newlines, whether stdout is a terminal, a file or a pipe, and
+on Windows too: it does
 not follow the console code page or `PYTHONIOENCODING`, so
 `annealbridge capabilities --json > caps.json` can be read back as UTF-8
 anywhere. `example NAME` prints the file's own UTF-8 bytes. The tables,
@@ -62,9 +65,9 @@ stderr, use the terminal's encoding.
 
 ## The problem file
 
-`solve`, `validate` and `recommend` take a `PROBLEM_FILE` argument: the path
-of an `OptimizationProblem` JSON document, or `-` to read the document from
-stdin. Either way it is decoded as UTF-8, with or without a byte-order mark.
+`solve`, `validate`, `recommend` and `expand` take a `PROBLEM_FILE` argument:
+the path of an `OptimizationProblem` JSON document, or `-` to read the
+document from stdin. Either way it is decoded as UTF-8, with or without a byte-order mark.
 Every message about a document read from stdin names it `<stdin>`:
 
 ```console
@@ -252,7 +255,9 @@ $ annealbridge validate examples/knapsack.json --json
 ```
 
 An invalid problem prints every error found — validation collects them all in
-one pass — and exits `1`.
+one pass — and exits `1`. A version `1.3` document with templates is expanded
+first: errors point into the templates, and the estimate is the expanded
+problem's (see [`expand`](#expand) to see that problem itself).
 
 ## `recommend`
 
@@ -305,6 +310,71 @@ they already share, so neither moves a heuristic past a fitting `exact` or
 touches the remote backends. See
 [Backends](backends.md#how-recommend-orders-the-local-heuristics).
 
+## `expand`
+
+Expand a version `1.3` problem's [templates](problem-format.md#templates-version-13)
+and print the expanded problem — every variable, term and constraint written
+out — as JSON. Nothing is validated beyond the expansion itself, nothing is
+compiled or solved, and there is no network I/O.
+
+```bash
+annealbridge expand PROBLEM_FILE
+```
+
+No options. `PROBLEM_FILE` is read like `validate`'s (a path, or `-` for
+stdin), and the expansion uses the server's ceiling,
+`ANNEALBRIDGE_MAX_TEMPLATE_BINDINGS`, so the command reads the
+`ANNEALBRIDGE_*` environment. It is a single run, so the concurrency gate of
+the service does not apply.
+
+On success it prints the expanded document to stdout — UTF-8, `\n` newlines,
+indented by two spaces — and exits `0`:
+
+- the explicit entries first, then the generated ones, named as the server
+  names them (`x[a,0]`, `city_once[a]`); a generated variable nothing
+  references is left out;
+- a `"1.3"` document is labelled `"1.2"`, and its template fields, now empty,
+  are left out, so the output is accepted by a server that only knows `1.2`;
+  any other version is kept as it is;
+- the expansion's warnings (`UNUSED_TEMPLATE_VARIABLES`,
+  `TEMPLATE_BOUNDARY_SKIPPED`, …) go to stderr, in the usual
+  `[CODE] path: message` layout under `Warnings (n):`, each with its
+  recommended action, so stdout stays pure JSON.
+
+```console
+$ annealbridge expand examples/tsp_template.json > tsp_expanded.json
+$ annealbridge validate tsp_expanded.json
+Problem:   tsp_4_cities_template
+Backend:   exact  (model type: bqm)
+Valid:     yes
+Estimated compiled variables: 16
+Objective scale: 128
+```
+
+A document that cannot be expanded prints its errors to stderr under
+`Expansion errors (n):`, in the same layout, prints nothing to stdout, and
+exits `1` — a domain answer, like an invalid problem from `validate`. The
+paths point into the templates:
+
+```console
+$ annealbridge expand broken_template.json
+Error: 'broken_template.json' could not be expanded.
+
+Expansion errors (1):
+  [TEMPLATE_REFERENCE_INVALID] objective.quadratic_term_templates[0].variable2: Index p is shifted, but index set pos has no order; declare its order "linear" or "cyclic" to allow shifts
+    recommended action: Rewrite the named field in the template grammar: ...
+```
+
+A file that cannot be read, is not JSON or does not fit the schema exits `2`,
+as for every other command.
+
+`expand` only expands. An expansion that succeeds can still describe a
+problem the validator rejects — an explicit term naming an undeclared
+variable, say — so run `validate` on the result, or on the template document
+itself: `validate` expands it the same way and maps every error back to the
+template. The MCP server has no counterpart; see
+[MCP](mcp.md#validate_optimization_problem).
+
 ## `capabilities`
 
 Show which backends are installed, permitted and under what limits.
@@ -328,14 +398,14 @@ read `(D-Wave credentials not configured)` instead.
 ```console
 $ annealbridge capabilities
 Backend                Available  Enabled  Remote  Limits
-exact                  yes        yes      no      max_variables=24, max_local_retries=10, max_top_k=1000
-simulated_annealing    yes        yes      no      max_local_reads=100000, max_sweeps=100000, max_local_retries=10, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000
-tabu                   yes        yes      no      max_local_reads=100000, max_local_retries=10, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000
-simulated_bifurcation  yes        yes      no      max_variables=10000, max_local_reads=100000, max_sweeps=100000, max_local_retries=10, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000
-dwave_qpu              no         no       yes     max_reads=1000, max_annealing_time_us=2000, max_remote_retries=3, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000  (dwave-system not installed)
-leap_hybrid_bqm        no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000  (dwave-system not installed)
-leap_hybrid_cqm        no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000  (dwave-system not installed)
-fujitsu_da             no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000  (Fujitsu DA API key not configured)
+exact                  yes        yes      no      max_variables=24, max_local_retries=10, max_top_k=1000, max_template_bindings=250000
+simulated_annealing    yes        yes      no      max_local_reads=100000, max_sweeps=100000, max_local_retries=10, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000, max_template_bindings=250000
+tabu                   yes        yes      no      max_local_reads=100000, max_local_retries=10, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000, max_template_bindings=250000
+simulated_bifurcation  yes        yes      no      max_variables=10000, max_local_reads=100000, max_sweeps=100000, max_local_retries=10, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000, max_template_bindings=250000
+dwave_qpu              no         no       yes     max_reads=1000, max_annealing_time_us=2000, max_remote_retries=3, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000, max_template_bindings=250000  (dwave-system not installed)
+leap_hybrid_bqm        no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000, max_template_bindings=250000  (dwave-system not installed)
+leap_hybrid_cqm        no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000, max_template_bindings=250000  (dwave-system not installed)
+fujitsu_da             no         no       yes     max_time=300s, max_remote_retries=3, max_top_k=1000, max_postprocess_candidates=100, max_postprocess_evaluations=20000000, max_template_bindings=250000  (Fujitsu DA API key not configured)
 ```
 
 - **Available** — the backend can run: its optional dependency is installed
@@ -353,7 +423,8 @@ fujitsu_da             no         no       yes     max_time=300s, max_remote_ret
   resolved from the current `ANNEALBRIDGE_*` environment. These are the same
   numbers `get_optimization_capabilities` reports to an agent. The two
   post-processing ceilings are absent from `exact`: post-processing never runs
-  on an exhaustive backend.
+  on an exhaustive backend. `max_template_bindings`, the ceiling on expanding
+  a document's templates, is the same for every backend and always last.
 
 Run it after each setup step in [Backends](backends.md#d-wave-setup) to
 confirm the change took effect.
@@ -371,11 +442,12 @@ the schema on its own. Abridged:
 ```console
 $ annealbridge capabilities --json
 {
-  "schema_version": "1.2",
+  "schema_version": "1.3",
   "schema_versions": [
     "1.0",
     "1.1",
-    "1.2"
+    "1.2",
+    "1.3"
   ],
   "supported_variable_types": [
     "binary",
@@ -408,7 +480,8 @@ $ annealbridge capabilities --json
       "limits": {
         "max_variables": 24,
         "max_local_retries": 10,
-        "max_top_k": 1000
+        "max_top_k": 1000,
+        "max_template_bindings": 250000
       },
       "description": "Local exhaustive solver enumerating every assignment; proves optimality and infeasibility but only suits small problems."
     },
@@ -441,6 +514,7 @@ assignment        assignment (workers to tasks)
 tsp               travelling salesman over four cities
 shift_scheduling  shift scheduling (people to shifts)
 exam_timetabling  exam timetabling with cardinality constraints
+tsp_template      travelling salesman written with templates
 ```
 
 With a name it prints that example's JSON to stdout exactly as the file holds
@@ -455,7 +529,7 @@ An unknown name lists the available ones on stderr and exits `2`:
 
 ```console
 $ annealbridge example nope
-Error: unknown example 'nope'. Available: knapsack, integer_knapsack, assignment, tsp, shift_scheduling, exam_timetabling
+Error: unknown example 'nope'. Available: knapsack, integer_knapsack, assignment, tsp, shift_scheduling, exam_timetabling, tsp_template
 ```
 
 The files are package data (`annealbridge/interfaces/examples/`), so the
@@ -505,14 +579,16 @@ suits you; a hand-written host configuration is shorter with
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Success: `solve` returned `status: "success"`, `validate` found the problem valid, `recommend` produced a ranking, `capabilities` / `example` / `export-schema` completed, or `--version` printed the version |
-| `1` | A domain answer that is not success: a non-`success` `SolveResult` (including `infeasible`), or an invalid problem from `validate` / `recommend` |
+| `0` | Success: `solve` returned `status: "success"`, `validate` found the problem valid, `recommend` produced a ranking, `expand` printed the expanded problem, `capabilities` / `example` / `export-schema` completed, or `--version` printed the version |
+| `1` | A domain answer that is not success: a non-`success` `SolveResult` (including `infeasible`), an invalid problem from `validate` / `recommend`, or a document `expand` cannot expand |
 | `2` | The command could not run at all |
 
 Exit `2` covers five distinct situations, and all five print to stderr:
 
-- **The input file (or stdin) cannot be used** — unreadable, not valid JSON,
-  or not a valid `OptimizationProblem` document:
+- **The input file (or stdin) cannot be used** — unreadable, not valid JSON
+  (a document nested too deeply, or holding an integer too long to parse,
+  included: it is reported like any other unusable input, never as a Python
+  traceback), or not a valid `OptimizationProblem` document:
 
   ```console
   $ annealbridge solve nope.json
@@ -560,8 +636,8 @@ Exit `2` covers five distinct situations, and all five print to stderr:
 - **An `ANNEALBRIDGE_*` setting holds an invalid value**, or a registered
   backend declares a limit key the policy has no value for. The message names
   the variable and the reason but never echoes the value. This affects every
-  command that builds the service — `solve`, `validate`, `recommend` and
-  `capabilities`.
+  command that reads the settings — `solve`, `validate`, `recommend`,
+  `expand` and `capabilities`.
 
 Note the difference between exit `1` and exit `2`: an *infeasible* problem, or
 one the validator rejects, is a legitimate answer about your problem and exits
@@ -579,6 +655,7 @@ service — and each command is a one-line delegation:
 | `validate` | `OptimizationService.validate()` | `validate_optimization_problem` |
 | `recommend` | `OptimizationService.recommend()` | `recommend_backend` |
 | `capabilities` | shared capabilities view | `get_optimization_capabilities` (`--json` is its default output) |
+| `expand` | `annealbridge.validation.expand_problem` | none: `validate_optimization_problem` expands the same way and maps its errors back to the templates |
 | `example` | shared registry of shipped examples | resources `annealbridge://examples/<name>` |
 | `export-schema` | `OptimizationProblem` JSON schema | resource `annealbridge://schema`, or `include_schema: true` |
 

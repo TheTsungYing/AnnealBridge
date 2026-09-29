@@ -100,6 +100,20 @@ EXAMPLES: tuple[BundledExample, ...] = (
             "preference honoured."
         ),
     ),
+    BundledExample(
+        name="tsp_template",
+        title="Example: travelling salesman written with templates",
+        description=(
+            "The four-city tour of the tsp example written once over index "
+            "sets instead of entry by entry: index sets of cities and of "
+            "cyclic tour positions, a distance parameter table, one variable "
+            "family x[city,pos], a quadratic term template and two "
+            "cardinality constraint templates (each city at one position, "
+            "each position one city). Schema version 1.3, which templates "
+            "require; the server expands it into the same 16 variables, 48 "
+            "terms and 8 constraints. The optimal tour has length 8."
+        ),
+    ),
 )
 
 _BY_NAME = {example.name: example for example in EXAMPLES}

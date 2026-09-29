@@ -90,3 +90,17 @@ class SolveCancelled(Exception):
     through. By the time it propagates every thread the solve started has
     returned and its concurrency slot has been released.
     """
+
+
+class TemplatesNotExpandedError(ValueError):
+    """A problem that still carries schema 1.3 templates reached a stage
+    that only works on the expanded problem (schema 1.3 spec §14.12).
+
+    Every public function that reads a problem's variables, objective or
+    constraints refuses such a problem instead of silently ignoring the
+    templates: an ignored constraint template would let an infeasible
+    assignment pass re-validation. Expand the problem first with
+    ``annealbridge.validation.expand_problem``; ``OptimizationService`` and
+    ``routing.recommend`` always do. A programming error, not a domain
+    failure, so deliberately not an :class:`OptimizerError`.
+    """

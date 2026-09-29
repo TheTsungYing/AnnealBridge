@@ -85,6 +85,7 @@ def encode_integer_variables(
     ``CompiledProblem.integer_encodings`` content); it is empty for a
     binary-only problem, whose forms are all identities.
     """
+    problem.require_expanded("encode_integer_variables")
     forms: dict[str, AffineForm] = {}
     encodings: dict[str, IntegerEncoding] = {}
     for variable in problem.variables:

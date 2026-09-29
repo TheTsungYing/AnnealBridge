@@ -1,0 +1,66 @@
+{
+  "version": "1.3",
+  "name": "window_template",
+  "description": "Two workers cover four days, exactly one per day, and nobody works two days in a row; working day d and day d+2 earns a bonus of 1. The day set is linear: no_consecutive is left out for the last day and the bonus terms for the last two days (TEMPLATE_BOUNDARY_SKIPPED). Optimum 12: w1 on d1 and d3, w2 on d2 and d4.",
+  "index_sets": [
+    {"name": "worker", "elements": ["w1", "w2"]},
+    {"name": "day", "elements": ["d1", "d2", "d3", "d4"], "order": "linear"}
+  ],
+  "parameters": [
+    {
+      "name": "pay",
+      "indices": ["worker", "day"],
+      "values": [
+        {"key": ["w1", "d1"], "value": 3},
+        {"key": ["w1", "d2"], "value": 1},
+        {"key": ["w1", "d3"], "value": 2},
+        {"key": ["w1", "d4"], "value": 1},
+        {"key": ["w2", "d1"], "value": 1},
+        {"key": ["w2", "d2"], "value": 2},
+        {"key": ["w2", "d3"], "value": 1},
+        {"key": ["w2", "d4"], "value": 3}
+      ]
+    }
+  ],
+  "variable_families": [
+    {"name": "x", "indices": ["worker", "day"], "description": "1 iff the worker works that day"}
+  ],
+  "variables": [],
+  "objective": {
+    "direction": "maximize",
+    "linear_terms": [],
+    "linear_term_templates": [
+      {"for_each": ["w in worker", "d in day"], "coefficient": "pay[w,d]", "variable": "x[w,d]"}
+    ],
+    "quadratic_term_templates": [
+      {"for_each": ["w in worker", "d in day"], "coefficient": 1, "variable1": "x[w,d]", "variable2": "x[w,d+2]"}
+    ]
+  },
+  "constraints": [],
+  "constraint_templates": [
+    {
+      "id": "no_consecutive",
+      "description": "Nobody works two days in a row",
+      "type": "hard",
+      "for_each": ["w in worker", "d in day"],
+      "terms": [
+        {"coefficient": 1, "variable": "x[w,d]"},
+        {"coefficient": 1, "variable": "x[w,d+1]"}
+      ],
+      "operator": "<=",
+      "rhs": 1
+    }
+  ],
+  "cardinality_constraint_templates": [
+    {
+      "id": "staffed",
+      "description": "Each day has exactly one worker",
+      "type": "hard",
+      "for_each": ["d in day"],
+      "variables": [{"for_each": ["w in worker"], "variable": "x[w,d]"}],
+      "operator": "==",
+      "rhs": 1
+    }
+  ],
+  "solver": {"backend": "exact"}
+}

@@ -127,7 +127,7 @@ claude mcp add annealbridge -- uvx --from "annealbridge[mcp]" annealbridge-mcp
 
 如果你的 host 會在輸入選單列出 prompts，其中三個──`pick_subset`、`assign`
 與 `schedule_shifts`──各自帶著 agent 把你自己的句子寫成一種日常請求類型的
-問題文件，再由它求解。server 同時提供 resources：`annealbridge://examples/` 底下的六個範例
+問題文件，再由它求解。server 同時提供 resources：`annealbridge://examples/` 底下的七個範例
 文件，以及 `annealbridge://schema` 的完整問題 schema，agent 可以直接讀完整
 範例或 schema，不必用猜的。
 
@@ -222,20 +222,25 @@ Optimality proven: yes
 整數變數（`"type": "integer"` 加上 bounds、`"version": "1.1"`）、cardinality
 限制式（在一組 binary 變數中恰好、最多或至少選 *k* 個；hard 的「最多選一個」
 編譯時不需要 slack 變數；`"cardinality_constraints"`、`"version": "1.2"`）、
-二次目標項、帶權重的 soft constraint，以及各 backend 的 solver 偏好設定，都寫在
+範本（在索引集合上把大型、規則的模型只寫一次，由 server 展開；
+`"index_sets"`、`"parameters"`、`"variable_families"` 與各 `*_templates`
+清單，`"version": "1.3"`）、二次目標項、帶權重的 soft constraint，以及各
+backend 的 solver 偏好設定，都寫在
 [docs/problem-format.md](docs/problem-format.md)。
 `annealbridge export-schema` 會印出 JSON Schema，agent 可以拿它來做結構化
 輸出。
 
-repository 裡有六個可直接執行的範例：[背包問題](examples/knapsack.json)、
+repository 裡有七個可直接執行的範例：[背包問題](examples/knapsack.json)、
 [指派問題](examples/assignment.json)、[TSP](examples/tsp.json)、
 [整數背包問題](examples/integer_knapsack.json)、
-[排班問題](examples/shift_scheduling.json) 與
-[考試排程](examples/exam_timetabling.json)（cardinality 限制式）。安裝好的套件也帶著同樣的檔案：
+[排班問題](examples/shift_scheduling.json)、
+[考試排程](examples/exam_timetabling.json)（cardinality 限制式）與
+[範本版 TSP](examples/tsp_template.json)（在索引集合上只寫一次的 TSP；
+`annealbridge expand` 會印出它展開後的樣子）。安裝好的套件也帶著同樣的檔案：
 `annealbridge example` 會列出它們，`annealbridge example knapsack > knapsack.json`
 可存下其中一個（或直接用 `annealbridge example knapsack | annealbridge solve -`
 接給 `solve`）；MCP server 則以 `annealbridge://examples/` 底下的 resources
-提供同樣這六個文件。
+提供同樣這七個文件。
 
 ## 運作方式
 
@@ -243,7 +248,7 @@ agent 產生一個 `OptimizationProblem`：binary 或有界整數變數、線性
 目標函式，以及 hard 或 soft 的線性限制式與 cardinality 限制式。就只有這些。接著 AnnealBridge 會
 以確定性的步驟：
 
-1. **驗證**問題，一次收集所有錯誤；
+1. 先把範本展開成明確的項目，再**驗證**問題，一次收集所有錯誤；
 2. **編譯**成 BQM 或 CQM，penalty、slack 與整數編碼都由它自己算出來；
 3. 在本地或遠端 backend 上**求解**；
 4. 把每個候選解拿去對照原始的 JSON **重新驗證**，絕不相信 solver 自己
@@ -294,6 +299,9 @@ agent 永遠不必寫 QUBO 矩陣、penalty 權重、slack 變數或整數編碼
   對 binary 變數的 one-hot、最多 *k* 個、至少 *k* 個──hard 的「最多選一個」
   編譯成不需 slack 變數的成對 penalty；`1.0` 與 `1.1` 的行為由相容性 golden
   鎖定。
+- **大型模型只寫一次。** `"version": "1.3"` 加入索引集合、參數表、變數族與
+  範本，由 server 先展開成一般的變數、目標項與限制式；錯誤會指回範本本身，
+  超過規模上限時整份拒絕，絕不截斷。`1.0`～`1.2` 的行為由既有的 golden 鎖定。
 - **結構化的失敗，不丟例外。** 每個結果都是帶 `status` 的 `SolveResult`；
   每個失敗都帶穩定的錯誤碼與 `recommended_action`。`infeasible` 是答案，
   不是失敗。
@@ -342,7 +350,7 @@ live 測試要自己指定才會跑（`pytest -m remote`）。不用 checkout �
 架構規則、設計原則與 pull request 檢查清單都在
 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-版本 0.3.0：問題契約（`1.0` / `1.1`；`1.2` 尚未發佈）、八個 backend、CLI 與 MCP 工具都已
+版本 0.3.0：問題契約（`1.0` / `1.1`；`1.2` 與 `1.3` 尚未發佈）、八個 backend、CLI 與 MCP 工具都已
 完成並有測試涵蓋。目前刻意不支援的項目列在
 [docs/limitations.md](docs/limitations.md)；變更紀錄見
 [CHANGELOG.md](CHANGELOG.md)。

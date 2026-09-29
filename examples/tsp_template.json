@@ -1,0 +1,63 @@
+{
+  "version": "1.3",
+  "name": "tsp_4_cities_template",
+  "description": "The 4-city traveling salesman problem of tsp.json, written with index sets, a distance table, a variable family and templates instead of 16 variables, 48 terms and 8 constraints. Optimal tour length 8.",
+  "index_sets": [
+    {"name": "city", "elements": ["a", "b", "c", "d"], "description": "The cities to visit."},
+    {"name": "pos", "elements": [0, 1, 2, 3], "order": "cyclic", "description": "Tour positions; cyclic, so the position after 3 is 0 and the tour closes."}
+  ],
+  "parameters": [
+    {
+      "name": "dist",
+      "indices": ["city", "city"],
+      "description": "Symmetric distance between two different cities.",
+      "values": [
+        {"key": ["a", "b"], "value": 1}, {"key": ["a", "c"], "value": 3},
+        {"key": ["a", "d"], "value": 4}, {"key": ["b", "a"], "value": 1},
+        {"key": ["b", "c"], "value": 2}, {"key": ["b", "d"], "value": 5},
+        {"key": ["c", "a"], "value": 3}, {"key": ["c", "b"], "value": 2},
+        {"key": ["c", "d"], "value": 1}, {"key": ["d", "a"], "value": 4},
+        {"key": ["d", "b"], "value": 5}, {"key": ["d", "c"], "value": 1}
+      ]
+    }
+  ],
+  "variable_families": [
+    {"name": "x", "indices": ["city", "pos"], "type": "binary", "description": "1 iff the city is visited at that tour position"}
+  ],
+  "variables": [],
+  "objective": {
+    "direction": "minimize",
+    "linear_terms": [],
+    "quadratic_term_templates": [
+      {
+        "for_each": ["p in pos", "i in city", "j in city"],
+        "where": ["i != j"],
+        "coefficient": "dist[i,j]",
+        "variable1": "x[i,p]",
+        "variable2": "x[j,p+1]"
+      }
+    ]
+  },
+  "constraints": [],
+  "cardinality_constraint_templates": [
+    {
+      "id": "city_once",
+      "description": "Each city is visited at exactly one position.",
+      "type": "hard",
+      "for_each": ["i in city"],
+      "variables": [{"for_each": ["p in pos"], "variable": "x[i,p]"}],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "position_once",
+      "description": "Each position holds exactly one city.",
+      "type": "hard",
+      "for_each": ["p in pos"],
+      "variables": [{"for_each": ["i in city"], "variable": "x[i,p]"}],
+      "operator": "==",
+      "rhs": 1
+    }
+  ],
+  "solver": {"backend": "exact", "top_k": 5}
+}

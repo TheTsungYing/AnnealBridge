@@ -1,5 +1,6 @@
 """Domain models for the optimization middleware."""
 
+from annealbridge.exceptions import TemplatesNotExpandedError
 from annealbridge.models.capabilities import (
     AvailabilityCategory,
     AvailabilityStatus,
@@ -92,6 +93,7 @@ __all__ = [
     "SolverCapabilities",
     "SolverExecutionMetadata",
     "SolverPreferences",
+    "TemplatesNotExpandedError",
     "ValidationResult",
     "Variable",
 ]

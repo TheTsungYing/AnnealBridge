@@ -36,7 +36,6 @@ from annealbridge.models import (
     SolverCapabilities,
     SolverPreferences,
     Variable,
-    catalog_error,
 )
 from annealbridge.models.reflection import is_number_type, model_class, union_members
 from annealbridge.validation.estimates import (
@@ -52,6 +51,24 @@ from annealbridge.validation.estimates import (
     lhs_bounds,
     variable_bounds,
 )
+from annealbridge.validation.expansion import (
+    DEFAULT_MAX_TEMPLATE_BINDINGS,
+    ERRORS_PER_SOURCE,
+    ExpandedProblem,
+    expand_problem,
+)
+
+# Shared with the template expander (schema 1.3 spec §14.8): moved to
+# ``validation/issues`` unchanged and re-exported here under the same names.
+from annealbridge.validation.issues import (  # noqa: F401
+    _WARNING_RECOMMENDED_ACTIONS,
+    INTEGER_BOUND_LIMIT,
+    _check_variable_bounds,
+    _duplicate_linear_variables,
+    _duplicate_quadratic_pairs,
+    _error,
+    _warning,
+)
 from annealbridge.validation.tolerance import satisfies, tolerance
 
 logger = logging.getLogger(__name__)
@@ -65,9 +82,6 @@ QPU_DENSE_CONSTRAINT_VARIABLE_THRESHOLD = 30
 # 3b §9.3 integer-encoding thresholds (BQM path only).
 LARGE_INTEGER_BITS_THRESHOLD = 10
 INTEGER_QUADRATIC_BLOWUP_THRESHOLD = 2000
-# 3b §7: integer bounds must lie within ±(2^31-1) so every encoded value,
-# every product of two values and every float64 evaluation stays exact.
-INTEGER_BOUND_LIMIT = 2**31 - 1
 # 2026-09-09 review F-24: the bound alone does not make the *slack range*
 # exact. ``analyze_inequality`` computes ``rhs - lhs_min`` in float64 from
 # ``coefficient * bound`` products, and float64 represents every integer
@@ -92,10 +106,12 @@ VALIDATOR_ERROR_CODES: frozenset[str] = frozenset(
         "CARDINALITY_VARIABLE_NOT_BINARY",
         "DUPLICATE_CARDINALITY_VARIABLE",
         "DUPLICATE_CONSTRAINT_ID",
+        "DUPLICATE_TEMPLATE_NAME",
         "DUPLICATE_VARIABLE",
         "EMPTY_CONSTRAINT",
         "FEATURE_REQUIRES_NEWER_VERSION",
         "HARD_CONSTRAINT_HAS_WEIGHT",
+        "INDEX_SET_INVALID",
         "INEQUALITY_MAGNITUDE_TOO_LARGE",
         "INTEGER_BOUNDS_INVALID",
         "INTEGER_BOUNDS_MISSING",
@@ -105,9 +121,13 @@ VALIDATOR_ERROR_CODES: frozenset[str] = frozenset(
         "NON_FINITE_COEFFICIENT",
         "NON_INTEGER_INEQUALITY",
         "NO_VARIABLES",
+        "PARAMETER_TABLE_INVALID",
+        "PARAMETER_VALUE_MISSING",
         "RESERVED_VARIABLE_NAME",
         "SELF_QUADRATIC_TERM",
         "SOFT_CONSTRAINT_MISSING_WEIGHT",
+        "TEMPLATE_EXPANSION_LIMIT",
+        "TEMPLATE_REFERENCE_INVALID",
         "TRIVIALLY_INFEASIBLE",
         "UNKNOWN_VARIABLE",
         "WALL_CLOCK_LIMIT_UNSUPPORTED",
@@ -163,83 +183,6 @@ _POSITIVE_OPTION_FIELDS: tuple[tuple[str, str], ...] = tuple(
     for field, info in model.model_fields.items()
     if _optional_number(info.annotation)
 )
-
-# Fixed categorical guidance per warning code (mirrors the error catalog's
-# style; §13.2's RECOMMENDED_ACTIONS stays an error-code vocabulary). The
-# text describes backends by capability, never by name (3a §13.2).
-_WARNING_RECOMMENDED_ACTIONS: dict[str, str] = {
-    "SOFT_WEIGHT_SMALL": (
-        "The soft constraint's weight is tiny compared to the objective's "
-        "scale, so it will barely influence solutions; raise the weight if "
-        "the preference matters."
-    ),
-    "LARGE_SLACK_RANGE": (
-        "This inequality needs many slack bits on a BQM backend, which "
-        "enlarges the compiled model; tighten the bound or split the "
-        "constraint if possible."
-    ),
-    "EXACT_NEAR_LIMIT": (
-        "The estimated compiled size is close to the exhaustive backend's "
-        "variable limit; consider a local heuristic backend before the "
-        "problem grows."
-    ),
-    "EXACT_OVER_LIMIT": (
-        "The estimated compiled size exceeds the exhaustive backend's "
-        "variable limit; solving will fail with resource_limit_exceeded — "
-        "reduce the problem or use a local heuristic backend."
-    ),
-    "DENSE_FOR_QPU": (
-        "The problem is likely too dense or too large to minor-embed on a "
-        "backend that requires embedding; consider a hybrid backend or a "
-        "local heuristic backend."
-    ),
-    "SEED_IGNORED": (
-        "This backend does not support seeding; remove solver.seed or use a "
-        "backend that supports seeding if reproducibility is required."
-    ),
-    "PARAMETER_IGNORED": (
-        "This parameter has no effect on the selected backend and will be "
-        "ignored; remove it to avoid confusion."
-    ),
-    "DUPLICATE_TERM_MERGED": (
-        "Duplicate objective terms are summed by the compiler; merge them in "
-        "the input if the duplication is unintentional."
-    ),
-    "REDUNDANT_CONSTRAINT": (
-        "This inequality is always satisfied and adds nothing to the model; "
-        "remove it, or fix its bound if it was meant to restrict solutions."
-    ),
-    # 3b §9.3 / §19 (the bit threshold is LARGE_INTEGER_BITS_THRESHOLD and
-    # is reported in the message, never in this fixed guidance).
-    "LARGE_INTEGER_RANGE": (
-        "An integer variable needs more encoding bits on a BQM backend than "
-        "is comfortable; tighten its bounds, rescale its unit, or use a "
-        "backend that accepts integer variables natively."
-    ),
-    "INTEGER_QUADRATIC_BLOWUP": (
-        "Binary-encoding the integer variables produces many quadratic "
-        "interactions on a BQM backend; prefer a backend that accepts "
-        "integer variables natively (model type cqm), or reduce the ranges."
-    ),
-    # 2026-09-09 review (F-04 / F-12): the soft counterpart of
-    # TRIVIALLY_INFEASIBLE. Legal (the weight is simply always paid), so a
-    # warning; judged with the same tolerance, on both compiler paths alike.
-    "SOFT_ALWAYS_VIOLATED": (
-        "This soft constraint can never be satisfied within the variables' "
-        "bounds: every solution pays its penalty and the weight only rewards "
-        "the smallest violation; remove it, or fix its bound or coefficients "
-        "if it was meant to be attainable."
-    ),
-    # Schema 1.2 spec §6.3: only a declared cardinality constraint gets the
-    # slack-free pairwise encoding, so an equivalent linear one is pointed
-    # at the declaration. The count is spelled out: this text holds no
-    # digit (tests/unit/test_error_catalog.py).
-    "CARDINALITY_FORM_AVAILABLE": (
-        "Declare this constraint in cardinality_constraints with operator "
-        '"<=" and rhs one to let a BQM backend encode it without a slack '
-        "variable; the meaning is unchanged."
-    ),
-}
 
 # Schema versions that predate cardinality_constraints (schema 1.2 spec
 # §6.4). Gated on the list being non-empty, never on the key being present:
@@ -303,24 +246,43 @@ class ProblemValidationResult(BaseModel):
     )
 
 
-def validate_problem(problem: OptimizationProblem) -> list[SolveError]:
+def validate_problem(
+    problem: OptimizationProblem,
+    *,
+    max_template_bindings: int = DEFAULT_MAX_TEMPLATE_BINDINGS,
+) -> list[SolveError]:
     """Validate a problem before compilation, returning all errors found.
 
-    An empty list means the problem is safe to hand to the compiler.
+    An empty list means the problem is safe to hand to the compiler. A
+    problem with schema 1.3 templates is expanded first (schema 1.3 spec
+    §14.8) and the errors point into the templates; ``max_template_bindings``
+    is the expansion ceiling, the policy default unless given. For such a
+    problem only the errors come back, never the expanded problem: to
+    compile or solve it, expand it with :func:`expand_problem` and hand on
+    its ``problem``.
     """
-    errors, _ = _collect(problem)
-    return errors
+    if not problem.has_templates():
+        errors, _ = _collect(problem)
+        return errors
+    expansion = expand_problem(problem, max_template_bindings=max_template_bindings)
+    return validate_expanded(expansion, errors_only=True).errors
 
 
 def _collect(
     problem: OptimizationProblem,
+    errors: list[SolveError] | None = None,
+    *,
+    duplicate_terms: bool = True,
 ) -> tuple[list[SolveError], list[SolveError]]:
     """Single error pass plus the spec §8 duplicate-term warnings.
 
     Both public entry points go through here so a duplicate term is logged
-    exactly once, whichever of them is called.
+    exactly once, whichever of them is called. ``errors`` is the list to
+    append to (a fresh one by default; :func:`validate_expanded` passes its
+    bounded collector), and ``duplicate_terms=False`` leaves the duplicate
+    terms to :func:`validate_expanded`, which attributes them to templates.
     """
-    errors: list[SolveError] = []
+    errors = [] if errors is None else errors
     known_variables = {variable.name for variable in problem.variables}
     # Error-pass views of the variables: a type per name and a bounds tuple
     # per name that is None when the declared bounds are illegal (3b §9.2).
@@ -343,7 +305,8 @@ def _collect(
     _check_solver_preferences(problem, errors)
 
     duplicate_warnings: list[SolveError] = []
-    _warn_duplicate_terms(problem.objective, duplicate_warnings)
+    if duplicate_terms:
+        _warn_duplicate_terms(problem.objective, duplicate_warnings)
     return errors, duplicate_warnings
 
 
@@ -353,6 +316,7 @@ def validate_problem_full(
     capabilities: SolverCapabilities | None = None,
     max_compiled_variables: int | None = None,
     model_type: ModelType | None = None,
+    max_template_bindings: int = DEFAULT_MAX_TEMPLATE_BINDINGS,
 ) -> ProblemValidationResult:
     """Validate a problem and add the §20 advisory layer (3a §9).
 
@@ -379,8 +343,43 @@ def validate_problem_full(
     capabilities). The BQM estimate counts encoding and slack bits; the CQM
     estimate is the variable count plus the integer slacks of 3b §15.3
     (§9.4).
+
+    A problem with schema 1.3 templates is expanded first, under the
+    ceiling ``max_template_bindings``, and validated through
+    :func:`validate_expanded` (schema 1.3 spec §14.8).
     """
-    errors, duplicate_warnings = _collect(problem)
+    if problem.has_templates():
+        return validate_expanded(
+            expand_problem(problem, max_template_bindings=max_template_bindings),
+            capabilities=capabilities,
+            max_compiled_variables=max_compiled_variables,
+            model_type=model_type,
+        )
+    return _validate_full(
+        problem,
+        capabilities=capabilities,
+        max_compiled_variables=max_compiled_variables,
+        model_type=model_type,
+    )
+
+
+def _validate_full(
+    problem: OptimizationProblem,
+    *,
+    capabilities: SolverCapabilities | None,
+    max_compiled_variables: int | None,
+    model_type: ModelType | None,
+    errors: list[SolveError] | None = None,
+    warnings: list[SolveError] | None = None,
+    duplicate_terms: bool = True,
+) -> ProblemValidationResult:
+    """:func:`validate_problem_full` of a problem without templates.
+
+    ``errors`` / ``warnings`` / ``duplicate_terms`` are for
+    :func:`validate_expanded` only; left at their defaults this is exactly
+    the validation every 1.0 - 1.2 problem has always had.
+    """
+    errors, duplicate_warnings = _collect(problem, errors, duplicate_terms=duplicate_terms)
     if capabilities is not None:
         _check_seed_range(problem, capabilities, errors)
         _check_wall_clock_limit(problem, capabilities, errors)
@@ -395,7 +394,7 @@ def validate_problem_full(
     objective_scale = compute_objective_scale(problem.objective, bounds)
     estimated = estimate_model_variables(problem, model_type)
 
-    warnings: list[SolveError] = []
+    warnings = [] if warnings is None else warnings
     _warn_soft_weights(problem, objective_scale, warnings)
     _warn_inequalities(problem, bounds, warnings)
     _warn_constraint_ranges(problem, bounds, warnings)
@@ -417,19 +416,326 @@ def validate_problem_full(
     )
 
 
-def _warning(code: str, path: str | None, message: str) -> SolveError:
-    return SolveError(
-        code=code,
-        path=path,
-        message=message,
-        retryable=False,
-        recommended_action=_WARNING_RECOMMENDED_ACTIONS[code],
+def validate_expanded(
+    expansion: ExpandedProblem,
+    *,
+    capabilities: SolverCapabilities | None = None,
+    max_compiled_variables: int | None = None,
+    model_type: ModelType | None = None,
+    errors_only: bool = False,
+) -> ProblemValidationResult:
+    """Validate the outcome of :func:`expand_problem` (schema 1.3 spec §14.8).
+
+    The one path from an expansion to a validation result, shared by the
+    service, routing and the two public validators so none of them expands
+    twice or reports differently:
+
+    * expansion errors are the result, ``valid: false``, nothing else;
+    * a problem that had no templates is validated exactly as always;
+    * an expanded one is validated with a bounded collector
+      (:class:`_TemplateIssues`) that maps every path on a generated entry
+      back to its template, keeps at most twenty errors per template and one
+      warning per (code, template path), and counts the rest (spec §14.11).
+
+    Warnings -- the expansion's own ones first -- are only reported when
+    there is no error at all, as for every problem. ``errors_only`` runs the
+    error pass alone, as :func:`validate_problem` does.
+    """
+    if expansion.errors:
+        return ProblemValidationResult(valid=False, errors=list(expansion.errors))
+    problem = expansion.problem
+    assert problem is not None  # no errors, so expanded
+    if not expansion.templated:
+        if errors_only:
+            errors, _ = _collect(problem)
+            return ProblemValidationResult(valid=not errors, errors=errors)
+        return _validate_full(
+            problem,
+            capabilities=capabilities,
+            max_compiled_variables=max_compiled_variables,
+            model_type=model_type,
+        )
+    errors = _TemplateIssues(expansion, errors=True)
+    if errors_only:
+        _collect(problem, errors, duplicate_terms=False)
+        final = errors.finish()
+        return ProblemValidationResult(valid=not final, errors=final)
+    warnings = _TemplateIssues(expansion, errors=False)
+    result = _validate_full(
+        problem,
+        capabilities=capabilities,
+        max_compiled_variables=max_compiled_variables,
+        model_type=model_type,
+        errors=errors,
+        warnings=warnings,
+        duplicate_terms=False,
+    )
+    final_errors = errors.finish()
+    if final_errors:
+        return ProblemValidationResult(valid=False, errors=final_errors)
+    return result.model_copy(
+        update={
+            "warnings": [
+                *expansion.warnings,
+                *warnings.finish(),
+                *_template_duplicate_terms(expansion),
+            ]
+        }
     )
 
 
-def _error(*, code: str, path: str | None, message: str) -> SolveError:
-    """Build a validation error with the catalog's fixed recommended_action."""
-    return catalog_error(code, message, path=path)
+class _TemplateIssues(list):
+    """The bounded, path-mapping collector of :func:`validate_expanded`.
+
+    Stands in for the plain ``errors`` / ``warnings`` list the validator
+    appends to (schema 1.3 spec §14.11). An issue on an explicit entry is
+    kept as it is. One on a generated entry is rewritten on arrival: its
+    path points into the template and its message says so; then an error is
+    kept while its template has fewer than twenty kept errors, and a warning
+    only as the first of its (code, path). The rest are counted, never
+    stored, so the objects the validator builds for them are freed at once
+    and memory does not grow with the number of generated entries.
+
+    ``len()`` is the number of issues *appended*, kept or counted, so every
+    check the validator makes on the length of its list (``if errors:``,
+    ``len(errors) != errors_before``) means what it always meant.
+    """
+
+    def __init__(self, expansion: ExpandedProblem, *, errors: bool) -> None:
+        super().__init__()
+        self._expansion = expansion
+        self._errors = errors
+        self._counted = 0
+        self._kept_per_source: Counter[str] = Counter()
+        self._last_of_source: dict[str, int] = {}
+        self._omitted: dict[str, Counter[str]] = {}
+        self._warning_at: dict[tuple[str, str], int] = {}
+        self._warning_count: Counter[tuple[str, str]] = Counter()
+
+    def append(self, issue: SolveError) -> None:
+        location = self._expansion.locate(issue.path)
+        if location is None:
+            super().append(issue)
+            return
+        if self._errors:
+            source = location.source
+            if self._kept_per_source[source] >= ERRORS_PER_SOURCE:
+                self._omitted.setdefault(source, Counter())[issue.code] += 1
+                self._counted += 1
+                return
+            self._kept_per_source[source] += 1
+            self._last_of_source[source] = list.__len__(self)
+        else:
+            key = (issue.code, location.path)
+            self._warning_count[key] += 1
+            if key in self._warning_at:
+                self._counted += 1
+                return
+            self._warning_at[key] = list.__len__(self)
+        super().append(
+            issue.model_copy(
+                update={"path": location.path, "message": issue.message + location.suffix}
+            )
+        )
+
+    def extend(self, issues) -> None:  # type: ignore[override]
+        for issue in issues:
+            self.append(issue)
+
+    def __len__(self) -> int:
+        return list.__len__(self) + self._counted
+
+    def finish(self) -> list[SolveError]:
+        """The kept issues, with counts and cross-reference notes appended."""
+        items = [item for item in list.__iter__(self)]
+        if self._errors:
+            for source, counts in self._omitted.items():
+                at = self._last_of_source[source]
+                total = sum(counts.values())
+                detail = ", ".join(f"{code} ×{count}" for code, count in counts.items())
+                items[at] = _with_note(
+                    items[at],
+                    f"; {total} more error{'s' if total != 1 else ''} from {source} "
+                    f"{'are' if total != 1 else 'is'} not listed ({detail})",
+                )
+            context = _NoteContext(self._expansion)
+            return [context.note(item) for item in items]
+        for key, at in self._warning_at.items():
+            count = self._warning_count[key]
+            if count > 1:
+                items[at] = _with_note(
+                    items[at], f"; {count} generated entries from this template get this warning"
+                )
+        return items
+
+class _NoteContext:
+    """Cross-reference notes for errors on explicit entries (spec §14.11).
+
+    The lookups they need -- the first position of each linear constraint
+    id, the declared names -- are built once, on first use, so the notes
+    cost one pass over the problem, not one per error.
+    """
+
+    def __init__(self, expansion: ExpandedProblem) -> None:
+        self._expansion = expansion
+        self._problem = expansion.problem
+        assert self._problem is not None
+        self._first_linear_id: dict[str, int] | None = None
+        self._declared: set[str] | None = None
+
+    def note(self, error: SolveError) -> SolveError:
+        """Point an error on an explicit entry at the template involved."""
+        expansion = self._expansion
+        if error.code == "NO_VARIABLES":
+            left_out = expansion.all_generated_variables_left_out
+            if left_out:
+                return _with_note(
+                    error,
+                    f" (variable_families generated {left_out} variables, but no "
+                    "objective term or constraint uses any of them, so all were "
+                    "left out)",
+                )
+        elif error.code == "DUPLICATE_CONSTRAINT_ID" and error.path is not None:
+            if expansion.locate(error.path) is None:
+                note = self._generated_id_note(error.path)
+                if note:
+                    return _with_note(error, note)
+        elif error.code == "UNKNOWN_VARIABLE" and error.path is not None:
+            if expansion.locate(error.path) is None:
+                if self._declared is None:
+                    self._declared = {variable.name for variable in self._problem.variables}
+                families = expansion.family_names
+                for name in _names_at(self._problem, error.path):
+                    if name not in self._declared and any(
+                        name.startswith(family + "[") for family in families
+                    ):
+                        return _with_note(
+                            error,
+                            " (a generated variable is named exactly family[e1,e2], "
+                            "without spaces, for elements of the family's index sets)",
+                        )
+        return error
+
+    def _generated_id_note(self, path: str) -> str:
+        """For an explicit cardinality id that a linear template also generates.
+
+        ``_check_constraint_ids`` reports the second occurrence in
+        ``constraints`` then ``cardinality_constraints`` order, so a generated
+        linear constraint sharing an explicit cardinality constraint's id puts
+        the error on the explicit entry; the note names the template.
+        """
+        if not path.startswith("cardinality_constraints["):
+            return ""
+        problem = self._problem
+        if self._first_linear_id is None:
+            self._first_linear_id = {}
+            for position, constraint in enumerate(problem.constraints):
+                self._first_linear_id.setdefault(constraint.id, position)
+        index = int(path[len("cardinality_constraints[") : path.index("]")])
+        position = self._first_linear_id.get(problem.cardinality_constraints[index].id)
+        if position is None:
+            return ""
+        location = self._expansion.locate(f"constraints[{position}]")
+        if location is None:
+            return ""
+        return location.suffix.replace(" (generated by", " (the same id is generated by", 1)
+
+
+def _with_note(issue: SolveError, note: str) -> SolveError:
+    return issue.model_copy(update={"message": issue.message + note})
+
+
+def _names_at(problem: OptimizationProblem, path: str) -> list[str]:
+    """The variable names an explicit entry at ``path`` references."""
+    head, _, rest = path.partition("[")
+    try:
+        index = int(rest[: rest.index("]")])
+        tail = rest[rest.index("]") + 1 :]
+        if head == "objective.linear_terms":
+            return [problem.objective.linear_terms[index].variable]
+        if head == "objective.quadratic_terms":
+            term = problem.objective.quadratic_terms[index]
+            return [term.variable1, term.variable2]
+        if head == "constraints" and tail.startswith(".terms["):
+            j = int(tail[len(".terms[") : tail.index("]")])
+            return [problem.constraints[index].terms[j].variable]
+        if head == "cardinality_constraints" and tail.startswith(".variables["):
+            j = int(tail[len(".variables[") : tail.index("]")])
+            return [problem.cardinality_constraints[index].variables[j]]
+    except (ValueError, IndexError):
+        return []
+    return []
+
+
+def _template_duplicate_terms(expansion: ExpandedProblem) -> list[SolveError]:
+    """DUPLICATE_TERM_MERGED for an expanded objective, per template (§14.11).
+
+    Its path is the whole term list, which no generated position can map.
+    The duplicates are recomputed with the very functions the validator
+    uses; each is attributed to the template that generated its first
+    repeat after the first occurrence, and aggregated per template. One
+    made of explicit terms only keeps its path and message. One log line
+    per warning, not per duplicate.
+    """
+    problem = expansion.problem
+    assert problem is not None
+    objective = problem.objective
+    result: list[SolveError] = []
+    groups = (
+        (
+            "linear",
+            _duplicate_linear_variables(objective),
+            objective.linear_terms,
+            lambda term: term.variable,
+            lambda key: key,
+        ),
+        (
+            "quadratic",
+            _duplicate_quadratic_pairs(objective),
+            objective.quadratic_terms,
+            lambda term: frozenset((term.variable1, term.variable2)),
+            frozenset,
+        ),
+    )
+    for kind, duplicates, terms, key_of, lookup in groups:
+        if not duplicates:
+            continue
+        wanted = {lookup(key) for key, _ in duplicates}
+        positions: dict[object, list[int]] = {}
+        for position, term in enumerate(terms):
+            key = key_of(term)
+            if key in wanted:
+                positions.setdefault(key, []).append(position)
+        explicit = expansion.objective_explicit(kind)
+        aggregated: dict[str, list] = {}
+        for key, count in duplicates:
+            warning = _duplicate_term_warning(kind, key, count)
+            repeats = [p for p in positions[lookup(key)][1:] if p >= explicit]
+            source = expansion.objective_source(kind, repeats[0]) if repeats else None
+            if source is None:
+                result.append(warning)
+                continue
+            if source in aggregated:
+                aggregated[source][1] += 1
+                continue
+            aggregated[source] = [len(result), 1]
+            result.append(
+                warning.model_copy(
+                    update={
+                        "path": source,
+                        "message": f"{warning.message} (generated by {source})",
+                    }
+                )
+            )
+        for source, (at, count) in aggregated.items():
+            if count > 1:
+                result[at] = _with_note(
+                    result[at],
+                    f"; {count} generated entries from this template get this warning",
+                )
+    for warning in result:
+        logger.warning("%s", warning.message)
+    return result
 
 
 def _constraint_paths(problem: OptimizationProblem) -> list[tuple[str, Constraint]]:
@@ -891,31 +1197,34 @@ def _warn_duplicate_terms(objective: Objective, warnings: list[SolveError]) -> N
     """
     first_new = len(warnings)
     for variable, count in _duplicate_linear_variables(objective):
-        warnings.append(
-            _warning(
-                "DUPLICATE_TERM_MERGED",
-                "objective.linear_terms",
-                (
-                    f"Variable {variable} appears {count} times in "
-                    "objective.linear_terms; coefficients will be summed by "
-                    "the compiler"
-                ),
-            )
-        )
+        warnings.append(_duplicate_term_warning("linear", variable, count))
     for pair, count in _duplicate_quadratic_pairs(objective):
-        warnings.append(
-            _warning(
-                "DUPLICATE_TERM_MERGED",
-                "objective.quadratic_terms",
-                (
-                    f"Variable pair {pair} appears {count} times in "
-                    "objective.quadratic_terms; coefficients will be summed "
-                    "by the compiler"
-                ),
-            )
-        )
+        warnings.append(_duplicate_term_warning("quadratic", pair, count))
     for warning in warnings[first_new:]:
         logger.warning("%s", warning.message)
+
+
+def _duplicate_term_warning(kind: str, key, count: int) -> SolveError:
+    """One DUPLICATE_TERM_MERGED warning (a variable, or a sorted pair)."""
+    if kind == "linear":
+        return _warning(
+            "DUPLICATE_TERM_MERGED",
+            "objective.linear_terms",
+            (
+                f"Variable {key} appears {count} times in "
+                "objective.linear_terms; coefficients will be summed by "
+                "the compiler"
+            ),
+        )
+    return _warning(
+        "DUPLICATE_TERM_MERGED",
+        "objective.quadratic_terms",
+        (
+            f"Variable pair {key} appears {count} times in "
+            "objective.quadratic_terms; coefficients will be summed "
+            "by the compiler"
+        ),
+    )
 
 
 def _check_variables(problem: OptimizationProblem, errors: list[SolveError]) -> None:
@@ -950,59 +1259,6 @@ def _check_variables(problem: OptimizationProblem, errors: list[SolveError]) -> 
                 )
             )
         _check_variable_bounds(variable, f"variables[{index}]", errors)
-
-
-def _check_variable_bounds(variable: Variable, path: str, errors: list[SolveError]) -> None:
-    """3b §9.1: integer variables need legal bounds, binary ones take none."""
-    lower, upper = variable.lower_bound, variable.upper_bound
-    if variable.type == "binary":
-        if lower is not None or upper is not None:
-            errors.append(
-                _error(
-                    code="BOUNDS_ON_BINARY",
-                    path=path,
-                    message=(
-                        f"Binary variable {variable.name} declares bounds "
-                        f"[{lower}, {upper}]; binary variables are always 0/1"
-                    ),
-                )
-            )
-        return
-
-    if lower is None or upper is None:
-        errors.append(
-            _error(
-                code="INTEGER_BOUNDS_MISSING",
-                path=path,
-                message=(
-                    f"Integer variable {variable.name} needs both lower_bound and "
-                    f"upper_bound, got lower_bound={lower}, upper_bound={upper}"
-                ),
-            )
-        )
-        return
-    if upper <= lower:
-        errors.append(
-            _error(
-                code="INTEGER_BOUNDS_INVALID",
-                path=path,
-                message=(
-                    f"Integer variable {variable.name} has upper_bound {upper} "
-                    f"<= lower_bound {lower}; a variable needs at least two values"
-                ),
-            )
-        )
-    if abs(lower) > INTEGER_BOUND_LIMIT or abs(upper) > INTEGER_BOUND_LIMIT:
-        errors.append(
-            _error(
-                code="INTEGER_RANGE_TOO_LARGE",
-                path=path,
-                message=(
-                    f"Integer variable {variable.name} has bounds [{lower}, {upper}] "
-                    f"outside the supported range of ±{INTEGER_BOUND_LIMIT}"
-                ),
-            )
-        )
 
 
 def _declared_bounds(variable: Variable) -> tuple[int, int] | None:
@@ -1264,23 +1520,6 @@ def _check_objective(
         )
 
 
-def _duplicate_linear_variables(objective: Objective) -> list[tuple[str, int]]:
-    counts = Counter(term.variable for term in objective.linear_terms)
-    return [(variable, count) for variable, count in counts.items() if count > 1]
-
-
-def _duplicate_quadratic_pairs(
-    objective: Objective,
-) -> list[tuple[tuple[str, ...], int]]:
-    counts = Counter(
-        frozenset((term.variable1, term.variable2))
-        for term in objective.quadratic_terms
-    )
-    return [
-        (tuple(sorted(pair)), count) for pair, count in counts.items() if count > 1
-    ]
-
-
 def _check_constraint(
     constraint: Constraint,
     index: int,
@@ -1435,9 +1674,15 @@ def _check_trivially_infeasible(
     if any(safe_bounds.get(term.variable, (0, 1)) is None for term in constraint.terms):
         return
 
-    bounds: Bounds = {
-        name: declared for name, declared in safe_bounds.items() if declared is not None
-    }
+    # Only this constraint's variables: ``lhs_bounds`` reads no other, and a
+    # dict over every variable would make the error pass O(variables x
+    # constraints), which a schema 1.3 template reaches from a few lines
+    # (2026-09-28 batch 8 diff review). Same entries, so the same result.
+    bounds: Bounds = {}
+    for term in constraint.terms:
+        declared = safe_bounds.get(term.variable)
+        if declared is not None:
+            bounds[term.variable] = declared
     lhs_min, lhs_max = lhs_bounds(accumulate_terms(constraint.terms), bounds)
     rhs = constraint.rhs
 

@@ -139,7 +139,7 @@ run rather than to decide for you.
 If your host lists prompts in its input menu, three of them — `pick_subset`,
 `assign` and `schedule_shifts` — walk the agent from your own sentence to a
 problem document of that everyday shape, which it then solves. The server
-also serves resources: the six
+also serves resources: the seven
 example documents under `annealbridge://examples/` and the full problem
 schema at `annealbridge://schema`, so an agent can read a complete example or
 the schema itself instead of guessing.
@@ -238,25 +238,30 @@ The document behind the MCP and CLI examples above, the reduced form of
 Integer variables (`"type": "integer"` with bounds, `"version": "1.1"`),
 cardinality constraints — exactly, at most or at least *k* of a set of binary
 variables, a hard at-most-one compiling without slack variables
-(`"cardinality_constraints"`, `"version": "1.2"`) — quadratic objective terms,
-soft constraints with weights and per-backend solver preferences are
-described in
+(`"cardinality_constraints"`, `"version": "1.2"`) — templates that write a
+large, regular model once over index sets and let the server expand it
+(`"index_sets"`, `"parameters"`, `"variable_families"` and the `*_templates`
+lists, `"version": "1.3"`), quadratic objective terms, soft constraints with
+weights and per-backend solver preferences are described in
 [docs/problem-format.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/problem-format.md).
 `annealbridge export-schema` prints the JSON Schema an agent can use for
 structured output.
 
-Six ready-to-run examples live in the repository —
+Seven ready-to-run examples live in the repository —
 [knapsack](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/knapsack.json),
 [assignment](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/assignment.json),
 [TSP](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/tsp.json),
 [integer knapsack](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/integer_knapsack.json),
-[shift scheduling](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/shift_scheduling.json) and
+[shift scheduling](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/shift_scheduling.json),
 [exam timetabling](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/exam_timetabling.json)
-(cardinality constraints).
+(cardinality constraints) and
+[TSP with templates](https://github.com/TheTsungYing/AnnealBridge/blob/main/examples/tsp_template.json)
+(the TSP written once over index sets; `annealbridge expand` prints what it
+expands to).
 The installed package carries the same files: `annealbridge example` lists
 them and `annealbridge example knapsack > knapsack.json` saves one (or pipe it
 straight in with `annealbridge example knapsack | annealbridge solve -`); the
-MCP server serves the same six documents as the resources under
+MCP server serves the same seven documents as the resources under
 `annealbridge://examples/`.
 
 ## How it works
@@ -265,7 +270,8 @@ The agent produces an `OptimizationProblem`: binary or bounded-integer
 variables, a linear or quadratic objective, and hard or soft linear and
 cardinality constraints. Nothing else. AnnealBridge then, deterministically:
 
-1. **validates** the problem and collects every error in one pass;
+1. **validates** the problem and collects every error in one pass, after
+   expanding any templates into explicit entries;
 2. **compiles** it into a BQM or a CQM, computing penalties, slack and
    integer encodings itself;
 3. **solves** it on a local or remote backend;
@@ -323,6 +329,12 @@ and per-backend behaviour: [docs/backends.md](https://github.com/TheTsungYing/An
   constraints — one-hot, at most *k*, at least *k* over binary variables —
   and a hard at-most-one compiles to a pairwise penalty without slack
   variables; `1.0` and `1.1` behaviour is pinned by a compatibility golden.
+- **Large models written once.** `"version": "1.3"` adds index sets,
+  parameter tables, variable families and templates, which the server expands
+  into ordinary variables, terms and constraints before anything else; errors
+  point back at the template, and a size ceiling refuses an oversized
+  expansion whole instead of truncating it. `1.0`–`1.2` behaviour is pinned by
+  the existing goldens.
 - **Structured failures, never exceptions.** Every outcome is a `SolveResult`
   with a `status`; every failure carries a stable error code with a
   `recommended_action`. `infeasible` is an answer, not a failure.
@@ -373,7 +385,7 @@ development version without a checkout:
 Architecture rules, design principles and the pull-request checklist are in
 [CONTRIBUTING.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/CONTRIBUTING.md).
 
-Version 0.3.0: the problem contract (`1.0` / `1.1`; `1.2` is in the unreleased changes), the eight backends, the
+Version 0.3.0: the problem contract (`1.0` / `1.1`; `1.2` and `1.3` are in the unreleased changes), the eight backends, the
 CLI and the MCP tools are complete and covered by tests. What is not
 supported, by design for now, is listed in
 [docs/limitations.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/limitations.md);

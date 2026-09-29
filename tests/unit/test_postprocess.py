@@ -1028,6 +1028,9 @@ class TestCapabilitiesAndRecommend:
         exhaustive_seen = non_exhaustive_seen = False
         for entry in view.backends:
             exhaustive = registry.get(entry.name).capabilities.exhaustive
+            # Every backend's view ends with the template expansion ceiling
+            # (schema 1.3 spec §14.9), applied before any backend runs.
+            assert list(entry.limits)[-1] == "max_template_bindings", entry.name
             if exhaustive:
                 exhaustive_seen = True
                 assert not set(POSTPROCESS_KEYS) & set(entry.limits), entry.name
@@ -1035,7 +1038,8 @@ class TestCapabilitiesAndRecommend:
                 non_exhaustive_seen = True
                 assert entry.limits["max_postprocess_candidates"] == 7, entry.name
                 assert entry.limits["max_postprocess_evaluations"] == 99, entry.name
-                assert list(entry.limits)[-2:] == list(POSTPROCESS_KEYS)
+                # The post-processing ceilings come right before it.
+                assert list(entry.limits)[-3:-1] == list(POSTPROCESS_KEYS)
         assert exhaustive_seen and non_exhaustive_seen
 
     def test_recommend_blocks_on_the_candidate_ceiling(self):

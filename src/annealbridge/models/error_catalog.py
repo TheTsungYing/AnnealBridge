@@ -279,6 +279,42 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "once, write a linear constraint in constraints with that coefficient "
         "instead."
     ),
+    # Schema 1.3 spec 2026-09-25 §14.10: index sets, parameters, variable
+    # families and templates. The path points into the template itself; the
+    # expansion ceiling is reported as resource_limit_exceeded by a solve.
+    "TEMPLATE_REFERENCE_INVALID": (
+        "Rewrite the named field in the template grammar: names are "
+        "identifiers, a for_each item is \"index in set\", a reference names a "
+        "declared family or parameter with one bound index per declared index "
+        "set (a shift such as p+k only on a linear or cyclic set), and a "
+        "where condition compares two operands. The message says what was "
+        "expected."
+    ),
+    "INDEX_SET_INVALID": (
+        "List each element once, all strings or all integers; strings use "
+        "letters, digits, underscore, dot and hyphen only."
+    ),
+    "PARAMETER_TABLE_INVALID": (
+        "Give one row per combination, with a key listing one element of each "
+        "index set in the parameter's indices, and a finite value; a "
+        "parameter used as a cardinality rhs needs whole-number values."
+    ),
+    "PARAMETER_VALUE_MISSING": (
+        "Add a row for the combination the message names, give the parameter "
+        "a default, or exclude the combination with a where condition."
+    ),
+    "DUPLICATE_TEMPLATE_NAME": (
+        "Rename one of the two: index sets, parameters and variable families "
+        "share one namespace, a family may not take an explicit variable's "
+        "name, template ids share the constraint id namespace, and an index "
+        "name must differ from every declared name and from the other indices "
+        "in scope."
+    ),
+    "TEMPLATE_EXPANSION_LIMIT": (
+        "Shrink the index sets or split the problem: templates are expanded "
+        "in full or not at all, and the server's ceiling is "
+        "max_template_bindings in the capabilities limits."
+    ),
     # Schema errors: the document does not fit the problem schema, so it
     # never reaches the validator (interfaces/problem_input.py).
     "UNKNOWN_FIELD": (

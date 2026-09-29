@@ -134,6 +134,7 @@ def build_objective_bqm(
     identity form only multiplies by ``1.0`` and adds ``0.0``, so an
     all-binary objective compiles to the very same floats either way.
     """
+    objective.require_expanded("build_objective_bqm")
     bqm = dimod.BinaryQuadraticModel(vartype="BINARY")
     sign = -1.0 if objective.direction == "maximize" else 1.0
 
@@ -188,6 +189,7 @@ def build_objective_qm(
     linear part (a QM rejects ``b * b``). The validator rejects the latter
     anyway; folding keeps the rule identical to the BQM path.
     """
+    objective.require_expanded("build_objective_qm")
     declared = {variable.name: variable for variable in variables}
     qm = dimod.QuadraticModel()
     sign = -1.0 if objective.direction == "maximize" else 1.0

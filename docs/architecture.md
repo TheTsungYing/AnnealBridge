@@ -75,7 +75,9 @@ when any of them is broken. The full list of rules:
 | No third-party HTTP client | `requests`, `httpx` or `aiohttp` imported anywhere in the package, at module level or inside a function |
 | No backend-name constants | A string constant whose *whole* value is a shipped backend name, appearing in `orchestration/`, `validation/`, `interrupt.py`, `interfaces/capabilities.py`, `interfaces/mcp/tools.py` or `interfaces/cli/main.py` |
 | The interrupt module stays at the bottom | `interrupt.py` importing anything but the standard library — an `annealbridge` module (relative imports included) or a third-party package |
-| Constraints are read through one entry point | Deny-by-default (`tests/architecture/test_constraint_access.py`): any read of an attribute named `constraints` anywhere in `src/` whose (file, innermost function) pair is not on the test's allowlist. Everything else reads `OptimizationProblem.all_constraints()` — the linear constraints, then the lowered cardinality constraints — so no reader can skip a cardinality constraint. The allowlist is `all_constraints` itself, the validator functions that must tell the two lists apart for their paths (`_collect`, `_constraint_paths`, `_check_constraint_ids`, `_warn_cardinality_form`) and the CQM compiler's reads of dimod's own `cqm.constraints`; an allowlist entry no longer in use fails too |
+| Constraints are read through one entry point | Deny-by-default (`tests/architecture/test_constraint_access.py`): any read of an attribute named `constraints` anywhere in `src/` whose (file, innermost function) pair is not on the test's allowlist. Everything else reads `OptimizationProblem.all_constraints()` — the linear constraints, then the lowered cardinality constraints — so no reader can skip a cardinality constraint. The allowlist is `all_constraints` itself, the validator functions that must tell the two lists apart for their paths (`_collect`, `_constraint_paths`, `_check_constraint_ids`, `_warn_cardinality_form`, and the two that annotate an error on an explicit entry with the template involved, `_generated_id_note` and `_names_at`), the template expander's reads of the lists it builds — to check template ids against the explicit ones, to put the explicit constraints in front of the generated ones, and to read a generated constraint's id back when reporting its binding (`_explicit_constraint_ids`, `_assemble` and `_binding` in `validation/expansion.py`) — and the CQM compiler's reads of dimod's own `cqm.constraints`; an allowlist entry no longer in use fails too |
+| The template expander stays at the bottom of validation | `validation/expansion.py` importing anything but `annealbridge.models`, `annealbridge.validation.issues`, `annealbridge.validation.template_grammar` and the standard library (`tests/architecture/test_template_expansion_boundaries.py`) — in particular the problem validator, the estimates, any higher layer or a third-party package; `validation/template_grammar.py` importing anything but the standard library; either of them calling `eval`, `exec`, `compile` or `__import__`. The building blocks the expander shares with the validator (the warning texts, the bound limit, the variable-bound check, the duplicate-term counts) live in `validation/issues.py`, which depends on `annealbridge.models` only, and `problem_validator` re-exports them |
+| Templates are expanded before anything reads the problem | A public function that reads a problem's variables, objective or constraints accepting one whose [templates](problem-format.md#templates-version-13) are not yet expanded. Each of them calls `require_expanded` first and raises `TemplatesNotExpandedError` (see [below](#templates-are-expanded-first)); `tests/unit/test_template_guards.py` calls every one of them with a problem that still carries templates |
 | Solution checking ignores the encoding | `validation/solution_validator.py`, `orchestration/candidates.py` or `orchestration/postprocess.py` referring to `uses_pairwise_penalty` in any form, so re-validation and post-processing cannot depend on how a constraint was encoded; the same test checks that predicate names no backend |
 | A new backend plugs in by declaration alone | A fake backend registered next to the built-ins that cannot be routed, limited, warned about, recommended and redacted purely from its own declaration |
 
@@ -115,14 +117,14 @@ Everything lives under `src/annealbridge/`.
 
 | Package | Responsibility |
 | --- | --- |
-| `models/` | Pydantic domain models — the `OptimizationProblem` IR, the result and capability models, and the error catalog |
-| `validation/` | Problem validation, per-candidate solution validation, bounds-aware size estimates, backend recommendation, numeric tolerances |
+| `models/` | Pydantic domain models — the `OptimizationProblem` IR (with the schema `1.3` index sets, parameters, families and templates in `models/templates.py`), the result and capability models, and the error catalog |
+| `validation/` | Template expansion (`expansion.py`, with its grammar in `template_grammar.py`), problem validation, the building blocks the two share (`issues.py`), per-candidate solution validation, bounds-aware size estimates, backend recommendation, numeric tolerances |
 | `penalty/` | The penalty strategy: objective scale, penalty scale, initial penalty and the doubling ladder |
 | `compiler/` | The BQM compiler (slack and integer encoding), the CQM compiler, and the `decode` step that folds encoding bits back into integer values |
 | `solvers/` | The eight solver backends, the registry, the `SolverBackend` protocol, the read sharding the two `dwave-samplers` backends share (`solvers/sharding.py` — not a backend), and metadata sanitisation / redaction |
 | `orchestration/` | `OptimizationService`, `ExecutionPolicy`, model-type routing, candidate arrays (`candidates.py`), opt-in post-processing over the business variables (`postprocess.py`), result messages (`messages.py`), progress events; re-exports `CancelToken` and `SolveCancelled` for library callers |
 | `interrupt.py` (module) | `CancelToken` and `Interrupt`: the wall-clock deadline and the caller's cancellation, polled at checkpoints. Standard library only |
-| `exceptions.py` (module) | The core's exception types, `SolveCancelled` among them |
+| `exceptions.py` (module) | The core's exception types, `SolveCancelled` and `TemplatesNotExpandedError` among them |
 | `config/` | `ServerSettings` (the `ANNEALBRIDGE_*` environment) — importable by the interfaces only |
 | `interfaces/` | `capabilities.py` and `composition.py` shared by both adapters, plus `cli/` and `mcp/` |
 
@@ -130,9 +132,19 @@ Everything lives under `src/annealbridge/`.
 
 `OptimizationService.solve(problem)` runs one deterministic pipeline:
 
+0. **Expand** a version `1.3` document's templates into an ordinary problem
+   (`validation.expand_problem`), bounded by the policy's
+   `max_template_bindings`, under the service's template gate (see
+   [Templates are expanded first](#templates-are-expanded-first)). A document
+   without templates passes through untouched. Every step below works on the
+   expanded problem, which is also what solutions and constraint evaluations
+   are named after. Expansion errors are `invalid_problem`, the ceiling
+   `resource_limit_exceeded` / `TEMPLATE_EXPANSION_LIMIT`. The step runs
+   inside the solve's wall clock and cannot be interrupted.
 1. **Validate** the problem against the schema and its semantics. All errors
    are collected in one pass; an invalid problem is returned as a structured
-   `invalid_problem` result and never reaches a solver.
+   `invalid_problem` result and never reaches a solver. Paths on generated
+   entries are mapped back to the templates.
 2. **Compile** it. The backend declares its `supported_model_types` and the
    service picks the first declared type it has a compiler for
    (`{bqm: BQMCompiler, cqm: CQMCompiler}`). No name check is involved. If no
@@ -208,8 +220,9 @@ them still using a CPU.
   service reads that flag instead of the clock. Which backends declare it, and
   their checkpoints, are in
   [Backends](backends.md#wall-clock-limits-and-cancellation).
-- **Not interruptible** — validation, compilation, decoding, re-validation
-  and ranking, the infeasibility diagnostics and post-processing's setup.
+- **Not interruptible** — template expansion, validation, compilation,
+  decoding, re-validation and ranking, the infeasibility diagnostics and
+  post-processing's setup.
   Every sample that did arrive is still re-validated in full.
 
 `SolveCancelled` is the one exception `solve` raises by design. It is not an
@@ -221,6 +234,48 @@ problem, unavailable backend, full server) returns its result as usual. The
 MCP server creates a token per `solve_optimization` call and cancels it when
 the client cancels the request (see [MCP](mcp.md#cancellation)); the CLI
 passes none.
+
+### Templates are expanded first
+
+A version `1.3` document may describe its model with index sets, parameters,
+variable families and templates (see
+[Problem format](problem-format.md#templates-version-13)). They exist only in
+the document: `validation/expansion.py` turns them into an ordinary problem —
+a new object; the submitted one is never modified — and every later stage
+works on that. `OptimizationService` expands in `validate`, `recommend` and
+`solve` through one helper, so the three never disagree;
+`orchestration.routing.recommend` expands on its own when called directly,
+and `validate_problem` and `validate_problem_full` expand internally. The
+expander never raises: every problem with the document is a `SolveError`
+whose path points into the template, and a failed expansion yields no
+problem at all, never a partial one.
+
+A problem that still carries templates must never reach a stage that would
+silently ignore them — an ignored constraint template would let an
+infeasible assignment pass re-validation. So `OptimizationProblem` and
+`Objective` carry `require_expanded(operation)`, which raises
+`TemplatesNotExpandedError` (a `ValueError`, deliberately not an
+`OptimizerError`: it is a programming error, not a domain failure) naming the
+fields that still hold templates. It is called first thing by
+`OptimizationProblem.all_constraints()` — and so, through it, by the
+estimates, the penalty scale, routing and post-processing — and by the
+fifteen public functions that read variables, an objective or constraints
+without going through it first: `BQMCompiler.prepare` (and so `compile`),
+`CQMCompiler.compile`, `encode_integer_variables`, `build_objective_bqm`,
+`build_objective_qm`, `validate_solution`, `validate_batch`,
+`process_candidates`, `diagnose_infeasibility`, `run_postprocess`,
+`evaluate_objective`, `evaluate_objective_batch`, `compute_objective_scale`,
+`variable_bounds` and `estimate_interaction_density` — each before any early
+return. The check only looks at whether seven lists are
+empty.
+
+The service holds a second, non-blocking semaphore beside the solve slots,
+sized like them by `max_concurrent_solves`. Only a document with templates
+takes it, for the duration of its expansion and validation — in `validate`
+and `recommend`, which take no solve slot, as well as in `solve`, where it is
+released before the solve slot is taken. A full gate answers
+`CONCURRENCY_LIMIT` rather than queueing. A library caller of
+`expand_problem` or the two validators is not gated.
 
 ## Design principles
 
@@ -257,7 +312,7 @@ crossing one of them, stop and ask rather than working around it.
    a silent downgrade would let it believe it received a quantum answer.
 6. **Each layer does its own job.** CLI and MCP receive a request, convert
    formats and return a result — no optimization logic. The service sequences
-   validate → compile → solve → validate → rank → retry. The compiler
+   expand → validate → compile → solve → validate → rank → retry. The compiler
    translates and does not solve. A solver solves and neither parses JSON nor
    validates answers. The validator checks and never modifies.
 7. **No scaffolding for a future that has not arrived.** Exactly three

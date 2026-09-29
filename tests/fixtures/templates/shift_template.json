@@ -1,0 +1,100 @@
+{
+  "version": "1.3",
+  "name": "shift_scheduling_template",
+  "description": "The roster of examples/shift_scheduling.json with templates: ann, ben and cal over mon_day, mon_night, tue_day and tue_night with the same dislike table. Every shift is covered by exactly one person, nobody works more than 2 shifts, nobody works both shifts of a rest rule (mon_night then tue_day), and ben would rather not work mon_night (soft, weight 3). The rest rule lists its shifts by group: its index r is used only in the member's where. Optimum 7.",
+  "index_sets": [
+    {"name": "person", "elements": ["ann", "ben", "cal"]},
+    {"name": "shift", "elements": ["mon_day", "mon_night", "tue_day", "tue_night"]},
+    {"name": "rest_rule", "elements": ["after_mon_night"]}
+  ],
+  "parameters": [
+    {
+      "name": "dislike",
+      "indices": ["person", "shift"],
+      "values": [
+        {"key": ["ann", "mon_day"], "value": 2},
+        {"key": ["ann", "mon_night"], "value": 5},
+        {"key": ["ann", "tue_day"], "value": 2},
+        {"key": ["ann", "tue_night"], "value": 5},
+        {"key": ["ben", "mon_day"], "value": 3},
+        {"key": ["ben", "mon_night"], "value": 1},
+        {"key": ["ben", "tue_day"], "value": 3},
+        {"key": ["ben", "tue_night"], "value": 1},
+        {"key": ["cal", "mon_day"], "value": 5},
+        {"key": ["cal", "mon_night"], "value": 2},
+        {"key": ["cal", "tue_day"], "value": 1},
+        {"key": ["cal", "tue_night"], "value": 3}
+      ]
+    },
+    {
+      "name": "in_rule",
+      "indices": ["rest_rule", "shift"],
+      "default": 0,
+      "values": [
+        {"key": ["after_mon_night", "mon_night"], "value": 1},
+        {"key": ["after_mon_night", "tue_day"], "value": 1}
+      ]
+    },
+    {
+      "name": "avoid",
+      "indices": ["person", "shift"],
+      "default": 0,
+      "values": [{"key": ["ben", "mon_night"], "value": 1}]
+    }
+  ],
+  "variable_families": [
+    {"name": "x", "indices": ["person", "shift"], "description": "1 iff the person works the shift"}
+  ],
+  "variables": [],
+  "objective": {
+    "direction": "minimize",
+    "linear_terms": [],
+    "linear_term_templates": [
+      {"for_each": ["p in person", "s in shift"], "coefficient": "dislike[p,s]", "variable": "x[p,s]"}
+    ]
+  },
+  "constraints": [],
+  "constraint_templates": [
+    {
+      "id": "at_most_two_shifts",
+      "description": "Nobody works more than two shifts",
+      "type": "hard",
+      "for_each": ["p in person"],
+      "terms": [{"for_each": ["s in shift"], "coefficient": 1, "variable": "x[p,s]"}],
+      "operator": "<=",
+      "rhs": 2
+    },
+    {
+      "id": "prefers_not",
+      "description": "The person would rather not work this shift",
+      "type": "soft",
+      "for_each": ["p in person", "s in shift"],
+      "where": ["avoid[p,s] == 1"],
+      "terms": [{"coefficient": 1, "variable": "x[p,s]"}],
+      "operator": "<=",
+      "rhs": 0,
+      "weight": 3
+    }
+  ],
+  "cardinality_constraint_templates": [
+    {
+      "id": "covered",
+      "description": "The shift is worked by exactly one person",
+      "type": "hard",
+      "for_each": ["s in shift"],
+      "variables": [{"for_each": ["p in person"], "variable": "x[p,s]"}],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "rest",
+      "description": "Nobody works both shifts of a rest rule",
+      "type": "hard",
+      "for_each": ["p in person", "r in rest_rule"],
+      "variables": [{"for_each": ["s in shift"], "where": ["in_rule[r,s] == 1"], "variable": "x[p,s]"}],
+      "operator": "<=",
+      "rhs": 1
+    }
+  ],
+  "solver": {"backend": "exact"}
+}

@@ -22,6 +22,17 @@ from annealbridge.models import (
     SolverPreferences,
     Variable,
 )
+from annealbridge.models.templates import (
+    CardinalityConstraintTemplate,
+    CardinalityMemberTemplate,
+    ConstraintTemplate,
+    IndexSet,
+    LinearTermTemplate,
+    Parameter,
+    ParameterValue,
+    QuadraticTermTemplate,
+    VariableFamily,
+)
 from annealbridge.validation import (
     BackendRecommendationResult,
     ProblemValidationResult,
@@ -132,7 +143,23 @@ class TestVersion:
         assert problem.version == "1.2"
         assert problem.cardinality_constraints == []
 
-    @pytest.mark.parametrize("bad", ["2.0", "1.3", "1", ""])
+    def test_version_1_3_accepted(self):
+        """Schema 1.3 spec §14: 1.3 adds index sets, parameters, families
+        and templates, all optional and empty by default."""
+        data = make_problem_dict()
+        data["version"] = "1.3"
+        problem = OptimizationProblem.model_validate(data)
+        assert problem.version == "1.3"
+        assert problem.cardinality_constraints == []
+        assert problem.index_sets == []
+        assert problem.parameters == []
+        assert problem.variable_families == []
+        assert problem.constraint_templates == []
+        assert problem.cardinality_constraint_templates == []
+        assert problem.objective.linear_term_templates == []
+        assert problem.objective.quadratic_term_templates == []
+
+    @pytest.mark.parametrize("bad", ["2.0", "1.4", "1", ""])
     def test_other_versions_rejected(self, bad):
         data = make_problem_dict()
         data["version"] = bad
@@ -642,6 +669,16 @@ class TestUnknownFields:
             LeapHybridBQMOptions,
             FujitsuDAOptions,
             OptimizationProblem,
+            # Schema 1.3 spec §14: every model of models/templates.py.
+            IndexSet,
+            Parameter,
+            ParameterValue,
+            VariableFamily,
+            LinearTermTemplate,
+            QuadraticTermTemplate,
+            ConstraintTemplate,
+            CardinalityMemberTemplate,
+            CardinalityConstraintTemplate,
         ],
     )
     def test_every_input_model_forbids_extra(self, model):

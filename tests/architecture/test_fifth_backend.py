@@ -176,6 +176,9 @@ class TestCapabilitiesView:
             # Not exhaustive, so the post-processing ceilings follow.
             "max_postprocess_candidates": 100,
             "max_postprocess_evaluations": 20_000_000,
+            # Every backend last: the template expansion ceiling (schema
+            # 1.3 spec §14.9), applied before any backend runs.
+            "max_template_bindings": 250_000,
         }
         assert entry.available is True
         assert entry.enabled is True

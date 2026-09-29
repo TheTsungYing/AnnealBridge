@@ -55,13 +55,14 @@ fixture with a no-op — it is the one place that needs the real credentials.
 
 | Directory | What it covers |
 | --- | --- |
-| `tests/unit/` | Models, validators, the bounds-aware size estimates (checked against brute-force enumeration), slack and integer encoding, both compilers including their integer paths, the `decode` step, the penalty strategy, the policy limits, backend routing, candidate arrays over integer rows, and each solver backend |
-| `tests/scenarios/` | The full JSON → validate → compile → solve → re-validate → rank pipeline on the shipped examples, including the integer knapsack down all five paths (exact, simulated annealing, tabu, simulated bifurcation, a fake CQM backend) reaching the same optimum |
-| `tests/mcp/` | The four MCP tools, three prompts and seven resources driven through an in-memory MCP client, plus the tool list, the generated schemas, the thread offload, the progress notifications and the stdio entry point (a few real subprocess checks; the rest of its argument and settings handling in-process) |
+| `tests/unit/` | Models, validators, the bounds-aware size estimates (checked against brute-force enumeration), slack and integer encoding, both compilers including their integer paths, the `decode` step, the penalty strategy, the policy limits, backend routing, candidate arrays over integer rows, and each solver backend; for schema `1.3`, the template grammar, expansion, path mapping, size ceilings and the unexpanded-problem guard (`tests/unit/test_template_*.py`) and the CLI `expand` command (`tests/unit/test_cli_expand.py`) |
+| `tests/scenarios/` | The full JSON → validate → compile → solve → re-validate → rank pipeline on the shipped examples, including the integer knapsack down all five paths (exact, simulated annealing, tabu, simulated bifurcation, a fake CQM backend) reaching the same optimum, and template documents expanded and solved through `OptimizationService` (`tests/scenarios/test_templates_service.py`) |
+| `tests/mcp/` | The four MCP tools, three prompts and eight resources driven through an in-memory MCP client, plus the tool list, the generated schemas, the thread offload, the progress notifications and the stdio entry point (a few real subprocess checks; the rest of its argument and settings handling in-process) |
 | `tests/remote_mock/` | The D-Wave backends against mocked samplers (with the contract all three Ocean backends share written once, in `ocean_contract.py`) and the Fujitsu backend against a scripted HTTP transport — request shape, polling, delete / cancel, every error mapping — plus the real `UrllibTransport` against a loopback server and the credential-leak suite |
 | `tests/remote_live/` | Opt-in tests against real vendor hardware (see above) |
-| `tests/architecture/` | The import boundaries, the no-backend-name rule, the no-third-party-HTTP rule, the fifth-backend rule and the constraint-access rule (every constraint read goes through `all_constraints()`, and solution checking never looks at the encoding decision), all described in [Architecture](architecture.md#enforced-boundaries) |
+| `tests/architecture/` | The import boundaries, the no-backend-name rule, the no-third-party-HTTP rule, the fifth-backend rule, the constraint-access rule (every constraint read goes through `all_constraints()`, and solution checking never looks at the encoding decision) and the template expander's import rule, all described in [Architecture](architecture.md#enforced-boundaries) |
 | `tests/golden/` | The recorded snapshots the golden tests compare against, and the scripts that recorded them |
+| `tests/fixtures/templates/` | The schema `1.3` template documents the template tests read |
 | `tests/fakes/` | Shared test doubles: a declared fake backend, a local CQM backend and a scripted Fujitsu transport |
 
 ## The GPU path
@@ -133,6 +134,28 @@ frozen by `tests/golden/schema_1_2_compile.json`, recorded by
 `tests/unit/test_golden_schema_1_2.py`. Its correctness is proven by the unit
 tests (equivalence with the linear form, exhaustive dominance and soft-score
 checks); the golden only keeps it from drifting afterwards.
+
+Schema `1.3` changes none of the three: its templates are expanded into an
+ordinary problem before anything else runs, and a document without templates
+takes exactly the old path, so all three goldens pass unchanged and are not
+re-recorded. The expansion itself is frozen by
+`tests/golden/schema_1_3_expand.json`, recorded by
+`tests/golden/record_schema_1_3_golden.py` and replayed by
+`tests/unit/test_golden_schema_1_3.py`. For each template document —
+`tsp_template`, template versions of assignment and scheduling (one listing
+the members of each group through an inner `where`), a `linear` set left out
+at its boundary, a `cyclic` shift that wraps onto itself, weights and
+right-hand sides taken from parameters, explicit entries mixed with templates
+and naming generated variables, an integer family, soft templates and a family
+with unused variables — it records the expanded problem, the expansion's
+warnings, the compiled-model snapshot of the other goldens with the mapped
+validation output, and the `exact` solve where the compiled model has at most
+20 variables. A second section records the code, path and message of a set
+of documents that fail to expand, covering every template error code and the
+truncation of a long error list. Correctness is proven elsewhere: the unit
+tests compare each expansion with the same problem written out by hand, entry
+for entry and field type for field type, and `tsp_template` compiles to a BQM
+bit for bit identical to `examples/tsp.json` once `x_a_0` is read as `x[a,0]`.
 
 ## Rules the suite holds itself to
 

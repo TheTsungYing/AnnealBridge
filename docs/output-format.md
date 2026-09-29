@@ -42,7 +42,7 @@ The outcome of `solve_optimization` / `annealbridge solve`.
 | `warnings` | array of [SolveError](#solveerror) | Non-blocking advice, same structure as an error: the warnings `validate` gives for this backend, then any raised during the run. Present whatever the `status`, except `invalid_problem`. |
 | `metadata` | [SolverExecutionMetadata](#solverexecutionmetadata) \| null | Sanitized execution facts. Present whenever an attempt actually completed, local backends included; `null` when the request failed before any solve finished. |
 | `message` | string \| null | Human-readable one-line summary of the result. On `success`: which backend produced it, whether optimality is proven, the rank-1 objective with its direction (and its soft violation when non-zero), how many distinct candidates the attempt saw, how many were feasible and how many are returned, the attempt number when a retry produced it, and — with post-processing on — how many feasible assignments it added and, when rank 1 is one of them, its `source`; when the wall-clock limit cut the search short, a closing sentence says so. On `infeasible`: why nothing feasible was found — including, when the wall-clock limit cut the search short, that nothing was found before it ran out. On a failure: the first error's message. Deterministic — it never contains timings. `null` when there is nothing to add. |
-| `elapsed_ms` | number \| null | Wall-clock milliseconds measured by the service from entering `solve` to returning, problem validation and any wait for a concurrency slot included. Present whatever the `status`. Unrelated to `metadata.timing_us`, which is what a vendor reports about its own side. |
+| `elapsed_ms` | number \| null | Wall-clock milliseconds measured by the service from entering `solve` to returning, template expansion, problem validation and any wait for a concurrency slot included. Present whatever the `status`. Unrelated to `metadata.timing_us`, which is what a vendor reports about its own side. |
 | `annealbridge_version` | string \| null | The installed package version that produced the result (`"unknown"` outside an installed distribution). |
 
 ### SolveStatus
@@ -112,7 +112,7 @@ Reproducibility:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `rank` | integer | 1-based rank; 1 is the best `ranking_score`. |
-| `variables` | object of string → integer | The business variables only. Slack and integer-encoding bits are stripped, and integers are decoded to plain `int` values inside their declared bounds. |
+| `variables` | object of string → integer | The business variables only. Slack and integer-encoding bits are stripped, and integers are decoded to plain `int` values inside their declared bounds. For a document with [templates](problem-format.md#templates-version-13) the keys are the generated names (`x[a,0]`), explicit variables first, and a generated variable nothing references is absent (see [Unused generated variables](problem-format.md#unused-generated-variables-are-left-out)). |
 | `objective_value` | number | The objective recomputed from the original problem, including its `constant`. |
 | `soft_violation_score` | number | `Σ weight × violation²` over **all** soft constraints, recomputed by the validator from the exact residual. The feasibility tolerance is deliberately not applied here, so this equals the soft energy the solver minimized. |
 | `ranking_score` | number | `objective_value + soft_violation_score` when minimizing, `objective_value − soft_violation_score` when maximizing. The sort key. |
@@ -244,7 +244,7 @@ merges attempts, never changes `unique_samples`, `feasible_samples` or the
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `constraint_id` | string | The `id` from the problem, so a result traces back to it — for a cardinality constraint too, which has no other name. |
+| `constraint_id` | string | The `id` from the problem, so a result traces back to it — for a cardinality constraint too, which has no other name. For a constraint a template generated, the generated id: `city_once[a]`, the template id followed by its outer `for_each` elements (see [Templates](problem-format.md#how-templates-expand)). |
 | `constraint_type` | `"hard"` \| `"soft"` | Echoed from the problem. |
 | `satisfied` | boolean | Whether this constraint holds for this solution. |
 | `actual_value` | number | The left-hand side evaluated at this assignment. For a [cardinality constraint](problem-format.md#cardinality-constraints-version-12), the number of its `variables` chosen (equal to 1). |
@@ -255,7 +255,9 @@ merges attempts, never changes `unique_samples`, `feasible_samples` or the
 
 The list has one entry per constraint, in one fixed order: every entry of
 `constraints` in declaration order, then every entry of
-`cardinality_constraints` in declaration order. A cardinality constraint is
+`cardinality_constraints` in declaration order. For a document with templates
+these are the expanded lists: in each, the explicit entries first, then the
+generated ones template by template. A cardinality constraint is
 reported exactly as the linear constraint it means (every coefficient 1):
 `operator` and `expected_value` are its `operator` and `rhs`, and
 `violation_amount` is how many variables the count is off by — for example
@@ -269,7 +271,7 @@ The same structure carries both errors and warnings.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `code` | string | A stable code from the catalog. See [Errors and warnings](errors.md). |
-| `path` | string \| null | JSON path into the submitted problem, e.g. `constraints[0].weight` or `solver.num_reads`. |
+| `path` | string \| null | JSON path into the submitted problem, e.g. `constraints[0].weight` or `solver.num_reads`; for an entry a template generated, the template's path (`constraint_templates[0].weight`), the message then ending with ` (generated by …)`. |
 | `message` | string | What went wrong, with the concrete values involved. |
 | `retryable` | boolean | Whether the same request may succeed later without any change. `false` for every warning. |
 | `recommended_action` | string \| null | Fixed categorical guidance for this code — stable wording, never containing configuration values. |
@@ -477,7 +479,7 @@ is compiled and no backend is invoked.
 | --- | --- | --- |
 | `valid` | boolean | Decided by `errors` alone. Warnings never make a problem invalid. |
 | `errors` | array of [SolveError](#solveerror) | Every error found in one pass. |
-| `warnings` | array of [SolveError](#solveerror) | Advisory findings. Only produced when there are no errors. |
+| `warnings` | array of [SolveError](#solveerror) | Advisory findings. Only produced when there are no errors. For a document with templates the expansion's own warnings (`UNUSED_TEMPLATE_VARIABLES`, `TEMPLATE_BOUNDARY_SKIPPED`, …) come first. |
 | `estimated_compiled_variables` | integer \| null | Compiled size without building a model: on the BQM path, binary variables + integer-encoding bits + slack bits (none for a hard cardinality at-most-one, which is a pairwise penalty); on the CQM path, variables + integer slacks. `null` when the problem is invalid. |
 | `objective_scale` | number \| null | The upper bound on the objective's range used to size penalties and to judge soft weights. See [Soft constraint weights](problem-format.md#soft-constraint-weights). |
 | `model_type` | `"bqm"` \| `"cqm"` \| null | Which compiler path the estimate assumed. |
@@ -488,7 +490,10 @@ gate is what makes the slack arithmetic well-defined.
 ## BackendRecommendationResult
 
 Returned by `recommend_backend` / `annealbridge recommend`. Deterministic, with
-no network I/O, no solving, no concurrency slot and no quota consumed.
+no network I/O, no solving, no concurrency slot and no quota consumed — except
+that a document with templates takes a template-expansion slot while it is
+expanded and validated (see
+[Size ceiling and concurrency](problem-format.md#size-ceiling-and-concurrency)).
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -521,8 +526,8 @@ configured.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema_version` | string | The newest problem schema version this server accepts (`"1.2"`). |
-| `schema_versions` | array of string | Every accepted version, oldest first (`["1.0", "1.1", "1.2"]`); each is a superset of the one before. Derived from the pydantic model, not hard-coded. |
+| `schema_version` | string | The newest problem schema version this server accepts (`"1.3"`). |
+| `schema_versions` | array of string | Every accepted version, oldest first (`["1.0", "1.1", "1.2", "1.3"]`); each is a superset of the one before. Derived from the pydantic model, not hard-coded. |
 | `supported_variable_types` | array of string | `binary` and `integer`. |
 | `supported_constraint_operators` | array of string | `==`, `<=`, `>=`, for linear and cardinality constraints alike. |
 | `supported_objective_terms` | array of string | `linear`, `quadratic`. |
@@ -547,7 +552,7 @@ configured.
 | `seed_max` | integer \| null | The largest `solver.seed` this backend accepts, inclusive. `null` when the backend declares no seed range. |
 | `returns_multiple_samples` | boolean | `false` means the effective `top_k` is at most 1. |
 | `supports_interrupt` | boolean | Whether a solve on this backend can stop part-way: it honours `solver.wall_clock_limit_seconds` and stops promptly when the solve is cancelled. `false` means a wall-clock limit is refused with `WALL_CLOCK_LIMIT_UNSUPPORTED` before anything runs. Never `true` together with `exhaustive`. See [Backends](backends.md#wall-clock-limits-and-cancellation). |
-| `limits` | object of string → number | The policy ceilings that apply to this backend. |
+| `limits` | object of string → number | The policy ceilings that apply to this backend. The last key is always `max_template_bindings`, the ceiling on expanding a document's templates, which is the same for every backend. |
 | `description` | string | One-line description of the backend. |
 
 `available` and `enabled` are independent: a backend can be installed and

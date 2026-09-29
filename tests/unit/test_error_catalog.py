@@ -89,6 +89,14 @@ EXPECTED_CODES = [
     "FEATURE_REQUIRES_NEWER_VERSION",
     "CARDINALITY_VARIABLE_NOT_BINARY",
     "DUPLICATE_CARDINALITY_VARIABLE",
+    # Schema 1.3 spec 2026-09-25 §14.10: index sets, parameters, variable
+    # families and templates, reported by the expander at the template path.
+    "TEMPLATE_REFERENCE_INVALID",
+    "INDEX_SET_INVALID",
+    "PARAMETER_TABLE_INVALID",
+    "PARAMETER_VALUE_MISSING",
+    "DUPLICATE_TEMPLATE_NAME",
+    "TEMPLATE_EXPANSION_LIMIT",
 ]
 
 # Codes whose guidance quotes an IR *contract constant* verbatim, as 3b spec
@@ -122,7 +130,7 @@ class TestRecommendedActions:
         assert set(RECOMMENDED_ACTIONS) == set(EXPECTED_CODES)
 
     def test_expected_codes_are_unique(self):
-        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 58
+        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 64
 
 
 class TestRetryableCodes:
@@ -164,6 +172,14 @@ EXPECTED_VALIDATOR_CODES = {
     "FEATURE_REQUIRES_NEWER_VERSION",
     "CARDINALITY_VARIABLE_NOT_BINARY",
     "DUPLICATE_CARDINALITY_VARIABLE",
+    # Schema 1.3 spec 2026-09-25 §14.10: template expansion is the
+    # validator's first step, so its codes are validator codes.
+    "TEMPLATE_REFERENCE_INVALID",
+    "INDEX_SET_INVALID",
+    "PARAMETER_TABLE_INVALID",
+    "PARAMETER_VALUE_MISSING",
+    "DUPLICATE_TEMPLATE_NAME",
+    "TEMPLATE_EXPANSION_LIMIT",
 }
 
 

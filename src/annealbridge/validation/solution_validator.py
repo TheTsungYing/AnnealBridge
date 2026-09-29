@@ -68,6 +68,7 @@ def validate(problem: OptimizationProblem, sample: dict[str, int]) -> Validation
     binary variable, an integer within its bounds for an integer one), with
     internal variables already stripped.
     """
+    problem.require_expanded("validate_solution")
     evaluations = [_evaluate(constraint, sample) for constraint in problem.all_constraints()]
     hard_violations = [
         evaluation
@@ -174,6 +175,7 @@ def validate_batch(
     :func:`validate` would produce for each row, computed with identical
     arithmetic, without building per-constraint report objects.
     """
+    problem.require_expanded("validate_batch")
     if samples.ndim != 2 or samples.shape[1] != len(variables):
         raise ValueError(
             f"samples must have shape (candidates, {len(variables)}), "

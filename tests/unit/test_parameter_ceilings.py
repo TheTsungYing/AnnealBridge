@@ -154,6 +154,8 @@ NEW_FIELDS = {
     # Batch 4 (G), postprocess spec 2026-09-23 §6.
     "max_postprocess_candidates": ("postprocess_candidates", 100),
     "max_postprocess_evaluations": ("postprocess_evaluations", 20_000_000),
+    # Batch 8 (I), schema 1.3 spec §14.9: the template expansion ceiling.
+    "max_template_bindings": ("template_bindings", 250_000),
 }
 
 
@@ -172,6 +174,7 @@ class TestPolicyFields:
             max_top_k=2,
             max_postprocess_candidates=3,
             max_postprocess_evaluations=4,
+            max_template_bindings=5,
         )
         for field, (key, _) in NEW_FIELDS.items():
             assert COMPATIBILITY_LIMIT_FIELDS[key] == field
@@ -191,6 +194,7 @@ class TestPolicyFields:
             ("max_top_k", 0),
             ("max_postprocess_candidates", 0),
             ("max_postprocess_evaluations", 0),
+            ("max_template_bindings", 0),
             ("max_local_retries", -1),
             ("max_remote_retries", -1),
         ],
@@ -221,6 +225,7 @@ class TestSettings:
         clean_env.setenv("ANNEALBRIDGE_MAX_TOP_K", "9")
         clean_env.setenv("ANNEALBRIDGE_MAX_POSTPROCESS_CANDIDATES", "7")
         clean_env.setenv("ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS", "12345")
+        clean_env.setenv("ANNEALBRIDGE_MAX_TEMPLATE_BINDINGS", "4321")
 
         policy = load_settings().to_policy()
 
@@ -231,6 +236,7 @@ class TestSettings:
         assert policy.max_top_k == 9
         assert policy.max_postprocess_candidates == 7
         assert policy.max_postprocess_evaluations == 12345
+        assert policy.max_template_bindings == 4321
 
     @pytest.mark.parametrize(
         "variable, bad",
@@ -242,6 +248,7 @@ class TestSettings:
             ("ANNEALBRIDGE_MAX_TOP_K", "inf"),
             ("ANNEALBRIDGE_MAX_POSTPROCESS_CANDIDATES", "0"),
             ("ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS", "1.5"),
+            ("ANNEALBRIDGE_MAX_TEMPLATE_BINDINGS", "0"),
         ],
     )
     def test_bad_values_are_settings_errors(self, clean_env, variable, bad):
@@ -276,6 +283,7 @@ class TestLimitsView:
             "max_top_k": 1000,
             "max_postprocess_candidates": 100,
             "max_postprocess_evaluations": 20_000_000,
+            "max_template_bindings": 250_000,
         }
         # No sweep ceiling: the tabu sampler takes no sweeps to cap.
         assert limits["tabu"] == {
@@ -284,6 +292,7 @@ class TestLimitsView:
             "max_top_k": 1000,
             "max_postprocess_candidates": 100,
             "max_postprocess_evaluations": 20_000_000,
+            "max_template_bindings": 250_000,
         }
         # Simulated bifurcation's sweeps are integration steps, so both
         # local ceilings apply to it.
@@ -295,12 +304,16 @@ class TestLimitsView:
             "max_top_k": 1000,
             "max_postprocess_candidates": 100,
             "max_postprocess_evaluations": 20_000_000,
+            "max_template_bindings": 250_000,
         }
-        # Exhaustive: post-processing never runs there, so no ceiling keys.
+        # Exhaustive: post-processing never runs there, so no ceiling keys;
+        # the template expansion ceiling applies before any backend runs,
+        # so exact reports it too (schema 1.3 spec §14.9).
         assert limits["exact"] == {
             "max_variables": 24,
             "max_local_retries": 10,
             "max_top_k": 1000,
+            "max_template_bindings": 250_000,
         }
         assert limits["dwave_qpu"] == {
             "max_reads": 1000,
@@ -309,6 +322,7 @@ class TestLimitsView:
             "max_top_k": 1000,
             "max_postprocess_candidates": 100,
             "max_postprocess_evaluations": 20_000_000,
+            "max_template_bindings": 250_000,
         }
         for name in ("leap_hybrid_bqm", "leap_hybrid_cqm", "fujitsu_da"):
             assert limits[name] == {
@@ -317,6 +331,7 @@ class TestLimitsView:
                 "max_top_k": 1000,
                 "max_postprocess_candidates": 100,
                 "max_postprocess_evaluations": 20_000_000,
+                "max_template_bindings": 250_000,
             }, name
 
     def test_build_capabilities_follows_the_policy(self):
@@ -327,6 +342,7 @@ class TestLimitsView:
             max_top_k=2,
             max_postprocess_candidates=3,
             max_postprocess_evaluations=4,
+            max_template_bindings=5,
         )
         view = build_capabilities(SolverRegistry.default(), policy)
         by_name = {backend.name: backend for backend in view.backends}
@@ -337,9 +353,10 @@ class TestLimitsView:
             "max_top_k": 2,
             "max_postprocess_candidates": 3,
             "max_postprocess_evaluations": 4,
+            "max_template_bindings": 5,
         }
         # Key order feeds the CLI table: declared limits first, then the
-        # service-level ceilings.
+        # service-level ceilings, the template expansion ceiling last.
         assert list(by_name["simulated_annealing"].limits) == [
             "max_local_reads",
             "max_sweeps",
@@ -347,6 +364,7 @@ class TestLimitsView:
             "max_top_k",
             "max_postprocess_candidates",
             "max_postprocess_evaluations",
+            "max_template_bindings",
         ]
 
 

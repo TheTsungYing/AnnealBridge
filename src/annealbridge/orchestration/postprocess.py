@@ -767,6 +767,7 @@ def run_postprocess(
     each successful repair -- starts one local search (a start already
     searched from is not searched again). Stops at the evaluation budget.
     """
+    problem.require_expanded("run_postprocess")
     empty = np.zeros((0, len(variables)), dtype=np.int64)
     run = PostprocessRun(samples=empty, sources=[])
     count = samples.shape[0]

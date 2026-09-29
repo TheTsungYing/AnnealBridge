@@ -1,7 +1,13 @@
 """Problem and solution validation."""
 
+from annealbridge.validation.expansion import (
+    DEFAULT_MAX_TEMPLATE_BINDINGS,
+    ExpandedProblem,
+    expand_problem,
+)
 from annealbridge.validation.problem_validator import (
     ProblemValidationResult,
+    validate_expanded,
     validate_problem,
     validate_problem_full,
 )
@@ -27,12 +33,16 @@ __all__ = [
     "BackendRecommendation",
     "BackendRecommendationResult",
     "BatchValidation",
+    "DEFAULT_MAX_TEMPLATE_BINDINGS",
     "EPSILON",
+    "ExpandedProblem",
     "ProblemValidationResult",
     "RELATIVE_TOLERANCE",
+    "expand_problem",
     "satisfies",
     "tolerance",
     "tolerance_array",
+    "validate_expanded",
     "validate_problem",
     "validate_problem_full",
     "validate_batch",

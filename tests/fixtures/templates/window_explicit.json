@@ -1,0 +1,91 @@
+{
+  "version": "1.3",
+  "name": "window_template",
+  "description": "Two workers cover four days, exactly one per day, and nobody works two days in a row; working day d and day d+2 earns a bonus of 1. The day set is linear: no_consecutive is left out for the last day and the bonus terms for the last two days (TEMPLATE_BOUNDARY_SKIPPED). Optimum 12: w1 on d1 and d3, w2 on d2 and d4.",
+  "variables": [
+    {"name": "x[w1,d1]", "type": "binary", "description": "1 iff the worker works that day"},
+    {"name": "x[w1,d2]", "type": "binary", "description": "1 iff the worker works that day"},
+    {"name": "x[w1,d3]", "type": "binary", "description": "1 iff the worker works that day"},
+    {"name": "x[w1,d4]", "type": "binary", "description": "1 iff the worker works that day"},
+    {"name": "x[w2,d1]", "type": "binary", "description": "1 iff the worker works that day"},
+    {"name": "x[w2,d2]", "type": "binary", "description": "1 iff the worker works that day"},
+    {"name": "x[w2,d3]", "type": "binary", "description": "1 iff the worker works that day"},
+    {"name": "x[w2,d4]", "type": "binary", "description": "1 iff the worker works that day"}
+  ],
+  "objective": {
+    "direction": "maximize",
+    "linear_terms": [
+      {"variable": "x[w1,d1]", "coefficient": 3},
+      {"variable": "x[w1,d2]", "coefficient": 1},
+      {"variable": "x[w1,d3]", "coefficient": 2},
+      {"variable": "x[w1,d4]", "coefficient": 1},
+      {"variable": "x[w2,d1]", "coefficient": 1},
+      {"variable": "x[w2,d2]", "coefficient": 2},
+      {"variable": "x[w2,d3]", "coefficient": 1},
+      {"variable": "x[w2,d4]", "coefficient": 3}
+    ],
+    "quadratic_terms": [
+      {"variable1": "x[w1,d1]", "variable2": "x[w1,d3]", "coefficient": 1},
+      {"variable1": "x[w1,d2]", "variable2": "x[w1,d4]", "coefficient": 1},
+      {"variable1": "x[w2,d1]", "variable2": "x[w2,d3]", "coefficient": 1},
+      {"variable1": "x[w2,d2]", "variable2": "x[w2,d4]", "coefficient": 1}
+    ]
+  },
+  "constraints": [
+    {
+      "id": "no_consecutive[w1,d1]",
+      "description": "Nobody works two days in a row",
+      "type": "hard",
+      "terms": [{"variable": "x[w1,d1]", "coefficient": 1}, {"variable": "x[w1,d2]", "coefficient": 1}],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "no_consecutive[w1,d2]",
+      "description": "Nobody works two days in a row",
+      "type": "hard",
+      "terms": [{"variable": "x[w1,d2]", "coefficient": 1}, {"variable": "x[w1,d3]", "coefficient": 1}],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "no_consecutive[w1,d3]",
+      "description": "Nobody works two days in a row",
+      "type": "hard",
+      "terms": [{"variable": "x[w1,d3]", "coefficient": 1}, {"variable": "x[w1,d4]", "coefficient": 1}],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "no_consecutive[w2,d1]",
+      "description": "Nobody works two days in a row",
+      "type": "hard",
+      "terms": [{"variable": "x[w2,d1]", "coefficient": 1}, {"variable": "x[w2,d2]", "coefficient": 1}],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "no_consecutive[w2,d2]",
+      "description": "Nobody works two days in a row",
+      "type": "hard",
+      "terms": [{"variable": "x[w2,d2]", "coefficient": 1}, {"variable": "x[w2,d3]", "coefficient": 1}],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "no_consecutive[w2,d3]",
+      "description": "Nobody works two days in a row",
+      "type": "hard",
+      "terms": [{"variable": "x[w2,d3]", "coefficient": 1}, {"variable": "x[w2,d4]", "coefficient": 1}],
+      "operator": "<=",
+      "rhs": 1
+    }
+  ],
+  "cardinality_constraints": [
+    {"id": "staffed[d1]", "description": "Each day has exactly one worker", "type": "hard", "variables": ["x[w1,d1]", "x[w2,d1]"], "operator": "==", "rhs": 1},
+    {"id": "staffed[d2]", "description": "Each day has exactly one worker", "type": "hard", "variables": ["x[w1,d2]", "x[w2,d2]"], "operator": "==", "rhs": 1},
+    {"id": "staffed[d3]", "description": "Each day has exactly one worker", "type": "hard", "variables": ["x[w1,d3]", "x[w2,d3]"], "operator": "==", "rhs": 1},
+    {"id": "staffed[d4]", "description": "Each day has exactly one worker", "type": "hard", "variables": ["x[w1,d4]", "x[w2,d4]"], "operator": "==", "rhs": 1}
+  ],
+  "solver": {"backend": "exact"}
+}

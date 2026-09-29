@@ -2,10 +2,16 @@
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer
 
+from annealbridge.exceptions import TemplatesNotExpandedError
 from annealbridge.models.quantities import Quantity
 from annealbridge.models.strict import InputModel
+from annealbridge.models.templates import LinearTermTemplate, QuadraticTermTemplate
+
+# The objective's two template lists (schema 1.3 spec §14.1), in the order
+# they are reported; named with the ``objective.`` prefix everywhere.
+_TEMPLATE_FIELDS = ("linear_term_templates", "quadratic_term_templates")
 
 
 class LinearTerm(InputModel):
@@ -76,3 +82,52 @@ class Objective(InputModel):
             "ranking or the objective scale used to size penalties."
         ),
     )
+    # Schema 1.3 spec §14.5. Optional and empty by default, and left out of
+    # every dump while empty, so an older document parses and dumps exactly
+    # as before.
+    linear_term_templates: list[LinearTermTemplate] = Field(
+        default_factory=list,
+        description=(
+            "Version 1.3 or later: linear terms repeated over index sets. "
+            "Optional; may be empty."
+        ),
+    )
+    quadratic_term_templates: list[QuadraticTermTemplate] = Field(
+        default_factory=list,
+        description=(
+            "Version 1.3 or later: quadratic terms repeated over index sets. "
+            "Optional; may be empty."
+        ),
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_templates(self, handler: SerializerFunctionWrapHandler):
+        """Leave the empty template lists out of every dump (spec §14.13)."""
+        data = handler(self)
+        if isinstance(data, dict):
+            for name in _TEMPLATE_FIELDS:
+                if not getattr(self, name):
+                    data.pop(name, None)
+        return data
+
+    def template_fields(self) -> list[str]:
+        """The non-empty template lists, as ``objective.<name>``."""
+        return [f"objective.{name}" for name in _TEMPLATE_FIELDS if getattr(self, name)]
+
+    def has_templates(self) -> bool:
+        """Whether any objective template is still unexpanded."""
+        return bool(self.linear_term_templates or self.quadratic_term_templates)
+
+    def require_expanded(self, operation: str) -> None:
+        """Raise :class:`TemplatesNotExpandedError` if templates remain.
+
+        Every function that evaluates or compiles an objective calls this
+        first: an unexpanded template would silently contribute nothing.
+        """
+        if self.has_templates():
+            raise TemplatesNotExpandedError(
+                f"{operation} needs an expanded objective, but "
+                f"{' and '.join(self.template_fields())} still hold templates; "
+                "expand the problem with annealbridge.validation.expand_problem "
+                "first"
+            )

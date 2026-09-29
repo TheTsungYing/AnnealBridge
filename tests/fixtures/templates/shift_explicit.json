@@ -1,0 +1,145 @@
+{
+  "version": "1.3",
+  "name": "shift_scheduling_template",
+  "description": "The roster of examples/shift_scheduling.json with templates: ann, ben and cal over mon_day, mon_night, tue_day and tue_night with the same dislike table. Every shift is covered by exactly one person, nobody works more than 2 shifts, nobody works both shifts of a rest rule (mon_night then tue_day), and ben would rather not work mon_night (soft, weight 3). The rest rule lists its shifts by group: its index r is used only in the member's where. Optimum 7.",
+  "variables": [
+    {"name": "x[ann,mon_day]", "type": "binary", "description": "1 iff the person works the shift"},
+    {"name": "x[ann,mon_night]", "type": "binary", "description": "1 iff the person works the shift"},
+    {"name": "x[ann,tue_day]", "type": "binary", "description": "1 iff the person works the shift"},
+    {"name": "x[ann,tue_night]", "type": "binary", "description": "1 iff the person works the shift"},
+    {"name": "x[ben,mon_day]", "type": "binary", "description": "1 iff the person works the shift"},
+    {"name": "x[ben,mon_night]", "type": "binary", "description": "1 iff the person works the shift"},
+    {"name": "x[ben,tue_day]", "type": "binary", "description": "1 iff the person works the shift"},
+    {"name": "x[ben,tue_night]", "type": "binary", "description": "1 iff the person works the shift"},
+    {"name": "x[cal,mon_day]", "type": "binary", "description": "1 iff the person works the shift"},
+    {"name": "x[cal,mon_night]", "type": "binary", "description": "1 iff the person works the shift"},
+    {"name": "x[cal,tue_day]", "type": "binary", "description": "1 iff the person works the shift"},
+    {"name": "x[cal,tue_night]", "type": "binary", "description": "1 iff the person works the shift"}
+  ],
+  "objective": {
+    "direction": "minimize",
+    "linear_terms": [
+      {"variable": "x[ann,mon_day]", "coefficient": 2},
+      {"variable": "x[ann,mon_night]", "coefficient": 5},
+      {"variable": "x[ann,tue_day]", "coefficient": 2},
+      {"variable": "x[ann,tue_night]", "coefficient": 5},
+      {"variable": "x[ben,mon_day]", "coefficient": 3},
+      {"variable": "x[ben,mon_night]", "coefficient": 1},
+      {"variable": "x[ben,tue_day]", "coefficient": 3},
+      {"variable": "x[ben,tue_night]", "coefficient": 1},
+      {"variable": "x[cal,mon_day]", "coefficient": 5},
+      {"variable": "x[cal,mon_night]", "coefficient": 2},
+      {"variable": "x[cal,tue_day]", "coefficient": 1},
+      {"variable": "x[cal,tue_night]", "coefficient": 3}
+    ]
+  },
+  "constraints": [
+    {
+      "id": "at_most_two_shifts[ann]",
+      "description": "Nobody works more than two shifts",
+      "type": "hard",
+      "terms": [
+        {"variable": "x[ann,mon_day]", "coefficient": 1},
+        {"variable": "x[ann,mon_night]", "coefficient": 1},
+        {"variable": "x[ann,tue_day]", "coefficient": 1},
+        {"variable": "x[ann,tue_night]", "coefficient": 1}
+      ],
+      "operator": "<=",
+      "rhs": 2
+    },
+    {
+      "id": "at_most_two_shifts[ben]",
+      "description": "Nobody works more than two shifts",
+      "type": "hard",
+      "terms": [
+        {"variable": "x[ben,mon_day]", "coefficient": 1},
+        {"variable": "x[ben,mon_night]", "coefficient": 1},
+        {"variable": "x[ben,tue_day]", "coefficient": 1},
+        {"variable": "x[ben,tue_night]", "coefficient": 1}
+      ],
+      "operator": "<=",
+      "rhs": 2
+    },
+    {
+      "id": "at_most_two_shifts[cal]",
+      "description": "Nobody works more than two shifts",
+      "type": "hard",
+      "terms": [
+        {"variable": "x[cal,mon_day]", "coefficient": 1},
+        {"variable": "x[cal,mon_night]", "coefficient": 1},
+        {"variable": "x[cal,tue_day]", "coefficient": 1},
+        {"variable": "x[cal,tue_night]", "coefficient": 1}
+      ],
+      "operator": "<=",
+      "rhs": 2
+    },
+    {
+      "id": "prefers_not[ben,mon_night]",
+      "description": "The person would rather not work this shift",
+      "type": "soft",
+      "terms": [{"variable": "x[ben,mon_night]", "coefficient": 1}],
+      "operator": "<=",
+      "rhs": 0,
+      "weight": 3
+    }
+  ],
+  "cardinality_constraints": [
+    {
+      "id": "covered[mon_day]",
+      "description": "The shift is worked by exactly one person",
+      "type": "hard",
+      "variables": ["x[ann,mon_day]", "x[ben,mon_day]", "x[cal,mon_day]"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "covered[mon_night]",
+      "description": "The shift is worked by exactly one person",
+      "type": "hard",
+      "variables": ["x[ann,mon_night]", "x[ben,mon_night]", "x[cal,mon_night]"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "covered[tue_day]",
+      "description": "The shift is worked by exactly one person",
+      "type": "hard",
+      "variables": ["x[ann,tue_day]", "x[ben,tue_day]", "x[cal,tue_day]"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "covered[tue_night]",
+      "description": "The shift is worked by exactly one person",
+      "type": "hard",
+      "variables": ["x[ann,tue_night]", "x[ben,tue_night]", "x[cal,tue_night]"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "rest[ann,after_mon_night]",
+      "description": "Nobody works both shifts of a rest rule",
+      "type": "hard",
+      "variables": ["x[ann,mon_night]", "x[ann,tue_day]"],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "rest[ben,after_mon_night]",
+      "description": "Nobody works both shifts of a rest rule",
+      "type": "hard",
+      "variables": ["x[ben,mon_night]", "x[ben,tue_day]"],
+      "operator": "<=",
+      "rhs": 1
+    },
+    {
+      "id": "rest[cal,after_mon_night]",
+      "description": "Nobody works both shifts of a rest rule",
+      "type": "hard",
+      "variables": ["x[cal,mon_night]", "x[cal,tue_day]"],
+      "operator": "<=",
+      "rhs": 1
+    }
+  ],
+  "solver": {"backend": "exact"}
+}

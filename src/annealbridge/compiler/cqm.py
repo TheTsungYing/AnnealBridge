@@ -155,6 +155,7 @@ class CQMCompiler:
         The CQM expresses hard constraints natively, so a penalty value is a
         caller (service) error, not a problem error.
         """
+        problem.require_expanded("CQMCompiler.compile")
         if hard_penalty is not None:
             raise CompilationError(
                 f"CQMCompiler does not use a hard_penalty; got {hard_penalty!r}"

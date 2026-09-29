@@ -13,8 +13,9 @@ from annealbridge.models import SolverCapabilities
 
 # Built-in limit key → the policy field that carries its value. The first
 # four are the Phase 2 fields kept as the compatibility layer (spec §11.1);
-# the rest were added by the 2026-09-09 review (F-02 / F-07) and batch 4
-# (G, the two ``postprocess_*`` keys) in the same
+# the rest were added by the 2026-09-09 review (F-02 / F-07), batch 4
+# (G, the two ``postprocess_*`` keys) and batch 8 (schema 1.3 spec §14.9,
+# ``template_bindings``) in the same
 # shape (``max_<key>`` field, ``ANNEALBRIDGE_MAX_<KEY>`` env). Every key
 # has exactly one source, so ``limits`` refuses all of them; third-party
 # backends only ever add keys to ``limits``.
@@ -30,6 +31,7 @@ COMPATIBILITY_LIMIT_FIELDS: dict[str, str] = {
     "top_k": "max_top_k",
     "postprocess_candidates": "max_postprocess_candidates",
     "postprocess_evaluations": "max_postprocess_evaluations",
+    "template_bindings": "max_template_bindings",
 }
 
 
@@ -88,6 +90,11 @@ class ExecutionPolicy(BaseModel):
     # move evaluations per attempt, deterministic unlike a wall clock.
     max_postprocess_candidates: int = Field(default=100, ge=1)
     max_postprocess_evaluations: int = Field(default=20_000_000, ge=1)
+    # Batch 8 (I), schema 1.3 spec §14.9: the ceiling on template expansion,
+    # checked on the bound U before anything is generated and on the work W
+    # while generating. Service-level, so every backend reports it. Equal to
+    # ``validation.expansion.DEFAULT_MAX_TEMPLATE_BINDINGS`` (a test pins it).
+    max_template_bindings: int = Field(default=250_000, ge=1)
     enabled_backends: set[str] | None = None   # None = all registry backends
     # Generic limits keyed by the names backends declare in their
     # ``parameter_limits`` (spec §11). Every value is finite and > 0; the
@@ -166,6 +173,9 @@ class ExecutionPolicy(BaseModel):
             result["max_postprocess_evaluations"] = self.limit(
                 "postprocess_evaluations"
             )
+        # Template expansion happens before any backend runs, so its ceiling
+        # applies to every backend alike; always the last key.
+        result["max_template_bindings"] = self.limit("template_bindings")
         return result
 
     @staticmethod

@@ -20,7 +20,7 @@ Errors and warnings share one shape.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `code` | string | A stable code from this page. Codes are a vocabulary an agent can learn: the wording of a message may change, the code does not. |
-| `path` | string \| null | JSON path into the submitted problem, e.g. `constraints[0].weight`, `variables[2]`, `cardinality_constraints[1].variables[0]`, `solver.num_reads`. `null` when the failure is not attributable to one field. |
+| `path` | string \| null | JSON path into the submitted problem, e.g. `constraints[0].weight`, `variables[2]`, `cardinality_constraints[1].variables[0]`, `solver.num_reads`. For a version `1.3` document it points into the template that generated the entry, e.g. `constraint_templates[1].terms[0].variable` (see [Templates](problem-format.md#errors-point-at-the-template)). `null` when the failure is not attributable to one field. |
 | `message` | string | What went wrong, with the concrete values involved. |
 | `retryable` | boolean | Whether the identical request may succeed later with no change to the problem or the configuration. Always `false` for a warning. |
 | `recommended_action` | string \| null | Fixed categorical guidance for this code. The text is the same for every occurrence and **never contains configuration values** — no limits, no hostnames, no credentials. |
@@ -71,9 +71,31 @@ schema, so it never became a problem the validator could check (see
 | `BOUNDS_ON_BINARY` | A binary variable carries bounds. | Remove the bounds, or set `type` to `integer`. |
 | `INTEGER_RANGE_TOO_LARGE` | An integer bound lies outside ±(2³¹ − 1). | Tighten the bounds or rescale the variable's unit. |
 | `INTEGER_REQUIRES_VERSION_1_1` | The problem uses integer variables but its `version` is `"1.0"`, declared or by default. | Set `version` to `"1.1"`. |
-| `FEATURE_REQUIRES_NEWER_VERSION` | The problem uses a field its `version` does not have: a non-empty `cardinality_constraints` needs `"1.2"` or later (path `version`). The message names the version needed, adds that `version` defaults to `"1.0"` when it was left out, and, for a `1.0` document with integer variables, that the newer version allows those too (`INTEGER_REQUIRES_VERSION_1_1` is still reported beside it). | Raise the problem's version to the one the message names, or to any newer version listed in schema_versions; every newer version still accepts the older syntax. |
+| `FEATURE_REQUIRES_NEWER_VERSION` | The problem uses a field its `version` does not have (path `version`): a non-empty `cardinality_constraints` needs `"1.2"` or later, and a non-empty template field — `index_sets`, `parameters`, `variable_families`, `objective.linear_term_templates`, `objective.quadratic_term_templates`, `constraint_templates`, `cardinality_constraint_templates` — needs `"1.3"`. The message names the version needed and, for templates, every template field used, in that order (`index_sets and variable_families require version "1.3" or later, but version is '1.2'`). It adds that `version` defaults to `"1.0"` when it was left out; for the cardinality case in a `1.0` document with integer variables, that the newer version allows those too (`INTEGER_REQUIRES_VERSION_1_1` is still reported beside it); and for the template case, that `"1.3"` also allows cardinality constraints below `1.2` and integer variables or families in `1.0`. The template case is found while expanding, so the document's other template errors are reported beside it. | Raise the problem's version to the one the message names, or to any newer version listed in schema_versions; every newer version still accepts the older syntax. |
+| `TEMPLATE_REFERENCE_INVALID` | A template string or name does not follow the [template grammar](problem-format.md#the-grammar): a name that is not an identifier, too long or the reserved word `in`; more than eight `for_each` items, `where` conditions or `indices`; a syntax error; an unknown family, parameter, index set or index; the wrong number of indices, or an index over the wrong set; a shift on a set without order or inside a `where`; a condition comparing an index with a number, or indices of different sets; a literal element; a number written as a string; or an index that is bound but used by no reference. The path is the field holding the string (`…variable2`, `…for_each[1]`, `…where[0]`) and the message says what was expected. | Rewrite the named field in the template grammar: names are identifiers, a for_each item is "index in set", a reference names a declared family or parameter with one bound index per declared index set (a shift such as p+k only on a linear or cyclic set), and a where condition compares two operands. The message says what was expected. |
+| `INDEX_SET_INVALID` | An index set is empty, lists an element twice, mixes strings and integers, has a string element that is too long or uses a character outside `A–Z a–z 0–9 _ . -`, or an integer element outside ±(2³¹ − 1). Path `index_sets[s].elements[k]` (or `.elements` when empty). | List each element once, all strings or all integers; strings use letters, digits, underscore, dot and hyphen only. |
+| `PARAMETER_TABLE_INVALID` | A parameter row's `key` has the wrong length, an element that is not in the corresponding index set (or of the other type), or repeats an earlier key; a `value` or `default` is not finite; or a parameter used as a cardinality template's `rhs` holds a value that is not a whole number within ±(2³¹ − 1). Path `parameters[p].values[r].key[d]`, `.key`, `.value` or `parameters[p].default`. | Give one row per combination, with a key listing one element of each index set in the parameter's indices, and a finite value; a parameter used as a cardinality rhs needs whole-number values. |
+| `PARAMETER_VALUE_MISSING` | A template used a parameter at a key that has no row, and the parameter has no `default`. Used means: in a `where` condition that was evaluated, or in the `coefficient`, `rhs` or `weight` of an entry that was generated. The path is the field that used it and the message names the parameter and the key. | Add a row for the combination the message names, give the parameter a default, or exclude the combination with a where condition. |
+| `DUPLICATE_TEMPLATE_NAME` | Two index sets, parameters or families share a name; a family has the name of an explicit variable; two constraint templates share an `id`, or one has the `id` of an explicit constraint; or an index is bound twice in one scope, or has the name of an index set, parameter or family. | Rename one of the two: index sets, parameters and variable families share one namespace, a family may not take an explicit variable's name, template ids share the constraint id namespace, and an index name must differ from every declared name and from the other indices in scope. |
 | `INEQUALITY_MAGNITUDE_TOO_LARGE` | An inequality's coefficients times its variables' bounds exceed 2⁵³, so the slack range cannot be computed exactly. | Rescale the unit of the coefficients or the variables, or tighten the bounds. |
 | `COMPILATION_FAILED` | The problem passed validation but could not be compiled; no backend was invoked. | Fix the problem as the message describes, and report the case if the problem looks legitimate — it would indicate a validator/compiler mismatch. |
+
+For a version `1.3` document with [templates](problem-format.md#templates-version-13)
+the codes above keep their meaning. The template expander reports some of them
+itself, once per template, with a path into the template:
+`RESERVED_VARIABLE_NAME` for a family name starting with `__`;
+`BOUNDS_ON_BINARY`, `INTEGER_BOUNDS_MISSING`, `INTEGER_BOUNDS_INVALID` and
+`INTEGER_RANGE_TOO_LARGE` for a family's type and bounds;
+`UNKNOWN_VARIABLE` for a bare name that is no explicit variable;
+`CARDINALITY_VARIABLE_NOT_BINARY` for a cardinality member over an integer
+family or variable; `SELF_QUADRATIC_TERM` for `variable1` and `variable2`
+written as the same reference on a binary family; `HARD_CONSTRAINT_HAS_WEIGHT`,
+`SOFT_CONSTRAINT_MISSING_WEIGHT` and `NON_INTEGER_INEQUALITY` for a template's
+literal `weight`, coefficients and `rhs`. Everything else is found by the
+ordinary validator on the expanded problem, and an error on a generated entry
+is mapped back to its template, its message ending with
+` (generated by <template path>)`; at most twenty such errors are listed per
+template, the rest counted in the last one's message.
 
 ### `backend_unavailable` — the requested backend cannot run
 
@@ -107,7 +129,8 @@ happens before any vendor call, so no quota is consumed. The ceilings come from
 | `TOP_K_LIMIT` | `top_k` exceeds the server's limit on returned solutions. | Lower `top_k`. |
 | `POSTPROCESS_LIMIT` | Post-processing is on and would exceed a server ceiling: `postprocess_candidates` is above `ANNEALBRIDGE_MAX_POSTPROCESS_CANDIDATES`, or setting post-processing up plus a single scan of the moves around one assignment (see [Post-processing](problem-format.md#post-processing)) already exceeds `ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS`. Refused by `solve` before the backend is called and listed as blocking by `recommend`; never raised while post-processing is off or on an exhaustive backend. | Lower `postprocess_candidates`, set `postprocess` to `"none"`, or reduce the problem. |
 | `PENALTY_OVERFLOW` | The hard penalty left the floating-point range before a feasible solution was found, so the retry ladder stopped. | Lower `penalty_multiplier` or `max_retries`, or rescale the problem's coefficients. |
-| `CONCURRENCY_LIMIT` | Too many solves are running concurrently on this server. **Retryable.** | Retry after the current solves finish. |
+| `TEMPLATE_EXPANSION_LIMIT` | Expanding a version `1.3` document's templates would exceed `ANNEALBRIDGE_MAX_TEMPLATE_BINDINGS`: either the bindings the templates would iterate, counted before anything is generated, or the work while generating, which also counts every pair of terms or members in a generated constraint (see [Size ceiling](problem-format.md#size-ceiling-and-concurrency)). The one error reported, at the template being expanded; nothing is generated or kept. `resource_limit_exceeded` from `solve`; `validate` and `recommend` answer `valid: false` with it. | Shrink the index sets or split the problem: templates are expanded in full or not at all, and the server's ceiling is max_template_bindings in the capabilities limits. |
+| `CONCURRENCY_LIMIT` | Too many solves are running concurrently on this server — or, for a document with templates, too many are being expanded and validated at once (`Too many concurrent template expansions`), which `validate` and `recommend` report as `valid: false`. **Retryable.** | Retry after the current solves finish. |
 
 ### `configuration_error` — the server is misconfigured
 
@@ -240,7 +263,11 @@ Warnings are only produced for a problem with no errors — an erroneous problem
 has to be fixed first anyway, and the no-error gate is what makes the size
 estimates well-defined. The backend-dependent ones (`EXACT_*`, `DENSE_FOR_QPU`,
 `SEED_IGNORED`, `PARAMETER_IGNORED`) additionally require a backend to be
-known.
+known. For a document with templates the expansion's own warnings come
+first, and a warning the validator raises on generated entries is reported
+once per code and template path, its message ending with how many generated
+entries it applies to; `recommend` carries them in every backend's
+`warnings`.
 
 | Code | When it is raised |
 | --- | --- |
@@ -257,6 +284,10 @@ known.
 | `LARGE_INTEGER_RANGE` | An integer variable needs more than 10 encoding bits on a BQM backend. |
 | `INTEGER_QUADRATIC_BLOWUP` | Binary-encoding the integer variables yields more than 2000 quadratic interactions on a BQM backend. |
 | `SOFT_ALWAYS_VIOLATED` | A soft constraint can never be satisfied within the variables' bounds: every solution pays its weight. The hard counterpart is the `TRIVIALLY_INFEASIBLE` error. A cardinality constraint is judged over the count range 0 to *n* for its *n* variables. |
+| `EMPTY_TEMPLATE_EXPANSION` | A version `1.3` template generated nothing at all — every binding filtered out by `where`, or left out at a boundary. `path` is the template. Recommended action: *The template produced nothing; check its where conditions and index sets, or remove it.* |
+| `TEMPLATE_BOUNDARY_SKIPPED` | Entries of a template were left out because a shifted index ran past the end of a `linear` index set: single objective terms, or whole constraints (see [Boundaries](problem-format.md#how-templates-expand)). One per template, with the count. Leaving a constraint out relaxes the rule at the boundary. Recommended action: *Items whose shifted index runs past the end of a linear index set are left out, which relaxes a constraint template at the boundary; declare the set cyclic if it should wrap around, or ignore this if leaving them out is intended.* |
+| `TEMPLATE_TERMS_MERGED` | Constraints generated by a template name the same variable more than once — typically a cyclic shift wrapping onto itself; the terms are kept and the compiler sums them. One per template, with the count and the first example. Never raised for an explicit constraint. Recommended action: *A generated linear constraint names the same variable more than once and the compiler sums the coefficients; check shifts on cyclic sets and term templates that reach the same variable.* |
+| `UNUSED_TEMPLATE_VARIABLES` | Variables a family generated appear in no objective term and no constraint, so they were left out of the problem and of its solutions (see [Unused generated variables](problem-format.md#unused-generated-variables-are-left-out)). One per family, `path` `variable_families[f]`, with the count and the first five names. Recommended action: *The listed generated variables appear in no objective term or constraint, so they were left out of the problem and of its solutions; narrow the family's index sets if they were not meant to exist, or reference them if they were.* |
 | `REMOTE_RETRIES_DISABLED` | Emitted during a solve, not validation: a remote solve on the BQM path found nothing feasible, the problem asked for retries (`max_retries > 0`), and server policy disables automatic remote retries, so only one attempt was made. With `max_retries: 0` nothing was blocked and no warning is emitted. |
 | `POSTPROCESS_LIMIT_REACHED` | Emitted during a solve, not validation: post-processing stopped at a ceiling before finishing — the per-attempt evaluation budget (`ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS`) or the per-assignment step cap. At most one per solve, naming each affected attempt and ceiling; the same names are in `attempts[].postprocess.limit_reached`. The `status` is unaffected and every returned solution is still re-validated, but more search might have improved them. |
 | `WALL_CLOCK_LIMIT_REACHED` | Emitted during a solve, not validation: `solver.wall_clock_limit_seconds` ran out while work was left — an attempt was cut short (the backend skipped reads, or post-processing stopped with work left) or a retry was not started. At most one per solve, naming the attempts that were cut and whether a retry was skipped; `wall_clock_limit_reached` is `true` on the result and on those attempts. Every returned solution is still re-validated and ranked, and the status follows them (`success`, or `infeasible` when none is feasible); but the result comes from a partial search that depends on timing, so it can differ between runs even with a seed. Never raised when only the uninterruptible stages ran past the limit. See [Output format](output-format.md#wall-clock-limit-and-reproducibility). |
@@ -300,17 +331,18 @@ different kind. The ranking never rewrites
 
 ## CLI exit codes
 
-`annealbridge solve`, `validate` and `recommend` share one convention.
+`annealbridge solve`, `validate`, `recommend` and `expand` share one convention.
 
 | Exit code | Meaning |
 | --- | --- |
-| `0` | Success: `solve` produced a `success` result, `validate` found the problem valid, `recommend` produced a ranking. |
-| `1` | A domain answer that is not success: a non-`success` `SolveResult`, an invalid problem for `validate` or `recommend`. The structured errors are printed either way. |
+| `0` | Success: `solve` produced a `success` result, `validate` found the problem valid, `recommend` produced a ranking, `expand` printed the expanded problem. |
+| `1` | A domain answer that is not success: a non-`success` `SolveResult`, an invalid problem for `validate` or `recommend`, expansion errors for `expand`. The structured errors are printed either way. |
 | `2` | The request never reached the service. |
 
 Exit code `2` covers four situations:
 
-- the input file cannot be read, is not valid JSON, or is not a valid
+- the input file cannot be read, is not valid JSON (a document nested too
+  deeply or holding an integer too long to parse included), or is not a valid
   optimization problem document (a schema error, as opposed to a semantic
   one — a wrong type, a missing required field, or a field the schema does
   not declare, each listed as `[CODE] path: message` with the codes of

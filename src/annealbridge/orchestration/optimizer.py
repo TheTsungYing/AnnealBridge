@@ -14,7 +14,8 @@ import math
 import threading
 import time
 import traceback
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -76,8 +77,10 @@ from annealbridge.solvers import (
 )
 from annealbridge.validation import (
     BackendRecommendationResult,
+    ExpandedProblem,
     ProblemValidationResult,
-    validate_problem_full,
+    expand_problem,
+    validate_expanded,
 )
 from annealbridge.validation.estimates import estimate_model_variables
 from annealbridge.version import package_version
@@ -240,6 +243,12 @@ class OptimizationService:
         # Concurrency slots are per service instance (spec §14); a CLI-style
         # single call is unaffected.
         self._solve_slots = threading.BoundedSemaphore(policy.max_concurrent_solves)
+        # Schema 1.3 spec §14.9: expanding and validating a document with
+        # templates can take memory in proportion to max_template_bindings,
+        # and it happens before a solve slot is taken (and on validate and
+        # recommend, which take none), so it has its own, equally sized
+        # gate. Documents without templates never touch it.
+        self._expansion_slots = threading.BoundedSemaphore(policy.max_concurrent_solves)
 
     def _check_declared_limits(self) -> None:
         """Spec §11.3: every limit a backend is subject to is checkable before any solve.
@@ -322,12 +331,52 @@ class OptimizationService:
         model_type = self._select_model_type(caps)
         return None if model_type is None else self._compilers[model_type]
 
+    @contextmanager
+    def _template_gate(self, problem: OptimizationProblem) -> Iterator[bool]:
+        """Admit the expansion and validation of ``problem`` (spec §14.9).
+
+        Yields True at once for a problem without templates. For one with
+        templates it takes an expansion slot without waiting -- a full
+        server refuses rather than queues, as for solves -- and yields
+        whether it got one, releasing it on exit.
+        """
+        if not problem.has_templates():
+            yield True
+            return
+        if not self._expansion_slots.acquire(blocking=False):
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            self._expansion_slots.release()
+
+    def _expansion_busy(self) -> SolveError:
+        return catalog_error(
+            "CONCURRENCY_LIMIT",
+            f"Too many concurrent template expansions: the server allows at "
+            f"most {self._policy.max_concurrent_solves}",
+        )
+
+    def _expand(self, problem: OptimizationProblem) -> ExpandedProblem:
+        """Expand ``problem``'s templates under this policy's ceiling.
+
+        A problem without templates comes back untouched, so everything
+        after this step is exactly what it was before schema 1.3.
+        """
+        return expand_problem(
+            problem,
+            max_template_bindings=int(self._policy.required_limit("template_bindings")),
+        )
+
     def _validate_against_backend(
-        self, problem: OptimizationProblem
+        self, expansion: ExpandedProblem
     ) -> tuple[ProblemValidationResult, SolverCapabilities | None, ModelType | None]:
         """The validator's error pass plus its advisory layer, for the
-        backend ``problem`` names — shared by :meth:`validate` and
-        :meth:`solve` so both report the same warnings.
+        backend the problem names — shared by :meth:`validate` and
+        :meth:`solve` so both report the same warnings. Validates the
+        expansion (schema 1.3 spec §14.8): its errors, or the expanded
+        problem with every path mapped back to the templates.
 
         Looks the backend up only to read its *declaration*; nothing is
         compiled or solved, no network is touched and no concurrency slot
@@ -338,7 +387,7 @@ class OptimizationService:
         can add what only they know: ``validate`` turns those two cases
         into advisory warnings, ``solve`` into errors.
         """
-        backend_name = problem.solver.backend
+        backend_name = expansion.source.solver.backend
         try:
             caps: SolverCapabilities | None = self._registry.get(
                 backend_name
@@ -349,8 +398,8 @@ class OptimizationService:
         # path the problem would actually take; None when no compiler fits
         # (solve would then fail with NO_COMPILER_FOR_MODEL_TYPE).
         model_type = self._select_model_type(caps) if caps is not None else None
-        result = validate_problem_full(
-            problem,
+        result = validate_expanded(
+            expansion,
             capabilities=caps,
             max_compiled_variables=int(self._policy.required_limit("variables")),
             model_type=model_type,
@@ -366,9 +415,17 @@ class OptimizationService:
         An unknown backend (possible with a custom registry) still gets
         the backend-independent checks plus an UNKNOWN_BACKEND *warning*;
         the validator does not judge backend existence, ``solve`` does.
+
+        A problem with schema 1.3 templates is expanded first and validated
+        in its expanded form, every path mapped back to the templates; a
+        server already expanding as many as it allows answers
+        CONCURRENCY_LIMIT instead (spec §14.8-§14.9).
         """
         backend_name = problem.solver.backend
-        result, caps, model_type = self._validate_against_backend(problem)
+        with self._template_gate(problem) as admitted:
+            if not admitted:
+                return ProblemValidationResult(valid=False, errors=[self._expansion_busy()])
+            result, caps, model_type = self._validate_against_backend(self._expand(problem))
         if caps is None:
             result.warnings.append(
                 catalog_error(
@@ -393,9 +450,16 @@ class OptimizationService:
         """Rank the registry's backends for ``problem`` (3a §23.5).
 
         Advisory only: ``solve`` never reads this. Nothing is compiled or
-        solved, no network is touched and no concurrency slot is taken.
+        solved, no network is touched and no concurrency slot is taken; a
+        problem with templates takes an expansion slot while routing expands
+        and validates it (spec §14.9).
         """
-        return recommend(problem, self._registry, self._policy, self._compilers)
+        with self._template_gate(problem) as admitted:
+            if not admitted:
+                return BackendRecommendationResult(
+                    valid=False, errors=[self._expansion_busy()], recommendations=[]
+                )
+            return recommend(problem, self._registry, self._policy, self._compilers)
 
     def solve(
         self,
@@ -439,6 +503,14 @@ class OptimizationService:
         begin (validation, an unavailable backend, a full server) returns
         its result as usual. Without a limit and a token no interrupt
         exists at all and the solve runs exactly as before.
+
+        A problem with schema 1.3 templates is expanded first, inside the
+        wall clock (spec §14.8): an expansion error is ``invalid_problem``,
+        or ``resource_limit_exceeded`` for TEMPLATE_EXPANSION_LIMIT, and a
+        server already expanding as many documents as it allows answers
+        ``resource_limit_exceeded`` with CONCURRENCY_LIMIT. Everything after
+        the expansion runs on the expanded problem, so solutions and
+        constraint evaluations carry the generated names.
         """
         started = self._clock()
         limit = problem.solver.wall_clock_limit_seconds
@@ -451,8 +523,21 @@ class OptimizationService:
             if limit is not None or cancel is not None
             else None
         )
-        validation, _, _ = self._validate_against_backend(problem)
-        if validation.errors:
+        expansion: ExpandedProblem | None = None
+        with self._template_gate(problem) as admitted:
+            if admitted:
+                expansion = self._expand(problem)
+                validation, _, _ = self._validate_against_backend(expansion)
+        if expansion is None:
+            validation = ProblemValidationResult(valid=False)
+            result = self._failure(
+                "resource_limit_exceeded", None, None, [self._expansion_busy()]
+            )
+        elif expansion.limit_exceeded:
+            result = self._failure(
+                "resource_limit_exceeded", None, None, list(expansion.errors)
+            )
+        elif validation.errors:
             logger.info(
                 "Problem %s failed validation with %d error(s)",
                 problem.name,
@@ -460,8 +545,9 @@ class OptimizationService:
             )
             result = self._failure("invalid_problem", None, None, validation.errors)
         else:
+            assert expansion.problem is not None  # validated, so expanded
             result = self._dispatch(
-                problem, on_progress=on_progress, interrupt=interrupt
+                expansion.problem, on_progress=on_progress, interrupt=interrupt
             )
         # Every path is stamped the same way: the service's own wall clock
         # (independent of the vendor-reported ``metadata.timing_us``) and

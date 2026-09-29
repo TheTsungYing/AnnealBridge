@@ -55,6 +55,53 @@ variables.
   hint. On the CQM path a one-hot group is a plain linear equality: it is not
   marked as a discrete group for the solver.
 
+## Templates (version 1.3)
+
+- **A size ceiling, not a streaming expansion.** A document with templates is
+  expanded in full before anything else happens, bounded by
+  `ANNEALBRIDGE_MAX_TEMPLATE_BINDINGS` (default `250000`; about a 49-city TSP
+  written as templates). Above it the document is refused whole with
+  `TEMPLATE_EXPANSION_LIMIT` — never truncated or partly expanded — and the
+  same model can then only be sent written out. Expanding and validating such
+  documents also shares a limited number of slots
+  (`ANNEALBRIDGE_MAX_CONCURRENT_SOLVES`); a full server answers the retryable
+  `CONCURRENCY_LIMIT`.
+- **The work count is an interaction bound for binary members only.** The
+  ceiling charges every pair of terms or members of a generated constraint,
+  which is exactly the interactions a binary constraint adds on the BQM path.
+  An integer member is encoded into several bits and an inequality adds slack
+  bits, so the real interaction count can be larger by roughly the square of
+  the bits per variable — the same risk an explicit document already carries,
+  flagged by `INTEGER_QUADRATIC_BLOWUP`. In the other direction the CQM path
+  forms no pairs at all, so the count is conservative there and may refuse a
+  template document the CQM path could handle; the same model written out is
+  not subject to it.
+- **A `linear` set relaxes a constraint template at its boundary.** A
+  generated constraint whose shifted index runs past the end of a `linear`
+  set is left out entirely, so a hard rule simply does not apply there; the
+  only signal is the `TEMPLATE_BOUNDARY_SKIPPED` warning. If the rule should
+  wrap around, declare the set `cyclic`.
+- **What follows expansion is not bounded by it.** The response holds up to
+  `top_k` solutions over every variable, each with an evaluation per
+  constraint, and a heuristic's run time grows with the variables times
+  `num_reads` and `num_sweeps`. A template document reaches those sizes in
+  under 1 KB where the written-out form needed tens of megabytes; the read,
+  sweep and `top_k` ceilings still apply as before.
+- **Error lists are capped.** At most 20 errors are listed per template (20
+  per source and 100 in all for the expansion's own errors); the rest are
+  counted by code in the last one's message, so no code is hidden, but their
+  details are not shown.
+- **Not supported:** scalar parameters (write the number), sparse families (a
+  family covers the full product of its sets; members nothing uses are left
+  out afterwards, with `UNUSED_TEMPLATE_VARIABLES`), literal elements in a
+  template string (use a 0/1 parameter), any arithmetic beyond shifting an
+  index by a constant, and referencing from a template an explicit variable
+  whose name is not an identifier (`a-b`). There is no MCP tool that returns
+  the expanded document; use `annealbridge expand` or
+  `annealbridge.validation.expand_problem`.
+
+See [Templates](problem-format.md#templates-version-13) for the full rules.
+
 ## Soft constraints
 
 - Soft constraint weights are expressed in **objective units** and are **not

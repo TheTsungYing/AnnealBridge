@@ -49,7 +49,12 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-EXAMPLE_FILES = ("knapsack.json", "integer_knapsack.json", "exam_timetabling.json")
+EXAMPLE_FILES = (
+    "knapsack.json",
+    "integer_knapsack.json",
+    "exam_timetabling.json",
+    "tsp_template.json",
+)
 # The examples the wheel ships as package data, in the order
 # ``annealbridge example`` lists them.
 BUNDLED_EXAMPLES = [
@@ -59,6 +64,7 @@ BUNDLED_EXAMPLES = [
     "tsp",
     "shift_scheduling",
     "exam_timetabling",
+    "tsp_template",
 ]
 MCP_TOOLS = [
     "get_optimization_capabilities",
@@ -269,6 +275,19 @@ def run_common_checks(cli: str) -> str:
     with check("CLI exact schema 1.2 cardinality constraints optimum = 6"):
         verify_solution(json_cli("solve", "exam_timetabling.json", "--json"), 6)
 
+    with check("CLI exact schema 1.3 templates optimum = 8"):
+        verify_solution(json_cli("solve", "tsp_template.json", "--json"), 8)
+
+    with check("CLI expand prints the templates as a schema 1.2 problem"):
+        printed = run_bytes([cli, "expand", "tsp_template.json"]).stdout
+        assert b"\r" not in printed, "expand wrote a CR: its output is not LF-only"
+        expanded = json.loads(printed.decode("utf-8"))
+        assert expanded["version"] == "1.2", f"version was {expanded['version']}"
+        assert len(expanded["variables"]) == 16, (
+            f"{len(expanded['variables'])} variables, expected 16"
+        )
+        assert "variable_families" not in expanded, "a template field was kept"
+
     with check("CLI simulated annealing returns feasible solutions"):
         verify_solution(
             json_cli("solve", "knapsack.json", "--backend", "simulated_annealing", "--json")
@@ -338,6 +357,7 @@ async def run_mcp_checks(problems: dict[str, dict]) -> None:
                     "annealbridge://examples/knapsack",
                     "annealbridge://examples/shift_scheduling",
                     "annealbridge://examples/tsp",
+                    "annealbridge://examples/tsp_template",
                     "annealbridge://schema",
                 ]
                 # The examples are package data; the wheel must actually ship
@@ -383,6 +403,12 @@ async def run_mcp_checks(problems: dict[str, dict]) -> None:
                 verify_solution(
                     await call("solve_optimization", problems["exam_timetabling.json"]),
                     6,
+                )
+
+            with check("MCP exact schema 1.3 templates optimum = 8"):
+                verify_solution(
+                    await call("solve_optimization", problems["tsp_template.json"]),
+                    8,
                 )
 
             with check("MCP simulated annealing returns feasible solutions"):

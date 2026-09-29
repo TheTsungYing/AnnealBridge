@@ -1,9 +1,11 @@
-"""Optimization problem schema — the public JSON API (versions 1.0 to 1.2).
+"""Optimization problem schema — the public JSON API (versions 1.0 to 1.3).
 
 ``"1.0"`` problems only have binary variables; ``"1.1"`` (3b spec §7) is a
 superset that also allows bounded integer variables; ``"1.2"`` (schema 1.2
 spec 2026-09-25) is a superset of ``"1.1"`` that adds
-``cardinality_constraints``. A problem using a feature its version does not
+``cardinality_constraints``; ``"1.3"`` (the same spec, §14) is a superset of
+``"1.2"`` that adds index sets, parameters, variable families and templates
+(``models/templates.py``). A problem using a feature its version does not
 have is rejected by the problem validator, never silently upgraded.
 """
 
@@ -11,12 +13,32 @@ from typing import Literal
 
 from pydantic import Field, SerializerFunctionWrapHandler, model_serializer
 
+from annealbridge.exceptions import TemplatesNotExpandedError
 from annealbridge.models.cardinality import CardinalityConstraint
 from annealbridge.models.constraint import Constraint
 from annealbridge.models.objective import Objective
 from annealbridge.models.quantities import Count, Quantity
 from annealbridge.models.strict import InputModel
+from annealbridge.models.templates import (
+    CardinalityConstraintTemplate,
+    ConstraintTemplate,
+    IndexSet,
+    Parameter,
+    VariableFamily,
+)
 from annealbridge.models.variable import Variable
+
+# Optional lists added after schema 1.1, left out of every dump while empty
+# so an older problem dumps exactly as it did before they existed (schema
+# 1.2 spec §4.3, §14.13).
+_OMITTED_WHEN_EMPTY = (
+    "cardinality_constraints",
+    "index_sets",
+    "parameters",
+    "variable_families",
+    "constraint_templates",
+    "cardinality_constraint_templates",
+)
 
 
 # The schema layer rejects what is not a number at all (NaN / ±inf, which
@@ -309,13 +331,14 @@ class OptimizationProblem(InputModel):
     """A structured combinatorial optimization problem."""
 
     # Oldest first: capabilities reports the last value as schema_version.
-    version: Literal["1.0", "1.1", "1.2"] = Field(
+    version: Literal["1.0", "1.1", "1.2", "1.3"] = Field(
         default="1.0",
         description=(
             'Problem schema version. Each version is a superset of the one '
             'before: "1.1" or later is required as soon as any variable is an '
-            'integer, and "1.2" or later as soon as cardinality_constraints '
-            "is used."
+            'integer, "1.2" or later as soon as cardinality_constraints is '
+            'used, and "1.3" as soon as index sets, parameters, variable '
+            "families or templates are."
         ),
     )
     name: str = Field(
@@ -355,6 +378,43 @@ class OptimizationProblem(InputModel):
             "empty."
         ),
     )
+    # Schema 1.3 spec §14. Optional and empty by default; a problem that
+    # still holds any of them is expanded before anything else reads it.
+    index_sets: list[IndexSet] = Field(
+        default_factory=list,
+        description=(
+            "Version 1.3 or later: ordered sets of elements that the "
+            "templates' indices range over. Optional; may be empty."
+        ),
+    )
+    parameters: list[Parameter] = Field(
+        default_factory=list,
+        description=(
+            "Version 1.3 or later: tables of numbers keyed by index set "
+            "elements, referenced as name[i,j]. Optional; may be empty."
+        ),
+    )
+    variable_families: list[VariableFamily] = Field(
+        default_factory=list,
+        description=(
+            "Version 1.3 or later: one variable per combination of index set "
+            "elements. Optional; may be empty."
+        ),
+    )
+    constraint_templates: list[ConstraintTemplate] = Field(
+        default_factory=list,
+        description=(
+            "Version 1.3 or later: linear constraints repeated over index "
+            "sets. Optional; may be empty."
+        ),
+    )
+    cardinality_constraint_templates: list[CardinalityConstraintTemplate] = Field(
+        default_factory=list,
+        description=(
+            "Version 1.3 or later: cardinality constraints repeated over "
+            "index sets. Optional; may be empty."
+        ),
+    )
     solver: SolverPreferences = Field(
         default_factory=SolverPreferences,
         description=(
@@ -364,18 +424,68 @@ class OptimizationProblem(InputModel):
     )
 
     @model_serializer(mode="wrap")
-    def _omit_empty_cardinality(self, handler: SerializerFunctionWrapHandler):
-        """Leave an empty ``cardinality_constraints`` out of every dump.
+    def _omit_empty_optional_lists(self, handler: SerializerFunctionWrapHandler):
+        """Leave each empty list added after schema 1.1 out of every dump.
 
         A ``1.0`` / ``1.1`` problem then dumps exactly as it did before the
-        field existed, and that dump is still accepted by a server that
-        does not know the field (spec §4.3). Parsing the dump back restores
-        the empty default, so the round trip is unchanged.
+        fields existed, and that dump is still accepted by a server that
+        does not know them (spec §4.3); the objective's own template lists
+        are left out the same way. Parsing the dump back restores the empty
+        defaults, so the round trip is unchanged.
         """
         data = handler(self)
-        if isinstance(data, dict) and not self.cardinality_constraints:
-            data.pop("cardinality_constraints", None)
+        if isinstance(data, dict):
+            for name in _OMITTED_WHEN_EMPTY:
+                if not getattr(self, name):
+                    data.pop(name, None)
         return data
+
+    def template_fields(self) -> list[str]:
+        """The non-empty template fields, in the order they are reported.
+
+        Index sets, parameters and families first, then the objective's two
+        template lists (as ``objective.<name>``), then the two constraint
+        template lists (schema 1.3 spec §14.1).
+        """
+        names = [
+            name
+            for name in ("index_sets", "parameters", "variable_families")
+            if getattr(self, name)
+        ]
+        names += self.objective.template_fields()
+        names += [
+            name
+            for name in ("constraint_templates", "cardinality_constraint_templates")
+            if getattr(self, name)
+        ]
+        return names
+
+    def has_templates(self) -> bool:
+        """Whether any template field is non-empty, i.e. not yet expanded."""
+        return bool(
+            self.index_sets
+            or self.parameters
+            or self.variable_families
+            or self.constraint_templates
+            or self.cardinality_constraint_templates
+            or self.objective.has_templates()
+        )
+
+    def require_expanded(self, operation: str) -> None:
+        """Raise :class:`TemplatesNotExpandedError` if templates remain.
+
+        Every public function that reads the problem's variables, objective
+        or constraints calls this first (spec §14.12): ignoring a template
+        would silently drop variables, terms or constraints, and a dropped
+        constraint lets an infeasible assignment pass re-validation. The
+        check only looks at whether seven lists are empty.
+        """
+        if self.has_templates():
+            raise TemplatesNotExpandedError(
+                f"{operation} needs an expanded problem, but "
+                f"{', '.join(self.template_fields())} still hold templates; "
+                "expand it with annealbridge.validation.expand_problem first"
+            )
 
     def all_constraints(self) -> list[Constraint]:
         """Every constraint in the one order the whole pipeline uses.
@@ -386,11 +496,14 @@ class OptimizationProblem(InputModel):
         declaration order (spec §5.2-§5.3). Estimates, both compilers,
         re-validation, post-processing and routing read constraints only
         through here, so none of them can miss a cardinality constraint;
-        ``tests/architecture`` holds the rest of ``src`` to that. The
-        lowered objects are rebuilt on every call and never cached (spec
-        §5.1). For a problem without cardinality constraints this is the
-        ``constraints`` list's own objects, in order.
+        ``tests/architecture`` holds the rest of ``src`` to that. Each
+        lowered object is reused only while its declaration is unchanged
+        (``CardinalityConstraint.lowered``). For a problem without
+        cardinality constraints this is the ``constraints`` list's own
+        objects, in order. Refuses a problem whose templates are not yet
+        expanded (:meth:`require_expanded`).
         """
+        self.require_expanded("all_constraints()")
         return [
             *self.constraints,
             *(constraint.lowered() for constraint in self.cardinality_constraints),

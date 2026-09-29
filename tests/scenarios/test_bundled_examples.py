@@ -13,6 +13,7 @@ import pytest
 from annealbridge.interfaces.bundled_examples import example_names, example_text
 from annealbridge.models import OptimizationProblem
 from annealbridge.orchestration import OptimizationService
+from annealbridge.validation import expand_problem
 
 # The optimum each example's description states.
 OPTIMA = {
@@ -22,6 +23,7 @@ OPTIMA = {
     "tsp": 8.0,
     "shift_scheduling": 7.0,
     "exam_timetabling": 6.0,
+    "tsp_template": 8.0,
 }
 
 # shift_scheduling, worked by hand over all 81 ways to give each of the four
@@ -191,3 +193,38 @@ class TestExamTimetabling:
         )
         assert by_id["small_hall_mon_am"].actual_value == pytest.approx(1.0)
         assert by_id["small_hall_mon_am"].satisfied is True
+
+
+class TestTspTemplate:
+    def test_is_a_version_1_3_document_written_in_templates(self):
+        problem = _problem("tsp_template")
+
+        assert problem.version == "1.3"
+        assert problem.solver.backend == "exact"
+        assert problem.variables == []
+        assert problem.constraints == []
+        assert problem.template_fields() == [
+            "index_sets",
+            "parameters",
+            "variable_families",
+            "objective.quadratic_term_templates",
+            "cardinality_constraint_templates",
+        ]
+
+    def test_expands_to_the_shape_of_the_tsp_example(self):
+        # What the description promises: the tsp example's 16 variables, 48
+        # distance terms and 8 constraints (cardinality ones here, linear
+        # ones there), with no expansion warning.
+        expansion = expand_problem(_problem("tsp_template"))
+        tsp = _problem("tsp")
+
+        assert expansion.errors == ()
+        assert expansion.warnings == ()
+        expanded = expansion.problem
+        assert len(expanded.variables) == len(tsp.variables) == 16
+        assert (
+            len(expanded.objective.quadratic_terms)
+            == len(tsp.objective.quadratic_terms)
+            == 48
+        )
+        assert len(expanded.cardinality_constraints) == len(tsp.constraints) == 8

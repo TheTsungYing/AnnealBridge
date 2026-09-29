@@ -1,0 +1,80 @@
+{
+  "version": "1.3",
+  "name": "assignment_template",
+  "description": "The assignment problem of examples/assignment.json with templates: 3 workers, 3 tasks, the same cost table, one task per worker and one worker per task. Alice may not drive (allowed = 0), so x[alice,drive] is used nowhere and is left out. Optimum 8: alice=cook, bob=clean, carol=drive.",
+  "variables": [
+    {"name": "x[alice,clean]", "type": "binary", "description": "1 iff the worker does the task"},
+    {"name": "x[alice,cook]", "type": "binary", "description": "1 iff the worker does the task"},
+    {"name": "x[bob,clean]", "type": "binary", "description": "1 iff the worker does the task"},
+    {"name": "x[bob,cook]", "type": "binary", "description": "1 iff the worker does the task"},
+    {"name": "x[bob,drive]", "type": "binary", "description": "1 iff the worker does the task"},
+    {"name": "x[carol,clean]", "type": "binary", "description": "1 iff the worker does the task"},
+    {"name": "x[carol,cook]", "type": "binary", "description": "1 iff the worker does the task"},
+    {"name": "x[carol,drive]", "type": "binary", "description": "1 iff the worker does the task"}
+  ],
+  "objective": {
+    "direction": "minimize",
+    "linear_terms": [
+      {"variable": "x[alice,clean]", "coefficient": 4},
+      {"variable": "x[alice,cook]", "coefficient": 2},
+      {"variable": "x[bob,clean]", "coefficient": 3},
+      {"variable": "x[bob,cook]", "coefficient": 7},
+      {"variable": "x[bob,drive]", "coefficient": 5},
+      {"variable": "x[carol,clean]", "coefficient": 6},
+      {"variable": "x[carol,cook]", "coefficient": 4},
+      {"variable": "x[carol,drive]", "coefficient": 3}
+    ]
+  },
+  "constraints": [],
+  "cardinality_constraints": [
+    {
+      "id": "one_task[alice]",
+      "description": "Each worker does exactly one task",
+      "type": "hard",
+      "variables": ["x[alice,clean]", "x[alice,cook]"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "one_task[bob]",
+      "description": "Each worker does exactly one task",
+      "type": "hard",
+      "variables": ["x[bob,clean]", "x[bob,cook]", "x[bob,drive]"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "one_task[carol]",
+      "description": "Each worker does exactly one task",
+      "type": "hard",
+      "variables": ["x[carol,clean]", "x[carol,cook]", "x[carol,drive]"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "one_worker[clean]",
+      "description": "Each task is done by exactly one worker",
+      "type": "hard",
+      "variables": ["x[alice,clean]", "x[bob,clean]", "x[carol,clean]"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "one_worker[cook]",
+      "description": "Each task is done by exactly one worker",
+      "type": "hard",
+      "variables": ["x[alice,cook]", "x[bob,cook]", "x[carol,cook]"],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "one_worker[drive]",
+      "description": "Each task is done by exactly one worker",
+      "type": "hard",
+      "variables": ["x[bob,drive]", "x[carol,drive]"],
+      "operator": "==",
+      "rhs": 1
+    }
+  ],
+  "solver": {"backend": "exact"}
+}

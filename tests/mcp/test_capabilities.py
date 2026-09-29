@@ -108,9 +108,10 @@ async def test_schema_metadata():
     content = (await _get_capabilities()).structured_content
     # 3b §10: schema_version is the newest version accepted, and every version
     # in schema_versions is still accepted (each one is a superset of the one
-    # before: 1.1 adds integer variables, 1.2 cardinality_constraints).
-    assert content["schema_version"] == "1.2"
-    assert content["schema_versions"] == ["1.0", "1.1", "1.2"]
+    # before: 1.1 adds integer variables, 1.2 cardinality_constraints, 1.3
+    # index sets, parameters, variable families and templates).
+    assert content["schema_version"] == "1.3"
+    assert content["schema_versions"] == ["1.0", "1.1", "1.2", "1.3"]
     assert content["supported_variable_types"] == ["binary", "integer"]
     assert content["supported_constraint_operators"] == ["==", "<=", ">="]
     assert content["inequality_requires_integer_coefficients"] is True
@@ -149,11 +150,14 @@ async def test_limits_come_from_policy():
     by_name = {backend["name"]: backend for backend in content["backends"]}
     # Every backend also carries the two service-level ceilings of spec
     # §11.4: the retry ceiling chosen by the ``remote`` flag, then top_k;
-    # every non-exhaustive backend then the two post-processing ceilings.
+    # every non-exhaustive backend then the two post-processing ceilings;
+    # and every backend last the template expansion ceiling, applied before
+    # any backend runs (schema 1.3 spec §14.9).
     assert by_name["exact"]["limits"] == {
         "max_variables": 24,
         "max_local_retries": 10,
         "max_top_k": 1000,
+        "max_template_bindings": 250_000,
     }
     assert by_name["dwave_qpu"]["limits"] == {
         "max_reads": 1000,
@@ -162,6 +166,7 @@ async def test_limits_come_from_policy():
         "max_top_k": 1000,
         "max_postprocess_candidates": 100,
         "max_postprocess_evaluations": 20_000_000,
+        "max_template_bindings": 250_000,
     }
     assert by_name["leap_hybrid_bqm"]["limits"] == {
         "max_time_seconds": 300,
@@ -169,6 +174,7 @@ async def test_limits_come_from_policy():
         "max_top_k": 1000,
         "max_postprocess_candidates": 100,
         "max_postprocess_evaluations": 20_000_000,
+        "max_template_bindings": 250_000,
     }
     assert by_name["leap_hybrid_cqm"]["limits"] == {
         "max_time_seconds": 300,
@@ -176,6 +182,7 @@ async def test_limits_come_from_policy():
         "max_top_k": 1000,
         "max_postprocess_candidates": 100,
         "max_postprocess_evaluations": 20_000_000,
+        "max_template_bindings": 250_000,
     }
     assert by_name["fujitsu_da"]["limits"] == {
         "max_time_seconds": 300,
@@ -183,6 +190,7 @@ async def test_limits_come_from_policy():
         "max_top_k": 1000,
         "max_postprocess_candidates": 100,
         "max_postprocess_evaluations": 20_000_000,
+        "max_template_bindings": 250_000,
     }
     assert by_name["simulated_annealing"]["limits"] == {
         "max_local_reads": 100000,
@@ -191,6 +199,7 @@ async def test_limits_come_from_policy():
         "max_top_k": 1000,
         "max_postprocess_candidates": 100,
         "max_postprocess_evaluations": 20_000_000,
+        "max_template_bindings": 250_000,
     }
     # ``tabu`` takes no sweeps, so it declares no sweep ceiling either.
     assert by_name["tabu"]["limits"] == {
@@ -199,6 +208,7 @@ async def test_limits_come_from_policy():
         "max_top_k": 1000,
         "max_postprocess_candidates": 100,
         "max_postprocess_evaluations": 20_000_000,
+        "max_template_bindings": 250_000,
     }
     # Simulated bifurcation's sweeps are its integration steps, so it is
     # capped under the same two local keys as the annealer; its own
@@ -211,6 +221,7 @@ async def test_limits_come_from_policy():
         "max_top_k": 1000,
         "max_postprocess_candidates": 100,
         "max_postprocess_evaluations": 20_000_000,
+        "max_template_bindings": 250_000,
     }
 
 

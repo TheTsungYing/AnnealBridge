@@ -1,0 +1,65 @@
+{
+  "version": "1.3",
+  "name": "assignment_template",
+  "description": "The assignment problem of examples/assignment.json with templates: 3 workers, 3 tasks, the same cost table, one task per worker and one worker per task. Alice may not drive (allowed = 0), so x[alice,drive] is used nowhere and is left out. Optimum 8: alice=cook, bob=clean, carol=drive.",
+  "index_sets": [
+    {"name": "worker", "elements": ["alice", "bob", "carol"]},
+    {"name": "task", "elements": ["clean", "cook", "drive"]}
+  ],
+  "parameters": [
+    {
+      "name": "cost",
+      "indices": ["worker", "task"],
+      "values": [
+        {"key": ["alice", "clean"], "value": 4},
+        {"key": ["alice", "cook"], "value": 2},
+        {"key": ["alice", "drive"], "value": 8},
+        {"key": ["bob", "clean"], "value": 3},
+        {"key": ["bob", "cook"], "value": 7},
+        {"key": ["bob", "drive"], "value": 5},
+        {"key": ["carol", "clean"], "value": 6},
+        {"key": ["carol", "cook"], "value": 4},
+        {"key": ["carol", "drive"], "value": 3}
+      ]
+    },
+    {
+      "name": "allowed",
+      "indices": ["worker", "task"],
+      "default": 1,
+      "values": [{"key": ["alice", "drive"], "value": 0}]
+    }
+  ],
+  "variable_families": [
+    {"name": "x", "indices": ["worker", "task"], "type": "binary", "description": "1 iff the worker does the task"}
+  ],
+  "variables": [],
+  "objective": {
+    "direction": "minimize",
+    "linear_terms": [],
+    "linear_term_templates": [
+      {"for_each": ["w in worker", "t in task"], "where": ["allowed[w,t] == 1"], "coefficient": "cost[w,t]", "variable": "x[w,t]"}
+    ]
+  },
+  "constraints": [],
+  "cardinality_constraint_templates": [
+    {
+      "id": "one_task",
+      "description": "Each worker does exactly one task",
+      "type": "hard",
+      "for_each": ["w in worker"],
+      "variables": [{"for_each": ["t in task"], "where": ["allowed[w,t] == 1"], "variable": "x[w,t]"}],
+      "operator": "==",
+      "rhs": 1
+    },
+    {
+      "id": "one_worker",
+      "description": "Each task is done by exactly one worker",
+      "type": "hard",
+      "for_each": ["t in task"],
+      "variables": [{"for_each": ["w in worker"], "where": ["allowed[w,t] == 1"], "variable": "x[w,t]"}],
+      "operator": "==",
+      "rhs": 1
+    }
+  ],
+  "solver": {"backend": "exact"}
+}

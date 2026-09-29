@@ -176,7 +176,7 @@ async def get_optimization_capabilities(
     The full problem JSON schema is several times the size of everything
     else, so problem_json_schema is null unless include_schema is true. Ask
     for it when the document needs more than the example shows — integer
-    variables, soft constraints, cardinality constraints, solver
+    variables, soft constraints, cardinality constraints, templates, solver
     preferences — or before inventing a field; every field description is
     in it.
 
@@ -184,11 +184,15 @@ async def get_optimization_capabilities(
     "binary" and "integer" — and schema_versions lists every problem schema
     version this server accepts, newest last; each version accepts everything
     the one before it does. Integer variables are only allowed when the
-    problem carries "version": "1.1" or later at its top level, and
+    problem carries "version": "1.1" or later at its top level,
     cardinality_constraints (exactly, at most or at least k of a set of
-    binary variables chosen) only with "version": "1.2" or later;
-    "version": "1.0" accepts binary variables and linear constraints only.
-    supported_constraint_operators applies to cardinality constraints too.
+    binary variables chosen) only with "version": "1.2" or later, and
+    index_sets, parameters, variable_families and the *_templates fields (a
+    large, regular problem written once over index sets, which the server
+    expands into ordinary entries) only with "version": "1.3", which accepts
+    every "1.2" document too; "version": "1.0" accepts binary variables and
+    linear constraints only. supported_constraint_operators applies to
+    cardinality constraints too.
     """
     state = get_state()
     return build_capabilities(
@@ -230,6 +234,13 @@ async def validate_optimization_problem(
     "<=", rhs 1) gets the advisory warning CARDINALITY_FORM_AVAILABLE on a
     bqm backend: declared in cardinality_constraints it would need no slack
     variable.
+
+    A "version": "1.3" document with templates (index_sets, parameters,
+    variable_families, *_templates) is expanded first and the expanded
+    problem is what gets checked and estimated. An error in a template, or
+    in an entry it generated, names the template's own path (for example
+    constraint_templates[0].terms[1].variable), the latter with the
+    generating template in its message; expansion warnings come first.
 
     The estimate follows the model type the chosen backend compiles to. On a
     bqm backend it counts the slack bits of every inequality constraint plus
@@ -278,7 +289,9 @@ async def recommend_backend(problem: ProblemArgument) -> BackendRecommendationRe
     A document that does not fit the schema (a field the schema does not
     declare, a missing required field, a value of the wrong type) comes back
     as valid: false with every such error at once, coded UNKNOWN_FIELD,
-    MISSING_FIELD or INVALID_FIELD_VALUE, and no ranking.
+    MISSING_FIELD or INVALID_FIELD_VALUE, and no ranking. A "version": "1.3"
+    document with templates is expanded first and ranked as the expanded
+    problem; an error in a template names the template's own path.
     """
     parsed = _parse("recommend_backend", problem)
     if not isinstance(parsed, OptimizationProblem):
@@ -319,6 +332,15 @@ async def solve_optimization(
     encodes each integer in binary, so the compiled size grows with the range
     of the bounds; a backend that compiles to cqm takes integers natively.
     Integer values come back as ints inside their declared bounds.
+
+    A large, regular problem (every city at every position, every person on
+    every shift) can be written once with templates: index_sets, parameters,
+    variable_families and the *_templates fields, which need "version":
+    "1.3" ("1.3" accepts every "1.2" document too). They are expanded before
+    anything else: an error names the template's own path, solutions and
+    constraint_evaluations use the generated names (x[a,0], city_once[a]),
+    and a generated variable that no term or constraint uses is left out,
+    with a warning.
 
     Inequality constraints (<=, >=) require integer coefficients and right-hand
     sides. Soft constraint weights are in objective units.

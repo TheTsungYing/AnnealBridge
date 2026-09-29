@@ -96,6 +96,9 @@ class ServerSettings(BaseSettings):
     # ExecutionPolicy.
     max_postprocess_candidates: int = Field(default=100, ge=1)
     max_postprocess_evaluations: int = Field(default=20_000_000, ge=1)
+    # Batch 8 (I): template expansion ceiling (schema 1.3 spec §14.9); same
+    # default and bound as ExecutionPolicy.
+    max_template_bindings: int = Field(default=250_000, ge=1)
     # Shards the ``simulated_annealing`` backend samples at once; ``None``
     # detects the CPUs available to the process. A speed knob handed to the
     # registry by the composition root, not a policy limit: it never changes
