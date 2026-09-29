@@ -385,9 +385,9 @@ development version without a checkout:
 Architecture rules, design principles and the pull-request checklist are in
 [CONTRIBUTING.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/CONTRIBUTING.md).
 
-Version 0.3.0: the problem contract (`1.0` / `1.1`; `1.2` and `1.3` are in the unreleased changes), the eight backends, the
-CLI and the MCP tools are complete and covered by tests. What is not
-supported, by design for now, is listed in
+Version 0.4.0: the problem contract (`1.0` / `1.1` / `1.2` / `1.3`), the eight
+backends, the CLI and the MCP tools are complete and covered by tests. What is
+not supported, by design for now, is listed in
 [docs/limitations.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/docs/limitations.md);
 changes are in [CHANGELOG.md](https://github.com/TheTsungYing/AnnealBridge/blob/main/CHANGELOG.md).
 

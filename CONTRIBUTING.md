@@ -107,8 +107,8 @@ secrets. To cut a release:
 1. Set the new version in `pyproject.toml`, in both version fields of
    `server.json`, in the `Version X.Y.Z:` line of `README.md` and the
    `版本 X.Y.Z：` line of `README.zh-TW.md`, and in the `annealbridge_version`
-   of the example in `docs/output-format.md`; then turn the `[Unreleased]`
-   section of `CHANGELOG.md` into a dated `[X.Y.Z]` section.
+   of the examples in `docs/output-format.md` and `docs/cli.md`; then turn the
+   `[Unreleased]` section of `CHANGELOG.md` into a dated `[X.Y.Z]` section.
    `tests/unit/test_registry_entry.py` (for `server.json`) and
    `tests/unit/test_documented_versions.py` (for the documentation) fail
    while any of these disagrees with `pyproject.toml`.

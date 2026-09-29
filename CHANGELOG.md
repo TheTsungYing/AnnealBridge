@@ -7,15 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-29
+
+### Upgrade notes
+
+Read these before upgrading an existing installation or client; all but the
+last are described in full under Added, Changed or Fixed below.
+
+- **Higher dependency floors.** `pydantic>=2.10`, `numpy>=2.0`,
+  `dimod>=0.12.19`, `dwave-samplers>=1.3`, `typer>=0.26`, and with their
+  extras `mcp>=2.1,<3` and `dwave-system>=1.26`. An environment pinned below
+  one of them — to numpy 1.x, say — has to upgrade it before this release
+  installs.
+- **MCP: a problem that does not fit the schema is no longer a tool error.**
+  `validate_optimization_problem`, `recommend_backend` and
+  `solve_optimization` used to answer it with `isError: true` and pydantic's
+  text; they now return a structured result, `status: "invalid_problem"` or
+  `valid: false`, carrying the new codes `UNKNOWN_FIELD`, `MISSING_FIELD` and
+  `INVALID_FIELD_VALUE`. A client that detected schema errors through
+  `isError` has to read the result instead. On the CLI the exit code `2` is
+  unchanged, but the stderr listing of such errors has a new format.
+- **New output fields, always present.** `source` on every solution;
+  `postprocess` and `postprocess_ms` on every attempt;
+  `wall_clock_limit_reached` on the result, on every attempt and on every
+  `postprocess` object; and in the capabilities view, `supports_interrupt` on
+  every backend, `max_postprocess_candidates` and
+  `max_postprocess_evaluations` in the `limits` of every non-exhaustive
+  backend and `max_template_bindings` in every backend's `limits`, while
+  `schema_version` now reports `"1.3"`. With the new options left at their
+  defaults, every existing value other than the timings is unchanged, as are
+  the ranking and the retries (a BQM solve's first `compile_ms` now includes
+  the preparation its retries reuse); a client that rejects unknown fields
+  has to accept these.
+- **More codes.** The error catalog grows from 48 to 64 codes: fourteen new
+  error codes and the two warnings only a run can raise,
+  `POSTPROCESS_LIMIT_REACHED` and `WALL_CLOCK_LIMIT_REACHED`. Validation adds
+  five warning codes, `CARDINALITY_FORM_AVAILABLE` and four about templates.
+  A client that switches on codes should expect them.
+- **The CLI's `--json` output and `export-schema` are always UTF-8 with `\n`
+  newlines.** On Windows, a script that decoded redirected output in the
+  console code page has to decode it as UTF-8.
+- **The example files shipped in the package moved** from
+  `annealbridge/interfaces/mcp/examples/` to
+  `annealbridge/interfaces/examples/`. Their contents and the MCP resource
+  URIs are unchanged; only code that read them by package path is affected.
+- **Python API.** `diagnose_infeasibility`, `deduplicate_samples`,
+  `evaluate_objective`, `evaluate_objective_batch`, `CandidateSet` and
+  `ProcessedCandidates` are no longer importable from the module
+  `annealbridge.orchestration.optimizer`; import them from
+  `annealbridge.orchestration`, which exports them as before. Code that
+  reads `problem.constraints` itself does not see the new cardinality
+  constraints; `OptimizationProblem.all_constraints()` returns both kinds.
+- **An MCP server started with `uvx` does not upgrade on its own.** `uvx`
+  keeps the environment it resolved on its first run: run
+  `uv cache clean annealbridge`, restart the host, and check with
+  `annealbridge-mcp --version`. See Upgrading in `docs/mcp.md`.
+
 ### Added
 
 - Opt-in post-processing in the original variables:
   `solver.postprocess: "repair_local_search"` (default `"none"`) takes the
   best `solver.postprocess_candidates` distinct samples of each attempt
   (default `10`), greedily repairs the infeasible ones and moves the feasible
-  ones to a local optimum, with single-variable ±1 steps and pair moves over
-  two variables that share a hard constraint (a swap inside a one-hot group,
-  trading one knapsack item for another). It never touches slack bits,
+  ones toward a local optimum, with single-variable ±1 steps and pair moves
+  over two variables that share a hard constraint (a swap inside a one-hot
+  group, trading one knapsack item for another). It never touches slack bits,
   encoding bits or the hard penalty, runs single-threaded on this machine
   whatever the backend, and is deterministic. Every assignment it produces is
   re-validated and ranked exactly like a solver sample, so rank 1 may be one
@@ -27,16 +83,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   infeasible but whose repair succeeded counts as feasible, so no penalty
   retry follows. Known limits: an integer moves by ±1 per step within a cap
   of `4 · n` steps, and permutation constraints such as a TSP's need four
-  variables changed at once, which no move does. See the Post-processing
-  section of `docs/problem-format.md`.
+  variables changed at once, which no move does. The human-readable report of
+  `annealbridge solve` names the source and summarizes post-processing when
+  rank 1 comes from it, and is unchanged otherwise. `PostprocessStats` and
+  `SolutionSource` are exported from `annealbridge.models`. See the
+  Post-processing section of `docs/problem-format.md`.
 - Two server ceilings for it, reported in the capabilities limits of every
   non-exhaustive backend: `ANNEALBRIDGE_MAX_POSTPROCESS_CANDIDATES` (default
   `100`) on `postprocess_candidates`, and
   `ANNEALBRIDGE_MAX_POSTPROCESS_EVALUATIONS` (default `20000000`), a
-  per-attempt count of move evaluations, so a solve with retries can spend up
-  to the number of attempts times it. Both keys are also refused in
-  `ANNEALBRIDGE_LIMITS`. Neither is checked while post-processing is off or
-  on an exhaustive backend.
+  per-attempt budget of move evaluations that also charges each attempt's
+  one-off setup, so a solve with retries can spend up to the number of
+  attempts times it. Their keys, `postprocess_candidates` and
+  `postprocess_evaluations`, are refused in `ANNEALBRIDGE_LIMITS` like the
+  other built-in ones. Neither is checked while post-processing is off or on
+  an exhaustive backend.
 - Error code `POSTPROCESS_LIMIT` (`resource_limit_exceeded`):
   `postprocess_candidates` above its ceiling, or a problem whose single
   neighbourhood scan already exceeds the evaluation budget; refused before
@@ -56,7 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `annealbridge capabilities --json` prints the structure the MCP tool
   `get_optimization_capabilities` returns by default (`include_schema:
   false`), field for field, with `problem_json_schema: null`; the schema
-  itself stays with `export-schema`. Without `--json` the table is unchanged.
+  itself stays with `export-schema`. Without `--json` it still prints the
+  table.
 - `solve`, `validate` and `recommend` read the problem from stdin when
   `PROBLEM_FILE` is `-`, decoded as UTF-8 with or without a byte-order mark;
   every message about it names the source `<stdin>`.
@@ -68,7 +130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so validating or solving it on `exact` adds an `EXACT_NEAR_LIMIT` warning.
   The MCP server serves it as the new resource
   `annealbridge://examples/shift_scheduling`, the fuller counterpart of the
-  `schedule_shifts` prompt, and now lists six resources.
+  `schedule_shifts` prompt.
 - `solver.wall_clock_limit_seconds` (default `null`, no limit): an upper
   bound on a solve's wall-clock time on this server, measured from the same
   instant as `elapsed_ms`. It is a ceiling that stops the solve early, not
@@ -85,7 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they can. A limit that does not fire changes nothing, bit for bit; one that
   fires makes the result depend on machine speed and load, the worker
   counts, BLAS threads and the GPU, so the same seed can give a different
-  result. Accepted by `"1.0"` and `"1.1"` alike, finite and `> 0` or
+  result. Accepted by every schema version, finite and `> 0` or
   `INVALID_SOLVER_PREFERENCE`, with no server ceiling. See the Wall-clock
   limit section of `docs/problem-format.md`, and `docs/backends.md` for each
   backend's checkpoints and worst-case overrun (a `tabu` shard cannot be
@@ -98,8 +160,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WALL_CLOCK_LIMIT_UNSUPPORTED` (`invalid_problem`) in `validate` and
   `solve`, and list it as blocking in `recommend`. A backend cannot declare
   it together with `exhaustive`. A third-party backend that declares it must
-  accept a keyword-only `interrupt` in `solve` (checked when the service is
-  built), and when interrupted return the reads it completed, possibly none,
+  accept a keyword-only `interrupt` in `solve` (an `Interrupt`, from the new
+  module `annealbridge.interrupt`; checked when the service is built), and
+  when interrupted return the reads it completed, possibly none,
   with `RawSolverResult.interrupted=True` instead of raising. See Adding a
   backend in `docs/backends.md`.
 - Cancelling a solve. An MCP client that cancels `solve_optimization`
@@ -159,11 +222,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PENALTY_OVERFLOW` sooner than the slack form, since it lacks the slack
   form's negative linear term; that is still always the structured error.
 - Error codes `FEATURE_REQUIRES_NEWER_VERSION` (a field the problem's version
-  does not have: a non-empty `cardinality_constraints` below `"1.2"`, path
-  `version`), `CARDINALITY_VARIABLE_NOT_BINARY` (an integer variable listed
-  in a cardinality constraint) and `DUPLICATE_CARDINALITY_VARIABLE` (a
-  variable listed twice in one), all `invalid_problem` and not retryable; the
-  catalog now has 58 codes.
+  does not have: a non-empty `cardinality_constraints` below `"1.2"`, or a
+  non-empty template field below `"1.3"`; path `version`),
+  `CARDINALITY_VARIABLE_NOT_BINARY` (an integer variable listed in a
+  cardinality constraint) and `DUPLICATE_CARDINALITY_VARIABLE` (a variable
+  listed twice in one), all `invalid_problem` and not retryable.
 - Warning code `CARDINALITY_FORM_AVAILABLE`: in a version `"1.2"` or later
   document on a BQM backend, a hard linear constraint that is an at-most-one
   over two or more distinct binary variables, every coefficient 1, is pointed
@@ -176,9 +239,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   objective, hard `== 1` per exam, hard `<= 1` per slot for exams that share
   students, and one soft `<= 1` preference; the unique optimum has total
   inconvenience 6 and it compiles to 13 variables. The MCP server serves it as
-  the new resource `annealbridge://examples/exam_timetabling` and now lists
-  seven resources; `annealbridge example` lists it, and
-  `scripts/check_install.py` solves it on an installed wheel.
+  the new resource `annealbridge://examples/exam_timetabling`;
+  `annealbridge example` lists it, and `scripts/check_install.py` solves it
+  on an installed wheel.
+- In the Python API, exported from `annealbridge.models`:
+  `CardinalityConstraint`; `LoweredCardinalityConstraint`, the frozen linear
+  form `CardinalityConstraint.lowered()` returns (the same object for as long
+  as the declaration's fields keep their values, a new one as soon as any
+  changes, so it stays in memory until the problem is freed; its `terms`
+  list is read-only by contract); and `OptimizationProblem.all_constraints()`,
+  the linear constraints followed by the lowered cardinality ones, which is
+  how every stage of the pipeline reads constraints.
 - Problem schema version `"1.3"`, a superset of `"1.2"`, for large, regular
   models written once instead of entry by entry. Seven optional fields, all
   empty by default and left out when a problem is serialized: `index_sets`
@@ -252,27 +323,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Schema version `"1.2"`, as seen from outside. Every `"1.0"` and `"1.1"`
-  document parses, validates, compiles, estimates, solves and serializes bit
-  for bit as before (pinned by tests, among them a compatibility golden
-  recorded before the change, `tests/golden/compat_a377f35.json`); what
-  changes is:
+- Schema version `"1.2"`, as seen from outside. Adding it leaves every
+  `"1.0"` and `"1.1"` document parsing, validating, compiling, estimating,
+  solving and serializing bit for bit as it did just before, the other
+  changes of this release aside (pinned by tests, among them a compatibility
+  golden recorded before the change, `tests/golden/compat_a377f35.json`);
+  what changes is:
   - the problem JSON Schema, and with it the MCP tools' input schema, gains
     `cardinality_constraints` and `$defs.CardinalityConstraint`, the `version`
     enum gains `"1.2"`, and the descriptions of `constraints` and of a
     variable's `type` are reworded;
-  - the capabilities view (MCP and `capabilities --json`) reports
-    `schema_version: "1.2"` and `schema_versions: ["1.0", "1.1", "1.2"]`, and
-    the descriptions of `schema_versions` and
+  - the capabilities view (MCP and `capabilities --json`) lists `"1.2"` in
+    `schema_versions` (with `"1.3"`, below, it reports `schema_version:
+    "1.3"`), and the descriptions of `schema_versions` and
     `supported_constraint_operators` are reworded;
   - `"version": "1.2"` is accepted instead of rejected, and the schema error
     for any other unknown version now lists `'1.2'` among the allowed
     values;
-  - a `"1.0"` or `"1.1"` document carrying `cardinality_constraints` used to
-    get a top-level `UNKNOWN_FIELD`; now an empty list is accepted, a
-    non-empty one gets `FEATURE_REQUIRES_NEWER_VERSION`, and one whose entries
-    are malformed gets the schema errors inside it first and the version
-    error once they are fixed;
+  - a `"1.0"` or `"1.1"` document carrying `cardinality_constraints`, which
+    0.3.0 rejected as a field the schema does not declare, is now accepted
+    when the list is empty; a non-empty one gets
+    `FEATURE_REQUIRES_NEWER_VERSION`, and one whose entries are malformed
+    gets the schema errors inside it first and the version error once they
+    are fixed;
   - the MCP server instructions, the tool descriptions and the three prompts
     describe cardinality constraints and the version rule (`"1.1"` or later
     for integers, `"1.2"` or later for cardinality constraints); the
@@ -283,9 +356,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     schema descriptions of `ConstraintEvaluation.actual_value`,
     `constraint_evaluations` and `hard_violation_rates` state the order and
     the count.
-- Schema version `"1.3"`, as seen from outside. Every `"1.0"`, `"1.1"` and
-  `"1.2"` document parses, validates, compiles, estimates, solves and
-  serializes bit for bit as before — the three existing goldens pass
+- Schema version `"1.3"`, as seen from outside. Adding it leaves every
+  `"1.0"`, `"1.1"` and `"1.2"` document parsing, validating, compiling,
+  estimating, solving and serializing bit for bit as it did just before, the
+  other changes of this release aside — the three existing goldens pass
   unchanged and were not re-recorded — and a `"1.3"` document without
   templates behaves exactly like the same document labelled `"1.2"`. What
   changes is:
@@ -304,36 +378,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     limit on every row;
   - `"version": "1.3"` is accepted instead of rejected, and the schema error
     for any other unknown version now lists `'1.3'` among the allowed values;
-  - a `"1.0"`, `"1.1"` or `"1.2"` document carrying a template field used to
-    get `UNKNOWN_FIELD`; now an empty one is accepted, a non-empty one gets
-    `FEATURE_REQUIRES_NEWER_VERSION` naming every template field used, and one
-    whose entries are malformed gets the schema errors inside it first;
+  - a document of an earlier version carrying a template field, which 0.3.0
+    rejected as a field the schema does not declare, is now accepted when the
+    field is empty; a non-empty one gets `FEATURE_REQUIRES_NEWER_VERSION`
+    naming every template field used, and one whose entries are malformed
+    gets the schema errors inside it first;
   - the MCP server instructions, the tool descriptions and the closing part
-    all three prompts share describe templates and the version rule
+    that all three prompts share describe templates and the version rule
     (`"1.3"` for templates); the prompts' embedded examples keep their
     versions; the resource list and the `annealbridge example` list gain
     `tsp_template`; and the CLI gains the `expand` command;
   - `ANNEALBRIDGE_LIMITS` refuses one more built-in key, `template_bindings`
     (twelve in all);
-  - on the CLI, a problem document nested too deeply, or holding an integer
-    too long to parse, is now reported as invalid JSON with exit `2` instead
-    of ending in a Python traceback, on every command that reads one;
-  - in the Python API, `CardinalityConstraint.lowered()` now returns the same
-    object for as long as the declaration's fields keep their values (a new
-    one as soon as any changes), so the lowered view stays in memory until
-    the problem is freed; `LoweredCardinalityConstraint` is frozen, its
-    `terms` list read-only by contract; `validate_problem` and
-    `validate_problem_full` take a keyword `max_template_bindings` (default
-    `250000`) and expand a problem with templates first; and
-    `OptimizationProblem.all_constraints()`, both compilers,
-    `encode_integer_variables`, the objective builders and evaluators,
-    `validate_solution`, `validate_batch`, `process_candidates`,
+  - in the Python API, `validate_problem` and `validate_problem_full` take a
+    keyword `max_template_bindings` (default `250000`) and expand a problem
+    with templates first; and `OptimizationProblem.all_constraints()`, both
+    compilers, `encode_integer_variables`, the objective builders and
+    evaluators, `validate_solution`, `validate_batch`, `process_candidates`,
     `diagnose_infeasibility`, `run_postprocess`, `compute_objective_scale`,
     `variable_bounds` and `estimate_interaction_density` raise the new
-    `TemplatesNotExpandedError`
-    (a `ValueError`, exported from `annealbridge.models`) when handed a problem
-    or objective whose templates are not yet expanded, instead of silently
-    ignoring them.
+    `TemplatesNotExpandedError` (a `ValueError`, exported from
+    `annealbridge.models`) when handed a problem or objective whose templates
+    are not yet expanded, instead of silently ignoring them.
 - Visible even with post-processing off, the default: every solution now
   carries `"source": "solver"`, every attempt carries `"postprocess": null`
   and `"postprocess_ms": null`, and the capabilities `limits` of every
@@ -356,7 +422,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   3.12 on both), adds a job that installs every direct dependency at its
   declared minimum (`uv pip install --resolution lowest-direct`) and runs the
   suite against it, and a test now checks that the version quoted in both
-  READMEs and in the `docs/output-format.md` example matches `pyproject.toml`.
+  READMEs and in the example outputs of `docs/output-format.md` and
+  `docs/cli.md` matches `pyproject.toml`.
 - A BQM retry no longer redoes the compile work that does not depend on the
   hard penalty (integer and slack encoding, the objective, the soft
   penalties): it is done once per solve and each retry only re-expands the
@@ -365,23 +432,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dense quadratic objective with one-hot constraints, a retry's `compile_ms`
   fell from about 53 ms to 5 ms; on a problem dominated by wide hard
   constraints, about 20%. The first attempt's `compile_ms` now includes that
-  one-time preparation.
+  one-time preparation. A compiler takes part through the new optional
+  `SupportsPrepare` protocol, whose `prepare()` returns a `PreparedModel`; a
+  compiler without it compiles from scratch on every attempt, as before.
 - A problem document that does not fit the schema — a field the schema does
   not declare, a missing required field, a value of the wrong type, a problem
   that is not an object — is now reported with three new error codes,
   `UNKNOWN_FIELD`, `MISSING_FIELD` and `INVALID_FIELD_VALUE` (not retryable),
   every such error at once, each with its path in the validator's notation
-  (`constraints[0].terms[1].coefficient`) and a catalog recommended action;
-  the message never echoes the submitted value. Over MCP,
+  (`constraints[0].terms[1].coefficient`; an unknown key that is not a plain
+  identifier is written as a JSON string in brackets) and a catalog
+  recommended action; the message never echoes the submitted value. Over MCP,
   `validate_optimization_problem`, `recommend_backend` and
   `solve_optimization` no longer answer such a document with a tool error
   (`isError: true` and pydantic's text) but with a structured result shaped
   like any semantic error: `status: "invalid_problem"`, or `valid: false`.
-  Their published input schema is byte for byte unchanged; only a call with
-  no `problem` argument at all is still an SDK tool error. On the CLI, exit
-  code `2` and an empty stdout under `--json` are unchanged, but stderr now
-  lists the errors as `[CODE] path: message` under `Schema errors (n):`, each
-  with its recommended action, instead of `path: message` lines. Semantic
+  This change leaves their published input schema byte for byte as it was
+  (the schema grows only with the new schema versions above); only a call
+  with no `problem` argument at all is still an SDK tool error. On the CLI,
+  exit code `2` and an empty stdout under `--json` are unchanged, but stderr
+  now lists the errors as `[CODE] path: message` under `Schema errors (n):`,
+  each with its recommended action, instead of `path: message` lines. Semantic
   errors are still reported only once the document fits the schema. See the
   Schema errors section of `docs/errors.md`.
 - The shipped example files moved from the package data of
@@ -405,18 +476,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same seed.
 - The shard pool of `simulated_annealing` and `tabu` names its worker
   threads `annealbridge-shard_<n>`, so they can be told apart in a thread dump.
-- A failed shard of `simulated_annealing` or `tabu` in a solve with neither
-  `solver.wall_clock_limit_seconds` nor a `CancelToken` (a library or CLI
-  solve) is now handled like one in an interruptible solve: the shards not yet
-  started are skipped, and the `SOLVER_ERROR` is reported only after the
-  shards already running have ended, instead of at once with those shards
-  left finishing in the background. No shard thread outlives the solve, and
-  its concurrency slot is no longer freed while they still use CPUs. The
-  report can come later by up to one shard per worker (25 reads; see the
-  overrun table in `docs/backends.md`). Successful results, seeded or not,
-  are unchanged.
 
 ### Fixed
+
+- A failed shard of `simulated_annealing` or `tabu` in a solve with neither
+  `solver.wall_clock_limit_seconds` nor a `CancelToken` (a library or CLI
+  solve) no longer leaves the other shards running in the background: the
+  shards not yet started are skipped, and the `SOLVER_ERROR` is reported only
+  after the shards already running have ended, instead of at once. No shard
+  thread outlives the solve, and its concurrency slot is no longer freed
+  while they still use CPUs. The report can come later by up to one shard per
+  worker (25 reads; see the overrun table in `docs/backends.md`). Successful
+  results, seeded or not, are unchanged.
+- On the CLI, a problem document nested too deeply, or holding an integer
+  too long to parse, is now reported as invalid JSON with exit `2` on every
+  command that reads one, instead of ending in a Python traceback.
 
 - An integer variable (or, in schema `1.3`, a variable family) whose bound
   is too long for Python to write out (more than 4,300 digits) no longer
@@ -428,16 +502,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that a hard constraint can be met looked up the bounds of every variable
   per constraint. Results are unchanged; a problem with tens of thousands
   of constraints and variables validates in a second instead of minutes.
-
-- The CLI's machine-readable output (`--json` on `solve`, `validate`,
-  `recommend` and `capabilities`, and `export-schema`) is now always UTF-8
-  with `\n` newlines. On Windows, redirected to a file or a pipe, it used to
-  be encoded in the console code page (cp950, cp1252, …) with `\r\n`
-  newlines, so `capabilities --json` — whose descriptions contain an em
-  dash — did not decode as UTF-8, and a problem with a name the code page
-  cannot encode made `solve --json` fail with `UnicodeEncodeError`. The JSON
-  itself is unchanged; human-readable output and stderr are unchanged too.
-  See the Output encoding section of `docs/cli.md`.
+- The CLI's machine-readable output (`--json` on `solve`, `validate` and
+  `recommend`, the new `capabilities --json`, and `export-schema`) is now
+  always UTF-8 with `\n` newlines. On Windows, redirected to a file or a
+  pipe, it used to be encoded in the console code page (cp950, cp1252, …)
+  with `\r\n` newlines, so non-ASCII text in it did not decode as UTF-8, and
+  a problem with a name the code page cannot encode made `solve --json` fail
+  with `UnicodeEncodeError`. The JSON itself is unchanged; human-readable
+  output and stderr are unchanged too. See the Output encoding section of
+  `docs/cli.md`.
 
 ## [0.3.0] - 2026-09-22
 
@@ -1207,7 +1280,8 @@ First public release.
   truncated to `solver.top_k`. The previous wording ("how many satisfied
   every hard constraint") read as a count of raw solver rows.
 
-[Unreleased]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.1.0...v0.2.0
