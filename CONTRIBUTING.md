@@ -112,10 +112,12 @@ secrets. To cut a release:
    `tests/unit/test_registry_entry.py` (for `server.json`) and
    `tests/unit/test_documented_versions.py` (for the documentation) fail
    while any of these disagrees with `pyproject.toml`.
-2. Commit, then tag that commit `vX.Y.Z` and push the tag. The workflow
-   refuses a tag that does not match the version in `pyproject.toml`, and a
-   `server.json` whose versions do not match it either — both before it builds
-   anything.
+2. Commit, push the commit to `main`, then tag it `vX.Y.Z` and push the tag.
+   The workflow refuses a tag whose commit is not on `main`, a tag that does
+   not match the version in `pyproject.toml`, and a `server.json` whose
+   versions do not match it either — all before it builds anything. It also
+   runs the whole CI workflow again on the tagged commit, and nothing is
+   published until every CI job has passed.
 3. Approve the `pypi` environment run on GitHub if the environment requires a
    reviewer, then check <https://pypi.org/project/annealbridge/>.
 4. The registry job then waits for that version to become visible on PyPI and

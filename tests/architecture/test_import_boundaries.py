@@ -12,6 +12,13 @@ lives in ``dwave.cloud``.  A module-level import there is still a violation.
 Since the 2026-09-09 review F-10 the exemption belongs to ``ocean.py`` and
 not to ``solvers/metadata.py``: the shared metadata module knows no vendor
 at all, so reading the Ocean config moved to the one D-Wave-aware module.
+
+The detector (``_imported_modules``) sees every import form: ``import a.b``,
+absolute and relative ``from X import n`` (reporting both ``X`` and ``X.n``,
+so ``from annealbridge import config`` and ``from .. import config`` are
+caught), and dynamic ``importlib.import_module`` / ``import_module`` /
+``__import__`` calls with a string-constant module name.  Relative names are
+resolved against the package of the scanned file.
 """
 
 import ast
@@ -61,13 +68,78 @@ def _is_exempt(relative_to_src: str, module: str, in_function: bool) -> bool:
     )
 
 
-def _imported_modules(tree: ast.AST):
-    """Yield ``(lineno, module_name, in_function)`` for every absolute import."""
+def _package_of(py_file: Path) -> str:
+    """Dotted package that relative imports in ``py_file`` resolve against.
+
+    For ``pkg/__init__.py`` that is ``pkg`` itself (the directory it sits in);
+    for any other module ``pkg/mod.py`` it is the enclosing package ``pkg``.
+    Both cases are therefore the file's parent directory under ``SRC_ROOT``.
+    """
+    relative = py_file.resolve().relative_to(SRC_ROOT)
+    return ".".join(["annealbridge", *relative.parent.parts])
+
+
+def _resolve_module(module: str | None, level: int, package: str) -> str:
+    """Absolute module name for ``module`` at relative ``level`` within ``package``."""
+    if not level:
+        return module or ""
+    parts = package.split(".")
+    base = parts[: len(parts) - level + 1]
+    return ".".join(base + ([module] if module else []))
+
+
+def _import_from_module(node: ast.ImportFrom, package: str) -> str:
+    """Absolute module named by a ``from ... import`` statement."""
+    return _resolve_module(node.module, node.level, package)
+
+
+# Call forms treated as dynamic imports when the first positional argument is
+# a string constant: ``importlib.import_module(...)``, a bare
+# ``import_module(...)`` (after ``from importlib import import_module``) and
+# ``__import__(...)``.
+_DYNAMIC_IMPORT_FUNCTIONS = {"import_module", "__import__"}
+
+
+def _dynamic_import_target(node: ast.Call) -> str | None:
+    """The literal module name of a dynamic import call, or ``None``."""
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        if not (
+            func.attr == "import_module"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "importlib"
+        ):
+            return None
+    elif not (isinstance(func, ast.Name) and func.id in _DYNAMIC_IMPORT_FUNCTIONS):
+        return None
+    if not node.args:
+        return None
+    first = node.args[0]
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value
+    return None
+
+
+def _imported_modules(tree: ast.AST, package: str):
+    """Yield ``(lineno, module_name, in_function)`` for every import in ``tree``.
+
+    * ``import a.b`` reports ``a.b``.
+    * ``from X import n`` (absolute, or relative resolved against ``package``)
+      reports ``X`` and ``X.n`` for every alias, because ``n`` may itself be
+      a submodule (``from annealbridge import config``). ``import *`` adds no
+      ``X.*`` entry.
+    * ``importlib.import_module("m")``, ``import_module("m")`` and
+      ``__import__("m")`` report ``m`` when the first positional argument is a
+      string constant; a leading ``.`` is resolved against ``package``. Calls
+      with any other first argument are ignored.
+
+    ``in_function`` is True for statements and calls inside a function body.
+    """
     function_scoped: set[ast.AST] = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for child in ast.walk(node):
-                if isinstance(child, (ast.Import, ast.ImportFrom)):
+                if isinstance(child, (ast.Import, ast.ImportFrom, ast.Call)):
                     function_scoped.add(child)
 
     for node in ast.walk(tree):
@@ -75,9 +147,89 @@ def _imported_modules(tree: ast.AST):
             for alias in node.names:
                 yield node.lineno, alias.name, node in function_scoped
         elif isinstance(node, ast.ImportFrom):
-            # Relative imports (level > 0) resolve inside the package itself.
-            if node.level == 0 and node.module is not None:
-                yield node.lineno, node.module, node in function_scoped
+            module = _import_from_module(node, package)
+            in_function = node in function_scoped
+            yield node.lineno, module, in_function
+            for alias in node.names:
+                if alias.name != "*":
+                    yield node.lineno, f"{module}.{alias.name}", in_function
+        elif isinstance(node, ast.Call):
+            target = _dynamic_import_target(node)
+            if target is None:
+                continue
+            stripped = target.lstrip(".")
+            level = len(target) - len(stripped)
+            module = _resolve_module(stripped or None, level, package)
+            yield node.lineno, module, node in function_scoped
+
+
+def test_import_detector_recognises_every_form() -> None:
+    """Guard ``_imported_modules`` so the rules below cannot silently go blind."""
+    source = (
+        "import mcp.server\n"  # 1
+        "import dwave.cloud as cloud\n"  # 2
+        "from a.b import c\n"  # 3
+        "from annealbridge import config\n"  # 4
+        "from .. import config\n"  # 5
+        "from ..config.settings import Settings\n"  # 6
+        "from . import x\n"  # 7
+        "def f():\n"  # 8
+        "    import annealbridge.interfaces.cli\n"  # 9
+        "    importlib.import_module('mcp.server')\n"  # 10
+        "import_module('annealbridge.interfaces')\n"  # 11
+        "__import__('dwave.cloud')\n"  # 12
+        "import_module('.config', 'annealbridge.solvers')\n"  # 13
+        "import_module(name)\n"  # 14
+        "__import__(f'{prefix}.x')\n"  # 15
+        "from os.path import *\n"  # 16
+        "importlib.import_module()\n"  # 17
+    )
+    found = sorted(
+        _imported_modules(ast.parse(source), "annealbridge.solvers.sub")
+    )
+    assert found == [
+        (1, "mcp.server", False),
+        (2, "dwave.cloud", False),
+        (3, "a.b", False),
+        (3, "a.b.c", False),
+        (4, "annealbridge", False),
+        (4, "annealbridge.config", False),
+        (5, "annealbridge.solvers", False),
+        (5, "annealbridge.solvers.config", False),
+        (6, "annealbridge.solvers.config.settings", False),
+        (6, "annealbridge.solvers.config.settings.Settings", False),
+        (7, "annealbridge.solvers.sub", False),
+        (7, "annealbridge.solvers.sub.x", False),
+        (9, "annealbridge.interfaces.cli", True),
+        (10, "mcp.server", True),
+        (11, "annealbridge.interfaces", False),
+        (12, "dwave.cloud", False),
+        (13, "annealbridge.solvers.sub.config", False),
+        (16, "os.path", False),
+    ]
+
+
+def test_import_detector_resolves_relative_imports_from_the_top_package() -> None:
+    """``from .. import config`` in a first-level module reaches the real config."""
+    source = "from .. import config\nimport_module('..interfaces')\n"
+    found = sorted(_imported_modules(ast.parse(source), "annealbridge.solvers"))
+    assert found == [
+        (1, "annealbridge", False),
+        (1, "annealbridge.config", False),
+        (2, "annealbridge.interfaces", False),
+    ]
+    assert all(_is_banned(module) for _, module, _ in found[1:])
+
+
+def test_package_of_follows_the_file_location() -> None:
+    assert _package_of(SRC_ROOT / "solvers" / "ocean.py") == "annealbridge.solvers"
+    assert _package_of(SRC_ROOT / "solvers" / "__init__.py") == "annealbridge.solvers"
+    assert _package_of(SRC_ROOT / "interrupt.py") == "annealbridge"
+    assert _package_of(SRC_ROOT / "__init__.py") == "annealbridge"
+    assert (
+        _package_of(SRC_ROOT / "interfaces" / "mcp" / "tools.py")
+        == "annealbridge.interfaces.mcp"
+    )
 
 
 def test_core_packages_do_not_import_banned_modules() -> None:
@@ -91,7 +243,9 @@ def test_core_packages_do_not_import_banned_modules() -> None:
             scanned_files += 1
             relative_to_src = py_file.relative_to(SRC_ROOT).as_posix()
             tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
-            for lineno, module, in_function in _imported_modules(tree):
+            for lineno, module, in_function in _imported_modules(
+                tree, _package_of(py_file)
+            ):
                 if _is_banned(module) and not _is_exempt(
                     relative_to_src, module, in_function
                 ):
@@ -126,7 +280,9 @@ def test_validation_does_not_import_upper_layers() -> None:
     for py_file in sorted((SRC_ROOT / "validation").rglob("*.py")):
         scanned_files += 1
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
-        for lineno, module, _in_function in _imported_modules(tree):
+        for lineno, module, _in_function in _imported_modules(
+            tree, _package_of(py_file)
+        ):
             if any(
                 module == banned or module.startswith(banned + ".")
                 for banned in VALIDATION_UPPER_LAYERS
@@ -162,7 +318,9 @@ def test_compiler_does_not_import_penalty() -> None:
     for py_file in sorted((SRC_ROOT / "compiler").rglob("*.py")):
         scanned_files += 1
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
-        for lineno, module, _in_function in _imported_modules(tree):
+        for lineno, module, _in_function in _imported_modules(
+            tree, _package_of(py_file)
+        ):
             if any(
                 module == banned or module.startswith(banned + ".")
                 for banned in COMPILER_FORBIDDEN
@@ -213,7 +371,9 @@ def test_orchestration_does_not_import_concrete_backends() -> None:
     violations: list[str] = []
     for py_file in _orchestration_files():
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
-        for lineno, module, _in_function in _imported_modules(tree):
+        for lineno, module, _in_function in _imported_modules(
+            tree, _package_of(py_file)
+        ):
             if any(
                 module == banned or module.startswith(banned + ".")
                 for banned in CONCRETE_BACKEND_MODULES
@@ -296,12 +456,7 @@ def _compiler_package_imports(tree: ast.AST, package: str):
                 if _is_compiler_module(alias.name):
                     yield node.lineno, alias.name
         elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                parts = package.split(".")
-                base = parts[: len(parts) - node.level + 1]
-                module = ".".join(base + ([node.module] if node.module else []))
-            else:
-                module = node.module or ""
+            module = _import_from_module(node, package)
             if _is_compiler_module(module):
                 yield node.lineno, module
             else:
@@ -377,7 +532,9 @@ def test_no_third_party_http_package_is_imported_anywhere() -> None:
     for py_file in sorted(SRC_ROOT.rglob("*.py")):
         scanned_files += 1
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
-        for lineno, module, _in_function in _imported_modules(tree):
+        for lineno, module, _in_function in _imported_modules(
+            tree, _package_of(py_file)
+        ):
             if module.split(".")[0] in BANNED_HTTP_PACKAGES:
                 relative = py_file.relative_to(SRC_ROOT.parent.parent)
                 violations.append(f"{relative}:{lineno} -> {module}")

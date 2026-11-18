@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The schema description of `solver.leap_hybrid_bqm.time_limit_seconds` and
+  `docs/problem-format.md` now state what both hybrid backends have always
+  done: a value below the sampler's minimum for the model is raised to that
+  minimum and reported in `metadata.effective_time_limit_seconds`. Only the
+  text changed; it was documented for `leap_hybrid_cqm` alone.
+- `ANNEALBRIDGE_ENABLED_BACKENDS`: a name that matches no registered backend
+  is still accepted, but is now listed in a WARNING at startup instead of
+  silently enabling nothing.
+
+### Fixed
+
+- CLI: a problem file that is not UTF-8 (a UTF-16 file written by Windows
+  PowerShell 5.1 `>` or `Out-File`, for instance) printed a traceback and
+  exited `1`. It is now reported like any other unusable input, on one stderr
+  line with exit code `2`, with a hint to save the file as UTF-8 when it
+  starts with a UTF-16 byte-order mark. The message for stdin and for a file
+  is the same and gives the offset of the first undecodable byte, never the
+  bytes.
+- Settings errors no longer echo a rejected `ANNEALBRIDGE_LIMITS` value (the
+  message ended in `(got <value>)` under a header saying values are not
+  echoed), no longer upper-case a key of that JSON object
+  (`ANNEALBRIDGE_LIMITS.iterations`, not `.ITERATIONS`), and drop pydantic's
+  `Value error, ` prefix.
+- MCP: the tools parsed the submitted problem and assembled the capabilities
+  view on the event loop, so a large document stalled every other request
+  and progress notification of the server for as long as it took to parse.
+  Both now run on a worker thread, like the validation, recommendation and
+  solve that follow. Results, timing and cancellation are unchanged.
+- `annealbridge-mcp` / `annealbridge mcp`: an installed `mcp` package too old
+  for this version printed an `ImportError` traceback. It is now reported on
+  one stderr line with an upgrade hint and exit code `2`, as a missing
+  `[mcp]` extra is.
+- Docs: `docs/limitations.md` attributed "typically returns a single sample"
+  to both Leap hybrid backends; it applies to `leap_hybrid_bqm`. The
+  `integer_knapsack` example output in `docs/cli.md` was missing its
+  `Optimality proven: yes` line.
+- `fujitsu_da`: a vendor response nested too deeply for the JSON parser
+  raised an unclassified `RecursionError`. It is now the same
+  `REMOTE_SOLVER_ERROR` as any other response that is not valid JSON.
+
+### Security
+
+- `fujitsu_da` no longer follows HTTP redirects. The standard library's
+  default handling repeated the request — `X-Api-Key` header included —
+  against whatever host the `Location` header named, without checking that
+  the host was unchanged or that the scheme was still `https`. A 3xx answer
+  is now reported as `REMOTE_SOLVER_ERROR` (`HTTP <status>: redirect not
+  followed`) and nothing is sent to the redirect target. An endpoint
+  configured through `FUJITSU_DA_URL` must therefore answer directly.
+- `fujitsu_da`: the `job_id` the vendor returns is percent-encoded before it
+  is placed in the status and delete request paths, so it can no longer
+  change the path those requests (which carry the API key) are sent to. A
+  `job_id` of `.` or `..` is refused as a response without a usable job ID.
+- `fujitsu_da`: a response body larger than 64 MiB is refused with
+  `REMOTE_SOLVER_ERROR` instead of being read and parsed without bound. The
+  body is neither truncated nor quoted; the message names the limit and
+  suggests requesting fewer solutions (`num_output_solution` × `num_group`).
+  A result that large was accepted before.
+- Release workflow: `mcp-publisher`, which runs with the OIDC identity that
+  publishes to the MCP Registry, was downloaded from `releases/latest` and
+  executed unverified. It is now pinned to one release and checked with
+  `sha256sum -c` before it is unpacked.
+- Release workflow: a pushed tag was built and published without any test
+  having run on it. The workflow now runs the whole CI workflow on the tagged
+  commit and publishes only when every job passes, and refuses a tag whose
+  commit is not on `main`.
+- All workflows: the GitHub token is read-only by default
+  (`permissions: contents: read`) and every action is pinned to a full commit
+  SHA. The release build pins `build` and `twine` to exact versions and no
+  longer uses a pip cache.
+
+### Development
+
+- Tests no longer depend on the developer machine's configuration: an autouse
+  fixture removes every `ANNEALBRIDGE_*` variable and points Ocean at an
+  empty config file, so an exported setting or a `dwave.conf` holding a token
+  cannot change a result.
+- A skipped or xfailed test without the `remote` marker now fails the run;
+  the "no skip, no xfail" rule was a convention before.
+- Architecture tests: the import-boundary check now also sees relative
+  imports, `from annealbridge import <package>` and dynamic imports with a
+  literal module name; the backend-name check reads the names from the
+  registry and scans all of `interfaces/` and `config/`.
+
 ## [0.4.0] - 2026-09-29
 
 ### Upgrade notes

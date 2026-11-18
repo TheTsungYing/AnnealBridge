@@ -17,7 +17,11 @@ server it starts on `127.0.0.1`, with the proxy variables cleared so the
 request cannot be routed anywhere else.
 
 The full default suite runs with **no skip and no xfail**. The only skips the
-project allows anywhere are the opt-in live tests below.
+project allows anywhere are the opt-in live tests below. This is enforced, not
+just expected: hooks in `tests/conftest.py` turn a run into a failure when a
+test that does not carry the `remote` marker is skipped or xfailed, and list
+the offending tests at the end of the output. The check is made per test, so
+it applies equally to a single file or a `-k` selection.
 
 ## Live remote tests
 
@@ -50,6 +54,15 @@ removes every declared vendor credential variable from the environment, so a
 developer with `DWAVE_API_TOKEN` exported still sees the same availability,
 recommendations and redaction results as CI. The live directory overrides that
 fixture with a no-op — it is the one place that needs the real credentials.
+
+A second autouse fixture hides the rest of the machine's configuration. It
+removes every `ANNEALBRIDGE_*` variable, so a setting exported in your shell —
+`ANNEALBRIDGE_ENABLED_BACKENDS`, a limit, a worker count — cannot change what
+a test sees. It also points `DWAVE_CONFIG_FILE` at an empty temporary file and
+removes `DWAVE_PROFILE`, so Ocean reads that file instead of a `dwave.conf`
+on the machine and a token stored there never reaches a test. This one applies
+to the live tests too: they authenticate through `DWAVE_API_TOKEN` only. A
+test that needs any of these variables sets it itself.
 
 ## Test directories
 
@@ -161,7 +174,10 @@ bit for bit identical to `examples/tsp.json` once `x_a_0` is read as `x[a,0]`.
 
 - **No `skip`, no `xfail`.** Neither may be used to hide a real bug. The one
   exception is the live-test opt-in guard, which prevents accidental paid-quota
-  consumption rather than hiding a failure.
+  consumption rather than hiding a failure. `tests/conftest.py` fails the run
+  on any other skip or xfail, and
+  `tests/architecture/test_suite_policy.py` checks both that guard and that
+  every live test module carries the `remote` marker the exception relies on.
 - **Scenario tests run the whole pipeline.** A scenario starts from problem
   JSON and goes through `OptimizationService`; calling an internal function
   directly and labelling it an integration test does not count.
@@ -223,13 +239,26 @@ Runs on `push` and `pull_request`. Four jobs:
 
 ### `release.yml` — publishing
 
-Runs on a pushed `v*` tag, or by hand. It first refuses a tag that does not
-match the version in `pyproject.toml`, or a `server.json` whose versions
-disagree with it; then it builds the sdist and the wheel and publishes them to
-PyPI and to the MCP Registry through PyPI Trusted Publishing and GitHub OIDC,
-so no API token is stored. A manual run publishes to TestPyPI instead. The
-steps for cutting a release are in
+Runs on a pushed `v*` tag, or by hand. It first refuses a tag whose commit is
+not on `main`, a tag that does not match the version in `pyproject.toml`, or a
+`server.json` whose versions disagree with it; then it builds the sdist and
+the wheel and publishes them to PyPI and to the MCP Registry through PyPI
+Trusted Publishing and GitHub OIDC, so no API token is stored. A manual run
+publishes to TestPyPI instead. The steps for cutting a release are in
 [CONTRIBUTING.md](../CONTRIBUTING.md#releasing).
+
+Nothing is published on the strength of an earlier CI run. The workflow calls
+`ci.yml` itself, so every job described above runs again on the commit being
+released, and both publish jobs wait for all of them to pass.
+
+The release path is pinned end to end. In all three workflows the GitHub
+token is read-only by default (`permissions: contents: read`; only the publish
+jobs ask for `id-token: write`) and every action is referenced by a full
+commit SHA, with its release in a trailing comment. The release build
+installs exact versions of `build` and `twine` without a pip cache, and
+`mcp-publisher` is downloaded from one pinned release and verified with
+`sha256sum -c` before it runs. To upgrade any of these, change the pin and its
+comment — for `mcp-publisher`, the version and the checksum — together.
 
 ### `remote-live.yml` — manual only
 

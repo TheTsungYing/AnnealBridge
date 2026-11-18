@@ -133,7 +133,9 @@ class TestBoundU:
         # 1000 x 1000 = 10^6 already passes the ceiling; the product stops there.
         assert refused(result) == u_error(1_000_000, 250_000, "variable_families[0]")
         assert peak < 1 * MIB, peak
-        assert elapsed < 0.2, elapsed
+        # The memory bound is the proof that nothing was iterated; the wall
+        # clock is only a loose backstop, kept generous for loaded CI runners.
+        assert elapsed < 2.0, elapsed
 
     def test_the_path_is_the_entry_that_first_passes_the_ceiling(self):
         """A small family first, then a template of 10⁹ bindings."""
@@ -161,7 +163,9 @@ class TestBoundU:
             1_001_000, 250_000, "objective.linear_term_templates[0]"
         )
         assert peak < 1 * MIB, peak
-        assert elapsed < 0.2, elapsed
+        # The memory bound is the proof that nothing was iterated; the wall
+        # clock is only a loose backstop, kept generous for loaded CI runners.
+        assert elapsed < 2.0, elapsed
 
     def test_a_constraint_template_counts_outer_times_members(self):
         """Π(outer) × (1 + Σ Π(member)): 1000 × (1 + 1000) > 250,000."""
