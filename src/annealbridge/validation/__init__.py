@@ -7,6 +7,7 @@ from annealbridge.validation.expansion import (
 )
 from annealbridge.validation.problem_validator import (
     ProblemValidationResult,
+    ValidationCache,
     validate_expanded,
     validate_problem,
     validate_problem_full,
@@ -38,6 +39,7 @@ __all__ = [
     "ExpandedProblem",
     "ProblemValidationResult",
     "RELATIVE_TOLERANCE",
+    "ValidationCache",
     "expand_problem",
     "satisfies",
     "tolerance",

@@ -23,7 +23,7 @@ internal ``__slack_total`` pseudo-variable below.
 """
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from annealbridge.models import (
@@ -248,7 +248,12 @@ def _max_abs_affine(
     return max(abs(lhs_min + constant), abs(lhs_max + constant))
 
 
-def compute_soft_energy_bound(constraint: Constraint, bounds: Bounds | None = None) -> float:
+def compute_soft_energy_bound(
+    constraint: Constraint,
+    bounds: Bounds | None = None,
+    *,
+    analysis: "InequalityAnalysis | None" = None,
+) -> float:
     """Upper bound on the energy one soft constraint can add to the BQM.
 
     Mirrors the compiler's squared form (spec §10.2): ``weight * (sum(a_i x_i)
@@ -268,6 +273,10 @@ def compute_soft_energy_bound(constraint: Constraint, bounds: Bounds | None = No
 
     Returns ``0.0`` for a hard constraint: hard penalties are chosen by the
     penalty strategy, never bounded by a weight (spec §10.4).
+
+    ``analysis`` is the caller's already-computed
+    ``analyze_inequality(constraint, bounds)`` for *this* inequality under
+    *these* bounds, as for :func:`count_slack_bits`.
     """
     if constraint.type != "soft" or constraint.weight is None:
         return 0.0
@@ -278,7 +287,8 @@ def compute_soft_energy_bound(constraint: Constraint, bounds: Bounds | None = No
         deviation = _max_abs_affine(coefficients, -constraint.rhs, bounds)
         return weight * deviation * deviation
 
-    analysis = analyze_inequality(constraint, bounds)
+    if analysis is None:
+        analysis = analyze_inequality(constraint, bounds)
     if analysis.redundant:
         return 0.0
     slack_range = analysis.slack_range
@@ -313,7 +323,12 @@ def compute_penalty_scale(problem: OptimizationProblem) -> float:
     return compute_objective_scale(problem.objective, bounds) + soft_bound
 
 
-def compute_soft_energy_total(problem: OptimizationProblem, bounds: Bounds | None = None) -> float:
+def compute_soft_energy_total(
+    problem: OptimizationProblem,
+    bounds: Bounds | None = None,
+    *,
+    problem_analysis: "ProblemAnalysis | None" = None,
+) -> float:
     """Sum of :func:`compute_soft_energy_bound` over every constraint.
 
     The soft part of :func:`compute_penalty_scale`, on its own so the problem
@@ -321,9 +336,21 @@ def compute_soft_energy_total(problem: OptimizationProblem, bounds: Bounds | Non
     of walking the objective a second time (2026-11-18 review R-11). The
     summation order is the one ``compute_penalty_scale`` always used, so the
     penalty scale is the same float bit for bit.
+
+    With ``problem_analysis`` (see :class:`ProblemAnalysis`) its bounds,
+    constraints and analyses are used and ``bounds`` is not read.
     """
+    if problem_analysis is None:
+        return sum(
+            compute_soft_energy_bound(constraint, bounds)
+            for constraint in problem.all_constraints()
+        )
+    problem.require_expanded("compute_soft_energy_total")
     return sum(
-        compute_soft_energy_bound(constraint, bounds) for constraint in problem.all_constraints()
+        compute_soft_energy_bound(constraint, problem_analysis.bounds, analysis=analysis)
+        for constraint, analysis in zip(
+            problem_analysis.all_constraints, problem_analysis.inequalities, strict=True
+        )
     )
 
 
@@ -452,6 +479,80 @@ def analyze_inequality(
     )
 
 
+@dataclass(frozen=True)
+class ProblemAnalysis:
+    """Every constraint of one problem with its inequality analysis.
+
+    What :func:`count_slack_bits` takes for one constraint (``analysis=``),
+    for a whole problem: the caller builds it once with
+    :func:`analyze_problem` and hands it to each estimate, so a constraint
+    is lowered and analysed once however many estimates read it (2026-11-18
+    review R-06). ``all_constraints`` is one ``problem.all_constraints()``
+    list and ``inequalities`` is aligned with it: the
+    ``analyze_inequality(constraint, bounds)`` of an inequality, ``None``
+    for an equality.
+
+    Only a way to pass results along: every function that accepts it
+    returns exactly what it returns without it. It describes the problem as
+    it was when built, so it must not outlive the call that built it.
+    """
+
+    bounds: Bounds
+    all_constraints: Sequence[Constraint]
+    inequalities: Sequence[InequalityAnalysis | None]
+
+
+def analyze_problem(
+    problem: OptimizationProblem,
+    *,
+    bounds: Bounds | None = None,
+    constraints: Sequence[Constraint] | None = None,
+) -> ProblemAnalysis:
+    """Analyse every inequality of ``problem`` once (see :class:`ProblemAnalysis`).
+
+    ``bounds`` and ``constraints`` are the caller's already-computed
+    ``variable_bounds(problem)`` and ``problem.all_constraints()``; either
+    is computed here when left out. Like every estimate, only meaningful
+    after the validator's error pass, and refused for a problem whose
+    templates are not expanded.
+    """
+    problem.require_expanded("analyze_problem")
+    bounds = variable_bounds(problem) if bounds is None else bounds
+    constraints = problem.all_constraints() if constraints is None else constraints
+    return ProblemAnalysis(
+        bounds=bounds,
+        all_constraints=constraints,
+        inequalities=[
+            analyze_inequality(constraint, bounds)
+            if constraint.operator in ("<=", ">=")
+            else None
+            for constraint in constraints
+        ],
+    )
+
+
+def _problem_view(
+    problem: OptimizationProblem, problem_analysis: ProblemAnalysis | None
+) -> tuple[Bounds, Sequence[Constraint], Sequence[InequalityAnalysis | None] | None]:
+    """``(bounds, constraints, analyses)`` for an estimate.
+
+    From ``problem_analysis`` when the caller has one; otherwise computed
+    from the problem, with no analyses, so the estimate analyses each
+    inequality itself exactly as it did before the parameter existed.
+    Either way a problem whose templates are not expanded is refused: the
+    analysis stands in for ``variable_bounds`` and ``all_constraints()``,
+    so it keeps their guard (schema 1.3 spec §14.12).
+    """
+    if problem_analysis is None:
+        return variable_bounds(problem), problem.all_constraints(), None
+    problem.require_expanded("an estimate")
+    return (
+        problem_analysis.bounds,
+        problem_analysis.all_constraints,
+        problem_analysis.inequalities,
+    )
+
+
 def uses_pairwise_penalty(constraint: Constraint) -> bool:
     """Whether the BQM path encodes ``constraint`` as a pairwise penalty.
 
@@ -551,7 +652,9 @@ def constraint_bit_count(
     return business_bits + count_slack_bits(constraint, bounds, analysis=analysis)
 
 
-def estimate_compiled_variables(problem: OptimizationProblem) -> int:
+def estimate_compiled_variables(
+    problem: OptimizationProblem, *, problem_analysis: ProblemAnalysis | None = None
+) -> int:
     """Estimate the BQM-path compiled variable count (3b §8).
 
     ``binary variables + sum(integer encoding bits) + sum(slack bits)`` —
@@ -559,23 +662,30 @@ def estimate_compiled_variables(problem: OptimizationProblem) -> int:
     ``validate_problem`` this equals ``BQMCompiler.compile(...).num_variables``
     exactly: the compiler adds one bit per binary variable, the encoding
     bits of every integer variable, and one variable per slack bit.
+
+    ``problem_analysis`` is the caller's :func:`analyze_problem` of this
+    problem, when it has one; the result is the same either way.
     """
-    bounds = variable_bounds(problem)
+    bounds, constraints, analyses = _problem_view(problem, problem_analysis)
     declared = sum(
         integer_encoding_bits(*bounds[name])
         for name in {variable.name for variable in problem.variables}
     )
     slack_bits = 0
-    for constraint in problem.all_constraints():
+    for index, constraint in enumerate(constraints):
         if constraint.operator in ("<=", ">="):
-            analysis = analyze_inequality(constraint, bounds)
+            analysis = (
+                analyze_inequality(constraint, bounds) if analyses is None else analyses[index]
+            )
             slack_bits += count_slack_bits(constraint, bounds, analysis=analysis)
         else:
             slack_bits += count_slack_bits(constraint, bounds)
     return declared + slack_bits
 
 
-def estimate_cqm_variables(problem: OptimizationProblem) -> int:
+def estimate_cqm_variables(
+    problem: OptimizationProblem, *, problem_analysis: ProblemAnalysis | None = None
+) -> int:
     """Estimate the CQM-path compiled variable count (3b §9.4, §15.3).
 
     Every declared variable is native, so the count is ``len(variables)``
@@ -585,16 +695,20 @@ def estimate_cqm_variables(problem: OptimizationProblem) -> int:
     positive slack range. Hard constraints, equalities, binary-only soft
     constraints and clamped (``slack_range <= 0``) ones add nothing. For an
     all-binary problem this is the plain variable count, as in 3a.
+
+    ``problem_analysis`` is the caller's :func:`analyze_problem` of this
+    problem, when it has one; the result is the same either way.
     """
-    bounds = variable_bounds(problem)
+    bounds, constraints, analyses = _problem_view(problem, problem_analysis)
     integer_names = {
         variable.name for variable in problem.variables if variable.type == "integer"
     }
     slack_variables = 0
-    for constraint in problem.all_constraints():
+    for index, constraint in enumerate(constraints):
         if constraint.type != "soft" or constraint.operator not in ("<=", ">="):
             continue
-        analysis = analyze_inequality(constraint, bounds)
+        analysis = analyze_inequality(constraint, bounds) if analyses is None else analyses[index]
+        assert analysis is not None  # an inequality always has an analysis
         if analysis.redundant or analysis.slack_range is None:
             continue
         if analysis.slack_range <= 0:
@@ -605,7 +719,12 @@ def estimate_cqm_variables(problem: OptimizationProblem) -> int:
     return len(problem.variables) + slack_variables
 
 
-def estimate_model_variables(problem: OptimizationProblem, model_type: ModelType) -> int:
+def estimate_model_variables(
+    problem: OptimizationProblem,
+    model_type: ModelType,
+    *,
+    problem_analysis: ProblemAnalysis | None = None,
+) -> int:
     """Compiled variable count of the path a backend's ``model_type`` takes.
 
     Dispatches to :func:`estimate_compiled_variables` (``"bqm"``) or
@@ -614,14 +733,17 @@ def estimate_model_variables(problem: OptimizationProblem, model_type: ModelType
     ``compile(...).num_variables`` exactly (pinned by the compiler tests),
     which is what lets the service refuse an over-limit exhaustive solve
     *before* compiling (2026-09-09 review F-14) and the validator and
-    routing report the same number.
+    routing report the same number. ``problem_analysis`` is handed on to
+    whichever of the two is called.
     """
     if model_type == "bqm":
-        return estimate_compiled_variables(problem)
-    return estimate_cqm_variables(problem)
+        return estimate_compiled_variables(problem, problem_analysis=problem_analysis)
+    return estimate_cqm_variables(problem, problem_analysis=problem_analysis)
 
 
-def estimate_encoded_interactions(problem: OptimizationProblem) -> int:
+def estimate_encoded_interactions(
+    problem: OptimizationProblem, *, problem_analysis: ProblemAnalysis | None = None
+) -> int:
     """Upper bound on the quadratic interactions the BQM path produces (3b §8).
 
     Binary-encoding an integer variable turns every product it takes part
@@ -631,8 +753,11 @@ def estimate_encoded_interactions(problem: OptimizationProblem) -> int:
     squared penalty couples all of its :func:`constraint_bit_count` bits
     ``B`` pairwise, ``B * (B - 1) / 2``. Drives the INTEGER_QUADRATIC_BLOWUP
     warning; it deliberately ignores that different terms may share a pair.
+
+    ``problem_analysis`` is the caller's :func:`analyze_problem` of this
+    problem, when it has one; the result is the same either way.
     """
-    bounds = variable_bounds(problem)
+    bounds, constraints, analyses = _problem_view(problem, problem_analysis)
     bits = {name: integer_encoding_bits(lower, upper) for name, (lower, upper) in bounds.items()}
 
     total = 0
@@ -643,10 +768,13 @@ def estimate_encoded_interactions(problem: OptimizationProblem) -> int:
             total += bits_1 * (bits_1 - 1) // 2
         else:
             total += bits_1 * bits_2
-    for constraint in problem.all_constraints():
+    for index, constraint in enumerate(constraints):
         analysis: InequalityAnalysis | None = None
         if constraint.operator in ("<=", ">="):
-            analysis = analyze_inequality(constraint, bounds)
+            analysis = (
+                analyze_inequality(constraint, bounds) if analyses is None else analyses[index]
+            )
+            assert analysis is not None  # an inequality always has an analysis
             if analysis.redundant:
                 continue
         clique = constraint_bit_count(constraint, bounds, analysis=analysis)

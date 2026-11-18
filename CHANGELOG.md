@@ -45,6 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ANNEALBRIDGE_ENABLED_BACKENDS`: a name that matches no registered backend
   is still accepted, but is now listed in a WARNING at startup instead of
   silently enabling nothing.
+- `recommend` validates the backend-independent part of a problem once, not
+  once per backend, and one validation analyses each inequality once. Output
+  is unchanged, log lines included. Measured on a problem with 3,000 binary
+  variables and 3,000 hard inequalities, `recommend` took about 105 ms instead
+  of 960 and `validate` about 58 ms instead of 103. For Python callers:
+  `validate_expanded` takes an optional `cache` (new `ValidationCache`, one
+  per expansion and per call; another expansion raises `ValueError`), and the
+  estimates in `validation.estimates` take an optional `problem_analysis`
+  (new `ProblemAnalysis`, built by `analyze_problem`).
 
 ### Fixed
 

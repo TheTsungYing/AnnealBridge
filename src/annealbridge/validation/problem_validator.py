@@ -17,11 +17,19 @@ for hard ones, so the compilers never disagree with this module.
 Backend-dependent advice is driven purely by the injected
 ``SolverCapabilities`` declaration (3a §9): this module never names a
 backend, never reads policy and never imports ``solvers`` (spec §4).
+
+Within one call everything that does not depend on the backend is computed
+once and held in a :class:`ValidationCache` (2026-11-18 review R-06); a
+caller validating one problem against several backends passes its own to
+:func:`validate_expanded` so they share it. The cache changes how often
+something is computed, never what is reported.
 """
 
 import logging
 import math
 from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
@@ -40,8 +48,9 @@ from annealbridge.models import (
 from annealbridge.models.reflection import is_number_type, model_class, union_members
 from annealbridge.validation.estimates import (
     Bounds,
+    ProblemAnalysis,
     accumulate_terms,
-    analyze_inequality,
+    analyze_problem,
     compute_objective_scale,
     compute_soft_energy_total,
     constraint_bit_count,
@@ -276,6 +285,7 @@ def _collect(
     errors: list[SolveError] | None = None,
     *,
     duplicate_terms: bool = True,
+    cache: "ValidationCache | None" = None,
 ) -> tuple[list[SolveError], list[SolveError]]:
     """Single error pass plus the spec §8 duplicate-term warnings.
 
@@ -284,6 +294,8 @@ def _collect(
     append to (a fresh one by default; :func:`validate_expanded` passes its
     bounded collector), and ``duplicate_terms=False`` leaves the duplicate
     terms to :func:`validate_expanded`, which attributes them to templates.
+    ``cache``, when given, receives the variable bounds and the objective
+    scale a clean pass computes, for the advisory layer to reuse.
     """
     errors = [] if errors is None else errors
     known_variables = {variable.name for variable in problem.variables}
@@ -308,7 +320,12 @@ def _collect(
     _check_solver_preferences(problem, errors)
     if not errors:
         # Needs legal bounds, so only once everything above is clean.
-        _check_objective_range(problem, errors)
+        bounds = variable_bounds(problem)
+        objective_scale = compute_objective_scale(problem.objective, bounds)
+        _check_objective_range(objective_scale, errors)
+        if cache is not None:
+            cache._bounds = bounds
+            cache._objective_scale = objective_scale
 
     duplicate_warnings: list[SolveError] = []
     if duplicate_terms:
@@ -362,7 +379,7 @@ def validate_problem_full(
             model_type=model_type,
         )
     return _validate_full(
-        problem,
+        ValidationCache()._bound_to(problem),
         capabilities=capabilities,
         max_compiled_variables=max_compiled_variables,
         model_type=model_type,
@@ -370,58 +387,57 @@ def validate_problem_full(
 
 
 def _validate_full(
-    problem: OptimizationProblem,
+    cache: "ValidationCache",
     *,
     capabilities: SolverCapabilities | None,
     max_compiled_variables: int | None,
     model_type: ModelType | None,
-    errors: list[SolveError] | None = None,
-    warnings: list[SolveError] | None = None,
-    duplicate_terms: bool = True,
 ) -> ProblemValidationResult:
-    """:func:`validate_problem_full` of a problem without templates.
+    """:func:`validate_problem_full` of the problem ``cache`` is bound to.
 
-    ``errors`` / ``warnings`` / ``duplicate_terms`` are for
-    :func:`validate_expanded` only; left at their defaults this is exactly
-    the validation every 1.0 - 1.2 problem has always had.
+    The one sequence of checks for every problem, with or without
+    templates. What does not depend on the backend comes from ``cache``,
+    computed on first use; each call then continues on its own copy of the
+    collectors, so the issues of one backend are appended in the order they
+    always were (the error pass, the backend's own errors, the compiler
+    path's error; then the shared advisories, the compiler path's, the
+    backend's, the duplicate terms) and a second backend sees none of them.
+    For a templated problem the expansion's own warnings lead the list
+    (:meth:`ValidationCache._finished_warnings`).
     """
-    errors, duplicate_warnings = _collect(problem, errors, duplicate_terms=duplicate_terms)
+    problem = cache._problem
+    assert problem is not None  # bound
+    errors = _fork(cache._error_pass())
     if capabilities is not None:
         _check_seed_range(problem, capabilities, errors)
         _check_wall_clock_limit(problem, capabilities, errors)
     if errors:
-        return ProblemValidationResult(valid=False, errors=errors)
+        return ProblemValidationResult(valid=False, errors=cache._finished_errors(errors))
 
     if model_type is None:
         model_type = capabilities.preferred_model_type if capabilities else "bqm"
 
     # Safe from here on: the error pass guarantees every bound is legal.
-    bounds = variable_bounds(problem)
-    objective_scale = compute_objective_scale(problem.objective, bounds)
-    _check_soft_energy_range(problem, bounds, objective_scale, model_type, errors)
-    if errors:
-        return ProblemValidationResult(valid=False, errors=errors)
-    estimated = estimate_model_variables(problem, model_type)
+    path = cache._model_path(model_type, capabilities)
+    if path.error is not None:
+        errors.append(path.error)
+        return ProblemValidationResult(valid=False, errors=cache._finished_errors(errors))
+    assert path.estimated is not None and path.warnings is not None
 
-    warnings = [] if warnings is None else warnings
-    _warn_soft_weights(problem, objective_scale, warnings)
-    _warn_inequalities(problem, bounds, warnings)
-    _warn_constraint_ranges(problem, bounds, warnings)
-    _warn_cardinality_form(problem, model_type, warnings)
-    _warn_fractional_equalities(problem, model_type, capabilities, warnings)
-    _warn_integer_encoding(problem, bounds, model_type, warnings)
+    warnings = _fork(path.warnings)
     if capabilities is not None:
-        _warn_exact_limits(estimated, capabilities, max_compiled_variables, warnings)
-        _warn_embedding_density(problem, estimated, bounds, capabilities, warnings)
+        _warn_exact_limits(path.estimated, capabilities, max_compiled_variables, warnings)
+        _warn_embedding_density(
+            path.estimated, cache._largest_constraint_bits, capabilities, warnings
+        )
         _warn_ignored_parameters(problem, capabilities, model_type, warnings)
-    warnings.extend(duplicate_warnings)
 
     return ProblemValidationResult(
         valid=True,
         errors=[],
-        warnings=warnings,
-        estimated_compiled_variables=estimated,
-        objective_scale=objective_scale,
+        warnings=cache._finished_warnings(warnings),
+        estimated_compiled_variables=path.estimated,
+        objective_scale=cache._objective_scale,
         model_type=model_type,
     )
 
@@ -433,6 +449,7 @@ def validate_expanded(
     max_compiled_variables: int | None = None,
     model_type: ModelType | None = None,
     errors_only: bool = False,
+    cache: "ValidationCache | None" = None,
 ) -> ProblemValidationResult:
     """Validate the outcome of :func:`expand_problem` (schema 1.3 spec §14.8).
 
@@ -450,48 +467,291 @@ def validate_expanded(
     Warnings -- the expansion's own ones first -- are only reported when
     there is no error at all, as for every problem. ``errors_only`` runs the
     error pass alone, as :func:`validate_problem` does.
+
+    ``cache`` is for a caller that validates the same ``expansion`` more
+    than once within one call of its own (routing: the error pass, then
+    every backend): pass the same fresh :class:`ValidationCache` each time
+    and the work that does not depend on the backend is done once. The
+    results are the ones separate calls give, log lines included.
     """
     if expansion.errors:
         return ProblemValidationResult(valid=False, errors=list(expansion.errors))
     problem = expansion.problem
     assert problem is not None  # no errors, so expanded
-    if not expansion.templated:
-        if errors_only:
-            errors, _ = _collect(problem)
-            return ProblemValidationResult(valid=not errors, errors=errors)
-        return _validate_full(
-            problem,
-            capabilities=capabilities,
-            max_compiled_variables=max_compiled_variables,
-            model_type=model_type,
-        )
-    errors = _TemplateIssues(expansion, errors=True)
+    cache = (ValidationCache() if cache is None else cache)._bound_to(problem, expansion)
     if errors_only:
-        _collect(problem, errors, duplicate_terms=False)
-        final = errors.finish()
+        final = cache._finished_errors(_fork(cache._error_pass()))
         return ProblemValidationResult(valid=not final, errors=final)
-    warnings = _TemplateIssues(expansion, errors=False)
-    result = _validate_full(
-        problem,
+    return _validate_full(
+        cache,
         capabilities=capabilities,
         max_compiled_variables=max_compiled_variables,
         model_type=model_type,
-        errors=errors,
-        warnings=warnings,
-        duplicate_terms=False,
     )
-    final_errors = errors.finish()
-    if final_errors:
-        return ProblemValidationResult(valid=False, errors=final_errors)
-    return result.model_copy(
-        update={
-            "warnings": [
-                *expansion.warnings,
-                *warnings.finish(),
-                *_template_duplicate_terms(expansion),
-            ]
-        }
-    )
+
+
+@dataclass
+class _ModelPath:
+    """What :class:`ValidationCache` holds for one compiler path.
+
+    Either the path's own ``error``, or its compiled-size estimate and the
+    advisories up to the last one that depends on nothing but the path.
+    """
+
+    error: SolveError | None = None
+    estimated: int | None = None
+    warnings: list[SolveError] | None = None
+
+
+class ValidationCache:
+    """What one validation call computes once (2026-11-18 review R-06).
+
+    Validating a problem against a backend is mostly work that does not
+    depend on the backend: the error pass, the variable bounds, the
+    objective scale, lowering and analysing every constraint, and the
+    advisories about the constraints themselves. A cache holds that work so
+    it is done once per call rather than once per check, and once per
+    ``recommend`` rather than once per backend. What depends on the compiler
+    path (the size estimate, the BQM-only checks) is held per path, keyed
+    by the model type and by whether the backend is exhaustive, so a BQM
+    result is never handed to a CQM backend. What depends on the backend
+    itself is never cached.
+
+    Create one, pass it to every :func:`validate_expanded` call that
+    validates the same expansion within one call of your own, and let it
+    go: it describes the problem as it was when first used, so it must not
+    be kept across calls, stored on the problem or shared between problems.
+    Using it for a second problem raises ``ValueError``. Without one,
+    :func:`validate_expanded` makes its own, so there is one validation
+    path either way.
+
+    Order is part of the output. The cache never merges finished lists: it
+    keeps the *collector* as it stood after each shared stage, and every
+    backend continues on a copy (:func:`_fork`), so each backend's
+    collector receives exactly the appends it always received. That is
+    what keeps the per-template caps and counts of :class:`_TemplateIssues`
+    unchanged. A duplicate objective term is still logged every time a
+    validation reports it, although it is only looked for once.
+
+    The lists of two results are never shared, but the issues in them may
+    be the same ``SolveError`` objects: an issue found once is reported by
+    every validation it applies to. Treat them as read-only.
+    """
+
+    def __init__(self) -> None:
+        self._subject: object = None
+        self._problem: OptimizationProblem | None = None
+        # Set for an expanded (templated) problem only.
+        self._expansion: ExpandedProblem | None = None
+        # The error pass.
+        self._errors: list[SolveError] | None = None
+        self._duplicate_warnings: list[SolveError] = []
+        self._bounds: Bounds | None = None
+        self._objective_scale: float | None = None
+        # The advisory layer, each part on first use.
+        self._paths: list[tuple[str, Constraint]] | None = None
+        self._analysis: ProblemAnalysis | None = None
+        self._shared_warnings: list[SolveError] | None = None
+        self._soft_energy_total: float | None = None
+        self._estimates: dict[ModelType, int] = {}
+        self._interactions: int | None = None
+        self._constraint_bits: int | None = None
+        self._model_paths: dict[tuple[ModelType, bool], _ModelPath] = {}
+        self._template_duplicates: list[SolveError] | None = None
+
+    def _bound_to(
+        self, problem: OptimizationProblem, expansion: ExpandedProblem | None = None
+    ) -> "ValidationCache":
+        """Bind to the problem on first use; refuse another one afterwards."""
+        subject: object = problem if expansion is None else expansion
+        if self._subject is None:
+            self._subject = subject
+            self._problem = problem
+            if expansion is not None and expansion.templated:
+                self._expansion = expansion
+        elif self._subject is not subject:
+            raise ValueError(
+                "a ValidationCache holds the validation of one problem; "
+                "create a new one for each problem and each call"
+            )
+        return self
+
+    def _collector(self, *, errors: bool) -> list[SolveError]:
+        """An empty issue list: bounded and path-mapping for a templated problem."""
+        if self._expansion is None:
+            return []
+        return _TemplateIssues(self._expansion, errors=errors)
+
+    def _error_pass(self) -> list[SolveError]:
+        """The collector as the error pass left it. Shared: fork it to append.
+
+        The pass runs once. A later call logs the duplicate terms again, as
+        the pass itself would have.
+        """
+        if self._errors is None:
+            problem = self._problem
+            assert problem is not None  # bound
+            errors = self._collector(errors=True)
+            # A templated problem's duplicate terms are attributed to their
+            # templates at the end (:meth:`_template_duplicate_warnings`).
+            _, self._duplicate_warnings = _collect(
+                problem, errors, duplicate_terms=self._expansion is None, cache=self
+            )
+            self._errors = errors
+        else:
+            _log_warnings(self._duplicate_warnings)
+        return self._errors
+
+    def _finished_errors(self, errors: list[SolveError]) -> list[SolveError]:
+        """A call's own error collector as the list to report."""
+        if isinstance(errors, _TemplateIssues):
+            return errors.finish()
+        return errors
+
+    def _constraints(self) -> tuple[list[tuple[str, Constraint]], ProblemAnalysis]:
+        """Every constraint with its path, and its analysis: built once."""
+        if self._paths is None or self._analysis is None:
+            problem = self._problem
+            assert problem is not None and self._bounds is not None  # clean error pass
+            self._paths = _constraint_paths(problem)
+            self._analysis = analyze_problem(
+                problem,
+                bounds=self._bounds,
+                constraints=[constraint for _, constraint in self._paths],
+            )
+        return self._paths, self._analysis
+
+    def _shared_advisories(self) -> list[SolveError]:
+        """The advisories about the constraints alone. Shared: fork to append."""
+        if self._shared_warnings is None:
+            assert self._objective_scale is not None  # clean error pass
+            paths, analysis = self._constraints()
+            warnings = self._collector(errors=False)
+            _warn_soft_weights(paths, self._objective_scale, warnings)
+            _warn_inequalities(paths, analysis, warnings)
+            _warn_constraint_ranges(paths, analysis.bounds, warnings)
+            self._shared_warnings = warnings
+        return self._shared_warnings
+
+    def _soft_energy(self) -> float:
+        if self._soft_energy_total is None:
+            problem = self._problem
+            assert problem is not None  # bound
+            self._soft_energy_total = compute_soft_energy_total(
+                problem, problem_analysis=self._constraints()[1]
+            )
+        return self._soft_energy_total
+
+    def _estimated(self, model_type: ModelType) -> int:
+        if model_type not in self._estimates:
+            problem = self._problem
+            assert problem is not None  # bound
+            self._estimates[model_type] = estimate_model_variables(
+                problem, model_type, problem_analysis=self._constraints()[1]
+            )
+        return self._estimates[model_type]
+
+    def _encoded_interactions(self) -> int:
+        if self._interactions is None:
+            problem = self._problem
+            assert problem is not None  # bound
+            self._interactions = estimate_encoded_interactions(
+                problem, problem_analysis=self._constraints()[1]
+            )
+        return self._interactions
+
+    def _largest_constraint_bits(self) -> int:
+        """The most compiled bits one constraint's penalty couples (3b §9.3)."""
+        if self._constraint_bits is None:
+            analysis = self._constraints()[1]
+            self._constraint_bits = max(
+                (
+                    constraint_bit_count(constraint, analysis.bounds, analysis=inequality)
+                    for constraint, inequality in zip(
+                        analysis.all_constraints, analysis.inequalities, strict=True
+                    )
+                ),
+                default=0,
+            )
+        return self._constraint_bits
+
+    def _model_path(
+        self, model_type: ModelType, capabilities: SolverCapabilities | None
+    ) -> _ModelPath:
+        """The compiler path's error, or its estimate and advisories so far.
+
+        Keyed by everything those depend on: the model type and, for
+        :func:`_warn_fractional_equalities`, whether the backend is
+        exhaustive. ``warnings`` is shared: fork it to append.
+        """
+        key = (model_type, capabilities is not None and capabilities.exhaustive)
+        path = self._model_paths.get(key)
+        if path is None:
+            path = self._model_paths[key] = self._build_model_path(model_type, capabilities)
+        return path
+
+    def _build_model_path(
+        self, model_type: ModelType, capabilities: SolverCapabilities | None
+    ) -> _ModelPath:
+        problem = self._problem
+        assert problem is not None and self._objective_scale is not None  # clean error pass
+        errors: list[SolveError] = []
+        _check_soft_energy_range(self._objective_scale, self._soft_energy, model_type, errors)
+        if errors:
+            return _ModelPath(error=errors[0])
+        estimated = self._estimated(model_type)
+
+        paths, analysis = self._constraints()
+        warnings = _fork(self._shared_advisories())
+        _warn_cardinality_form(problem, model_type, warnings)
+        _warn_fractional_equalities(paths, model_type, capabilities, warnings)
+        _warn_integer_encoding(
+            problem, analysis.bounds, model_type, self._encoded_interactions, warnings
+        )
+        return _ModelPath(estimated=estimated, warnings=warnings)
+
+    def _template_duplicate_warnings(self) -> list[SolveError]:
+        """:func:`_template_duplicate_terms`, computed once and logged each time."""
+        assert self._expansion is not None  # templated
+        if self._template_duplicates is None:
+            self._template_duplicates = _template_duplicate_terms(self._expansion)
+        else:
+            _log_warnings(self._template_duplicates)
+        return self._template_duplicates
+
+    def _finished_warnings(self, warnings: list[SolveError]) -> list[SolveError]:
+        """A call's own warning collector as the list to report.
+
+        The duplicate objective terms close the list. For a templated
+        problem the expansion's own warnings open it and the collector adds
+        its counts (schema 1.3 spec §14.11).
+        """
+        if self._expansion is None:
+            warnings.extend(self._duplicate_warnings)
+            return warnings
+        assert isinstance(warnings, _TemplateIssues)
+        return [
+            *self._expansion.warnings,
+            *warnings.finish(),
+            *self._template_duplicate_warnings(),
+        ]
+
+
+def _fork(issues: list[SolveError]) -> list[SolveError]:
+    """An independent copy of a collector, in the state it is in now.
+
+    Appending to the copy is appending to the original at this point of its
+    history, without the original seeing it: how several validations
+    continue from one shared stage (:class:`ValidationCache`).
+    """
+    if isinstance(issues, _TemplateIssues):
+        return issues.fork()
+    return list(issues)
+
+
+def _log_warnings(warnings: list[SolveError]) -> None:
+    for warning in warnings:
+        logger.warning("%s", warning.message)
 
 
 class _TemplateIssues(list):
@@ -554,6 +814,25 @@ class _TemplateIssues(list):
 
     def __len__(self) -> int:
         return list.__len__(self) + self._counted
+
+    def fork(self) -> "_TemplateIssues":
+        """An independent collector in exactly this one's state.
+
+        Every kept issue and every count is copied, in order, so what is
+        appended to the copy is capped, aggregated and counted as if it had
+        been appended here. The kept issues are bounded (twenty errors per
+        template, one warning per code and template path), and so is the
+        copy.
+        """
+        twin = _TemplateIssues(self._expansion, errors=self._errors)
+        list.extend(twin, list.__iter__(self))
+        twin._counted = self._counted
+        twin._kept_per_source = Counter(self._kept_per_source)
+        twin._last_of_source = dict(self._last_of_source)
+        twin._omitted = {source: Counter(counts) for source, counts in self._omitted.items()}
+        twin._warning_at = dict(self._warning_at)
+        twin._warning_count = Counter(self._warning_count)
+        return twin
 
     def finish(self) -> list[SolveError]:
         """The kept issues, with counts and cross-reference notes appended."""
@@ -743,8 +1022,7 @@ def _template_duplicate_terms(expansion: ExpandedProblem) -> list[SolveError]:
                     result[at],
                     f"; {count} generated entries from this template get this warning",
                 )
-    for warning in result:
-        logger.warning("%s", warning.message)
+    _log_warnings(result)
     return result
 
 
@@ -773,10 +1051,10 @@ def _count_phrase(count: int) -> str:
 
 
 def _warn_soft_weights(
-    problem: OptimizationProblem, objective_scale: float, warnings: list[SolveError]
+    paths: list[tuple[str, Constraint]], objective_scale: float, warnings: list[SolveError]
 ) -> None:
     threshold = objective_scale * SOFT_WEIGHT_SMALL_RATIO
-    for base, constraint in _constraint_paths(problem):
+    for base, constraint in paths:
         if constraint.type != "soft" or constraint.weight is None:
             continue
         if constraint.weight < threshold:
@@ -795,13 +1073,16 @@ def _warn_soft_weights(
 
 
 def _warn_inequalities(
-    problem: OptimizationProblem, bounds: Bounds, warnings: list[SolveError]
+    paths: list[tuple[str, Constraint]],
+    problem_analysis: ProblemAnalysis,
+    warnings: list[SolveError],
 ) -> None:
-    for base, constraint in _constraint_paths(problem):
-        if constraint.operator not in ("<=", ">="):
+    """``paths`` and ``problem_analysis`` list the same constraints, in order."""
+    bounds = problem_analysis.bounds
+    for (base, constraint), analysis in zip(paths, problem_analysis.inequalities, strict=True):
+        if analysis is None:  # an equality
             continue
         is_cardinality = isinstance(constraint, LoweredCardinalityConstraint)
-        analysis = analyze_inequality(constraint, bounds)
         if analysis.redundant:
             if is_cardinality:
                 message = (
@@ -835,7 +1116,7 @@ def _warn_inequalities(
 
 
 def _warn_constraint_ranges(
-    problem: OptimizationProblem, bounds: Bounds, warnings: list[SolveError]
+    paths: list[tuple[str, Constraint]], bounds: Bounds, warnings: list[SolveError]
 ) -> None:
     """Range verdicts the error pass leaves to advice (review F-04 / F-12).
 
@@ -856,7 +1137,9 @@ def _warn_constraint_ranges(
     (``tests/golden/phase3a_compile.json``) pins the full validator output of
     a 1.0 problem containing one, and that recording is a contract.
     """
-    for path, constraint in _constraint_paths(problem):
+    for path, constraint in paths:
+        if constraint.type != "soft":
+            continue  # both verdicts below are about soft constraints only
         coefficients = accumulate_terms(constraint.terms)
         lhs_min, lhs_max = lhs_bounds(coefficients, bounds)
         constant = not any(value != 0.0 for value in coefficients.values())
@@ -966,7 +1249,7 @@ def _warn_cardinality_form(
 
 
 def _warn_fractional_equalities(
-    problem: OptimizationProblem,
+    paths: list[tuple[str, Constraint]],
     model_type: ModelType,
     capabilities: SolverCapabilities | None,
     warnings: list[SolveError],
@@ -990,7 +1273,7 @@ def _warn_fractional_equalities(
         return
     if capabilities is not None and capabilities.exhaustive:
         return
-    for path, constraint in _constraint_paths(problem):
+    for path, constraint in paths:
         if constraint.type != "hard" or constraint.operator != "==":
             continue
         if not equality_violation_step_below_one(constraint):
@@ -1015,12 +1298,14 @@ def _warn_integer_encoding(
     problem: OptimizationProblem,
     bounds: Bounds,
     model_type: ModelType,
+    encoded_interactions: Callable[[], int],
     warnings: list[SolveError],
 ) -> None:
     """3b §9.3: cost of binary-encoding integer variables on the BQM path.
 
     A CQM path takes integer variables natively, so neither warning applies
-    there.
+    there. ``encoded_interactions`` gives ``estimate_encoded_interactions``
+    of the problem; it is only called when there is an integer variable.
     """
     if model_type != "bqm":
         return
@@ -1046,7 +1331,7 @@ def _warn_integer_encoding(
             )
     if not has_integer:
         return
-    interactions = estimate_encoded_interactions(problem)
+    interactions = encoded_interactions()
     if interactions > INTEGER_QUADRATIC_BLOWUP_THRESHOLD:
         warnings.append(
             _warning(
@@ -1097,24 +1382,21 @@ def _warn_exact_limits(
 
 
 def _warn_embedding_density(
-    problem: OptimizationProblem,
     estimated: int,
-    bounds: Bounds,
+    largest_constraint_bits: Callable[[], int],
     caps: SolverCapabilities,
     warnings: list[SolveError],
 ) -> None:
-    """3a §9.3 / 3b §9.3: density advice for a backend that needs minor-embedding."""
+    """3a §9.3 / 3b §9.3: density advice for a backend that needs minor-embedding.
+
+    ``largest_constraint_bits`` gives the largest ``constraint_bit_count``
+    over the problem's constraints; it is only called for such a backend.
+    """
     if caps.requires_embedding:
         # A squared penalty forms its clique over compiled *bits* (3b §9.3):
         # one per binary variable, the encoding bits of an integer one, plus
         # the constraint's slack bits.
-        max_constraint_variables = max(
-            (
-                constraint_bit_count(constraint, bounds)
-                for constraint in problem.all_constraints()
-            ),
-            default=0,
-        )
+        max_constraint_variables = largest_constraint_bits()
         reasons: list[str] = []
         if estimated > QPU_DENSE_VARIABLE_THRESHOLD:
             reasons.append(
@@ -1256,8 +1538,7 @@ def _warn_duplicate_terms(objective: Objective, warnings: list[SolveError]) -> N
         warnings.append(_duplicate_term_warning("linear", variable, count))
     for pair, count in _duplicate_quadratic_pairs(objective):
         warnings.append(_duplicate_term_warning("quadratic", pair, count))
-    for warning in warnings[first_new:]:
-        logger.warning("%s", warning.message)
+    _log_warnings(warnings[first_new:])
 
 
 def _duplicate_term_warning(kind: str, key, count: int) -> SolveError:
@@ -1645,7 +1926,7 @@ def _check_constraint(
         _check_trivially_infeasible(constraint, base, safe_bounds, errors)
 
 
-def _check_objective_range(problem: OptimizationProblem, errors: list[SolveError]) -> None:
+def _check_objective_range(objective_scale: float, errors: list[SolveError]) -> None:
     """2026-11-18 review R-11: finite coefficients whose range is not finite.
 
     Every coefficient passed the checks above, yet their magnitudes can
@@ -1656,11 +1937,11 @@ def _check_objective_range(problem: OptimizationProblem, errors: list[SolveError
     check the service reported such a problem as PENALTY_OVERFLOW after
     zero attempts, even without a single hard constraint.
 
-    Called only when the pass is otherwise clean: the scale is taken over
-    the variables' declared ranges, which must be legal.
+    ``objective_scale`` is ``compute_objective_scale`` over the variables'
+    declared ranges, which must be legal: the caller computes it only when
+    the pass is otherwise clean, and keeps it for the advisory layer.
     """
-    scale = compute_objective_scale(problem.objective, variable_bounds(problem))
-    if math.isfinite(scale):
+    if math.isfinite(objective_scale):
         return
     errors.append(
         _error(
@@ -1677,9 +1958,8 @@ def _check_objective_range(problem: OptimizationProblem, errors: list[SolveError
 
 
 def _check_soft_energy_range(
-    problem: OptimizationProblem,
-    bounds: Bounds,
     objective_scale: float,
+    soft_energy_total: Callable[[], float],
     model_type: ModelType,
     errors: list[SolveError],
 ) -> None:
@@ -1691,11 +1971,13 @@ def _check_soft_energy_range(
     service used to report PENALTY_OVERFLOW after zero attempts although no
     penalty ladder was involved. Depends on the compiler path, like the
     advisories beside it: the CQM path derives no hard penalty, and its
-    compiler reports an overflowing soft term itself.
+    compiler reports an overflowing soft term itself. ``soft_energy_total``
+    gives ``compute_soft_energy_total`` of the problem; it is only called on
+    the BQM path.
     """
     if model_type != "bqm":
         return
-    if math.isfinite(objective_scale + compute_soft_energy_total(problem, bounds)):
+    if math.isfinite(objective_scale + soft_energy_total()):
         return
     errors.append(
         _error(

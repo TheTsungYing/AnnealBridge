@@ -10,7 +10,15 @@ calls ``resolve_time_limit()`` or takes a concurrency slot.
 This module knows no concrete backend or compiler (spec §4, §13.3): it
 dispatches on ``SolverCapabilities`` flags and on the ``ModelCompiler`` /
 ``SolverBackend`` protocols only.
+
+One ``recommend`` does the backend-independent validation once (2026-11-18
+review R-06): every backend is still validated, but they share a
+``ValidationCache`` for everything that does not depend on the backend, and
+the facts about the problem's shape are worked out once. Each backend's
+entry is what validating it on its own would give.
 """
+
+from collections.abc import Callable
 
 from annealbridge.compiler.base import ModelCompiler
 from annealbridge.models import (
@@ -34,6 +42,7 @@ from annealbridge.validation import (
     BackendRecommendation,
     BackendRecommendationResult,
     ExpandedProblem,
+    ValidationCache,
     expand_problem,
     validate_expanded,
 )
@@ -99,6 +108,18 @@ REASON_DESCRIPTIONS: dict[str, str] = {
 }
 
 
+# Facts about the problem that no backend changes, remembered for one
+# ``recommend`` call: a key naming the fact and its arguments -> the answer.
+_ShapeMemo = dict[tuple, bool]
+
+
+def _once(memo: _ShapeMemo, key: tuple, compute: Callable[[], bool]) -> bool:
+    """``compute()``, worked out on first use and remembered under ``key``."""
+    if key not in memo:
+        memo[key] = compute()
+    return memo[key]
+
+
 def _has_hard_constraint(problem: OptimizationProblem) -> bool:
     return any(constraint.type == "hard" for constraint in problem.all_constraints())
 
@@ -113,6 +134,7 @@ def _tier(
     warning_codes: set[str],
     problem: OptimizationProblem,
     reasons: list[str],
+    memo: _ShapeMemo,
 ) -> int:
     """Spec §23.3 step 3.3: the capability tier, appending its reason code(s)."""
     if caps.exhaustive:
@@ -127,7 +149,9 @@ def _tier(
     if not caps.remote:
         reasons.append("R_LOCAL_HEURISTIC")
         return 2
-    if model_type == "cqm" and _has_hard_constraint(problem):
+    if model_type == "cqm" and _once(
+        memo, ("hard_constraint",), lambda: _has_hard_constraint(problem)
+    ):
         reasons.append("R_NATIVE_CONSTRAINTS")
         return 3
     reasons.append("R_REMOTE")
@@ -142,6 +166,7 @@ def _structure_fit(
     problem: OptimizationProblem,
     estimated_variables: int | None,
     reasons: list[str],
+    memo: _ShapeMemo,
 ) -> int:
     """Structure fit (2026-09-17): the sort key element after the tier.
 
@@ -159,12 +184,18 @@ def _structure_fit(
     """
     if estimated_variables is None:
         return 1
-    if caps.strong_on_large_dense and is_large_dense(
-        problem, estimated_variables, model_type
+    if caps.strong_on_large_dense and _once(
+        memo,
+        ("large_dense", estimated_variables, model_type),
+        lambda: is_large_dense(problem, estimated_variables, model_type),
     ):
         reasons.append("R_DENSE_STRENGTH")
         return 0
-    if caps.weak_on_penalty_dominated and is_penalty_dominated(problem, model_type):
+    if caps.weak_on_penalty_dominated and _once(
+        memo,
+        ("penalty_dominated", model_type),
+        lambda: is_penalty_dominated(problem, model_type),
+    ):
         reasons.append("R_PENALTY_WEAKNESS")
         return 2
     return 1
@@ -176,12 +207,16 @@ def _assess(
     registry: SolverRegistry,
     policy: ExecutionPolicy,
     compilers: dict[ModelType, ModelCompiler],
+    cache: ValidationCache,
+    memo: _ShapeMemo,
 ) -> tuple[tuple[int, int, int, int], BackendRecommendation]:
     """Spec §23.3 step 2 for one backend.
 
     Returns its sort key (registry order excluded) and its still-unranked
     recommendation entry. Everything is judged on the expanded problem;
     its validation maps paths back to the templates (schema 1.3 spec §14.8).
+    ``cache`` and ``memo`` are this ``recommend`` call's own: what the
+    validation and the shape checks do not need the backend for.
     """
     problem = expansion.problem
     assert problem is not None  # recommend() refused an expansion error
@@ -211,6 +246,7 @@ def _assess(
         capabilities=caps,
         max_compiled_variables=variable_limit,
         model_type=model_type,
+        cache=cache,
     )
     # recommend() has already refused every backend-independent error, so
     # an error left here is this backend's own (a seed outside the range it
@@ -248,15 +284,15 @@ def _assess(
     blowup = "INTEGER_QUADRATIC_BLOWUP" in warning_codes
     if blowup:
         reasons.append("R_INTEGER_BLOWUP")
-    tier = _tier(caps, model_type, warning_codes, problem, reasons)
+    tier = _tier(caps, model_type, warning_codes, problem, reasons, memo)
     # Informational only (no tier change, §17): how this path takes integers.
-    if _has_integer_variable(problem):
+    if _once(memo, ("integer_variable",), lambda: _has_integer_variable(problem)):
         if model_type == "cqm":
             reasons.append("R_INTEGER_NATIVE")
         elif model_type == "bqm":
             reasons.append("R_INTEGER_ENCODED")
     structure_fit = _structure_fit(
-        caps, model_type, problem, validation.estimated_compiled_variables, reasons
+        caps, model_type, problem, validation.estimated_compiled_variables, reasons, memo
     )
 
     key = (0 if usable else 1, 1 if dense or blowup else 0, tier, structure_fit)
@@ -300,12 +336,15 @@ def recommend(
         problem,
         max_template_bindings=int(policy.required_limit("template_bindings")),
     )
-    errors = validate_expanded(expansion, errors_only=True).errors
+    # One cache for the error pass and every backend, gone when this returns.
+    cache = ValidationCache()
+    errors = validate_expanded(expansion, errors_only=True, cache=cache).errors
     if errors:
         return BackendRecommendationResult(valid=False, errors=errors)
 
+    memo: _ShapeMemo = {}
     assessed = [
-        (_assess(expansion, name, registry, policy, compilers), index)
+        (_assess(expansion, name, registry, policy, compilers, cache, memo), index)
         for index, name in enumerate(registry.names())
     ]
     assessed.sort(key=lambda item: (*item[0][0], item[1]))

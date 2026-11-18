@@ -45,8 +45,11 @@ from annealbridge.penalty.strategy import ScaledPenaltyStrategy
 from annealbridge.solvers import RawSolverResult
 from annealbridge.validation import expand_problem, validate_batch, validate_solution
 from annealbridge.validation.estimates import (
+    analyze_problem,
     compute_objective_scale,
     compute_penalty_scale,
+    compute_soft_energy_total,
+    estimate_encoded_interactions,
     estimate_interaction_density,
     estimate_model_variables,
     variable_bounds,
@@ -114,6 +117,23 @@ PROBLEM_CALLS = {
     # Through all_constraints():
     "estimate_model_variables bqm": lambda p: estimate_model_variables(p, "bqm"),
     "estimate_model_variables cqm": lambda p: estimate_model_variables(p, "cqm"),
+    # With an analysis the estimates read neither, so they check themselves
+    # (2026-11-18 review R-06). The analysis is the expanded problem's.
+    "analyze_problem with bounds and constraints": lambda p: analyze_problem(
+        p, bounds=variable_bounds(EXPANDED), constraints=EXPANDED.all_constraints()
+    ),
+    "estimate_model_variables bqm with analysis": lambda p: estimate_model_variables(
+        p, "bqm", problem_analysis=analyze_problem(EXPANDED)
+    ),
+    "estimate_model_variables cqm with analysis": lambda p: estimate_model_variables(
+        p, "cqm", problem_analysis=analyze_problem(EXPANDED)
+    ),
+    "estimate_encoded_interactions with analysis": lambda p: estimate_encoded_interactions(
+        p, problem_analysis=analyze_problem(EXPANDED)
+    ),
+    "compute_soft_energy_total with analysis": lambda p: compute_soft_energy_total(
+        p, problem_analysis=analyze_problem(EXPANDED)
+    ),
     "compute_penalty_scale": compute_penalty_scale,
     "ScaledPenaltyStrategy.initial_penalty": (
         lambda p: ScaledPenaltyStrategy().initial_penalty(p)
