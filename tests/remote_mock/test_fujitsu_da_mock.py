@@ -19,11 +19,13 @@ import logging
 import sys
 import traceback
 import urllib.error
+import urllib.parse
 
 import numpy as np
 import pydantic
 import pytest
 
+import annealbridge.solvers.fujitsu_da as fujitsu_da
 import annealbridge.solvers.metadata as metadata_module
 from annealbridge.compiler import BQMCompiler
 from annealbridge.exceptions import SolverExecutionError
@@ -1006,6 +1008,137 @@ class TestMalformedResponses:
         assert "Canceled" in str(error)
         # Review F-09: a job that reached a terminal status is deleted too.
         assert fake.delete_calls == 1
+
+    # -- code review 2026-11-18, R-12 ----------------------------------------
+
+    SMALL_LIMIT = 64
+    BODY_MARKER = "oversized-body-marker"
+
+    def oversized_body(self) -> bytes:
+        """Valid JSON longer than :attr:`SMALL_LIMIT`, carrying a marker."""
+        body = json.dumps({"job_id": FAKE_JOB_ID, "note": self.BODY_MARKER * 4})
+        assert len(body) > self.SMALL_LIMIT
+        return body.encode("utf-8")
+
+    def test_oversized_submit_response_is_refused_unquoted(self, monkeypatch):
+        monkeypatch.setattr(fujitsu_da, "MAX_RESPONSE_BYTES", self.SMALL_LIMIT)
+        fake = FakeDATransport(submit_response=(200, self.oversized_body()))
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert self.BODY_MARKER not in str(error)
+        assert "HTTP 200" in str(error)
+        assert str(self.SMALL_LIMIT) in str(error)
+        assert fake.poll_calls == 0
+
+    def test_oversized_poll_response_is_refused_unquoted(self, monkeypatch):
+        monkeypatch.setattr(fujitsu_da, "MAX_RESPONSE_BYTES", self.SMALL_LIMIT)
+        fake = FakeDATransport(poll_responses={0: (200, self.oversized_body())})
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert self.BODY_MARKER not in str(error)
+        assert str(self.SMALL_LIMIT) in str(error)
+        # The job's state is unknown, so it is released like any poll failure.
+        assert fake.cancel_calls == 1
+        assert fake.delete_calls == 1
+
+    def test_response_exactly_at_the_limit_is_accepted(self, monkeypatch):
+        body = json.dumps({"job_id": FAKE_JOB_ID}).encode("utf-8")
+        monkeypatch.setattr(fujitsu_da, "MAX_RESPONSE_BYTES", len(body))
+        # The Error poll body (``{"message": "boom", ...}``) stays under it.
+        fake = FakeDATransport(
+            submit_response=(200, body),
+            poll_statuses=("Error",),
+            error_message="boom",
+        )
+
+        error = expect_failure(monkeypatch, fake)
+
+        # Past the submit: the failure is the scripted job error, not the size.
+        assert fake.poll_calls == 1
+        assert str(error).endswith("failed: boom")
+
+    def test_deeply_nested_json_is_an_unchained_solver_error(self, monkeypatch):
+        fake = FakeDATransport(submit_response=(200, b"[" * 200_000))
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert "not valid JSON" in str(error)
+        assert error.__cause__ is None
+        assert error.__context__ is None
+
+
+class TestJobIdEscaping:
+    """Code review 2026-11-18, R-13: a vendor-supplied ``job_id`` never
+    changes the request path."""
+
+    HOSTILE_JOB_ID = "../../v4/async/jobs/cancel?x=1#y"
+
+    def escaped_result_url(self, job_id: str) -> str:
+        return (
+            f"{DEFAULT_BASE_URL}/v4/async/jobs/result/"
+            f"{urllib.parse.quote(job_id, safe='')}"
+        )
+
+    def test_successful_solve_escapes_every_result_url(self, monkeypatch):
+        fake = FakeDATransport(
+            solutions=zero_rows(make_compiled()), job_id=self.HOSTILE_JOB_ID
+        )
+
+        result, _ = solve(monkeypatch, fake)
+
+        assert result.num_samples == 1
+        result_requests = fake.requests_for(path_part="/v4/async/jobs/result/")
+        assert [r.method for r in result_requests] == ["GET", "GET", "GET", "DELETE"]
+        expected = self.escaped_result_url(self.HOSTILE_JOB_ID)
+        for recorded in result_requests:
+            assert recorded.url == expected
+            suffix = recorded.url.removeprefix(
+                f"{DEFAULT_BASE_URL}/v4/async/jobs/result/"
+            )
+            assert not any(char in suffix for char in "/?#")
+        assert fake.cancel_calls == 0
+
+    def test_failed_job_release_escapes_the_delete_url(self, monkeypatch):
+        fake = FakeDATransport(
+            job_id=self.HOSTILE_JOB_ID,
+            poll_responses={0: json_response(500, {"message": "fake failure"})},
+        )
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        cancels = fake.requests_for("POST", CANCEL_PATH)
+        assert len(cancels) == 1
+        assert cancels[0].url == f"{DEFAULT_BASE_URL}{CANCEL_PATH}"
+        # The cancel body carries the ID unescaped: it is JSON, not a path.
+        assert cancels[0].json == {"job_id": self.HOSTILE_JOB_ID}
+        deletes = fake.requests_for("DELETE")
+        assert [r.url for r in deletes] == [
+            self.escaped_result_url(self.HOSTILE_JOB_ID)
+        ]
+
+    @pytest.mark.parametrize("job_id", [".", ".."])
+    def test_dot_segment_job_id_is_refused(self, monkeypatch, job_id):
+        fake = FakeDATransport(job_id=job_id)
+
+        error = expect_failure(monkeypatch, fake)
+
+        assert error.code == "REMOTE_SOLVER_ERROR"
+        assert "no job_id" in str(error)
+        assert fake.poll_calls == 0
+
+    def test_ordinary_job_id_url_is_unchanged(self, monkeypatch):
+        fake = FakeDATransport(solutions=zero_rows(make_compiled()))
+
+        solve(monkeypatch, fake)
+
+        for recorded in fake.requests_for(path_part="/v4/async/jobs/result/"):
+            assert recorded.url == f"{DEFAULT_BASE_URL}{RESULT_PATH}"
 
 
 class TestPollTimeout:

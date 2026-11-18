@@ -624,10 +624,24 @@ Vendor errors map to catalog codes:
 | HTTP 400, request-header rejection | `BACKEND_CONFIG_INVALID` | `configuration_error` |
 | any other HTTP 400 / 413 / 5xx | `REMOTE_SOLVER_ERROR` | `solver_error` |
 | HTTP 429 | `REMOTE_BUSY` (retryable) | `solver_error` |
+| HTTP 3xx (redirects are never followed) | `REMOTE_SOLVER_ERROR` | `solver_error` |
+| response body over 64 MiB | `REMOTE_SOLVER_ERROR` | `solver_error` |
 | network timeout | `REMOTE_TIMEOUT` | `solver_error` |
 
 A request-header rejection is deliberately a *configuration* error: the
 server's own configuration is wrong, not the problem the agent sent.
+
+A redirect is refused rather than followed because every request carries the
+API key: following it would send the key to a host that was never configured.
+Nothing is sent to the redirect target, and its address is not quoted in the
+error.
+
+A response body larger than 64 MiB is refused without being parsed, truncated
+or quoted. The limit is a safeguard against a runaway response, not a tuned
+capacity: the default five solutions of a 100,000-bit problem are about 8 MB.
+If a legitimate result exceeds it, request fewer solutions by lowering
+`num_output_solution` × `num_group`. The `job_id` the vendor returns is
+percent-encoded before it is used in a request path.
 
 `metadata.solver_id` is `fujitsuDA3/v4`, and the vendor's `solve_time` /
 `total_elapsed_time` are the only timing fields kept (converted to
@@ -870,6 +884,8 @@ The base URL defaults to `https://api.aispf.global.fujitsu.com/da` and can be
 overridden with `FUJITSU_DA_URL`. It must start with `https://`; any other
 scheme makes the backend unavailable with `configuration_error` /
 `BACKEND_CONFIG_INVALID`, and the reported detail never contains the value.
+The endpoint must answer directly: redirects are never followed, so the key
+is not sent to any host other than the configured one.
 Only the V4 endpoints are supported, and only the permanent API key (no OAuth
 access token).
 

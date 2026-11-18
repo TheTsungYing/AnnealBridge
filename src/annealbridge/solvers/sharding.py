@@ -5,6 +5,12 @@ sampled at once. The split, the per-shard seeds and the merge live here
 because every local backend that samples repeatedly needs exactly the same
 rules: the layout must depend on ``(num_reads, seed)`` alone, so a seeded
 result is the same whatever the worker count or the machine.
+
+:func:`sample_reads` / :func:`sample_reads_interruptible` are that layout
+decision -- one plain call for one shard, derived seeds for several -- and
+:func:`local_sampler_result` is the result every such backend builds from
+the merged sample set. A backend supplies only what is its own: the sampler
+call, its seed rule and its log line.
 """
 
 import os
@@ -15,6 +21,13 @@ from typing import TypeVar
 
 import dimod
 import numpy as np
+
+from annealbridge.models import CompiledProblem, SolverExecutionMetadata
+from annealbridge.solvers.base import (
+    RawSolverResult,
+    empty_result,
+    result_from_sampleset,
+)
 
 # Reads are sampled in fixed-size shards so several can run at once. The
 # shard size is part of the reproducibility contract: the shard layout and
@@ -76,9 +89,11 @@ def shard_seeds(seed: int | None, count: int) -> list[int | None]:
     every derived value inside the accepted range of *every* local sampler
     at once — the simulated annealer takes ``0 <= seed < 2**31`` and the
     tabu sampler ``0 <= seed <= 2**32 - 1``, and a 31-bit value satisfies
-    both. Distinct user seeds never share a shard seed by construction (as
-    ``seed + k`` would). ``None`` stays ``None``: each shard then draws its
-    own random seed.
+    both. Two distinct user seeds do not systematically share shard seeds
+    the way ``seed + k`` would; a coincidence is still possible -- the
+    derived values are 31-bit -- but only with negligible probability, not
+    excluded by construction. ``None`` stays ``None``: each shard then draws
+    its own random seed.
     """
     if seed is None:
         return [None] * count
@@ -129,6 +144,102 @@ def run_shards_interruptible(
     ran = [sampleset for sampleset in samplesets if sampleset is not None]
     merged = dimod.concatenate(ran) if ran else None
     return merged, len(ran) < count
+
+
+def sample_reads(
+    sample: Callable[[int, int | None], dimod.SampleSet],
+    num_reads: int,
+    seed: int | None,
+    workers: int,
+    check_seed: Callable[[int | None], None],
+) -> dimod.SampleSet:
+    """``num_reads`` reads through ``sample(num_reads, seed)``, sharded.
+
+    One shard (or an invalid count) is the plain call with the user's seed
+    untouched, so the sampler's own validation and a pre-sharding result
+    both stay exactly as they were. Several shards run ``workers`` at a time
+    with seeds derived by :func:`shard_seeds`; ``check_seed`` -- the
+    backend's copy of its sampler's seed rule, which raises for a seed out
+    of range -- runs first, because a derived seed is always in range and
+    would otherwise hide a seed the single-shard path rejects.
+    """
+    sizes = shard_sizes(num_reads)
+    if len(sizes) <= 1:
+        return sample(num_reads, seed)
+    check_seed(seed)
+    seeds = shard_seeds(seed, len(sizes))
+    return run_shards(
+        lambda shard: sample(sizes[shard], seeds[shard]), len(sizes), workers
+    )
+
+
+def sample_reads_interruptible(
+    sample: Callable[[int, int | None], dimod.SampleSet],
+    num_reads: int,
+    seed: int | None,
+    workers: int,
+    should_stop: Callable[[], bool],
+    check_seed: Callable[[int | None], None],
+) -> tuple[dimod.SampleSet | None, bool]:
+    """:func:`sample_reads`, stoppable; returns the reads that completed
+    (None when none did) and whether any read asked for is missing.
+
+    The layout is exactly :func:`sample_reads`'s, so a run ``should_stop``
+    never stops returns the same reads. ``should_stop`` is asked before
+    each shard starts (before the one call, for one shard); a shard not
+    started by then is skipped. A started ``sample`` may itself return
+    fewer rows than it was asked for -- a sampler with a per-read interrupt
+    callback does -- and that counts as missing reads too.
+    """
+    sizes = shard_sizes(num_reads)
+    if len(sizes) <= 1:
+        if should_stop():
+            return None, True
+        sampleset = sample(num_reads, seed)
+        return sampleset, len(sampleset) < num_reads
+    check_seed(seed)
+    seeds = shard_seeds(seed, len(sizes))
+    merged, skipped = run_shards_interruptible(
+        lambda shard: sample(sizes[shard], seeds[shard]),
+        len(sizes),
+        workers,
+        should_stop,
+    )
+    cut = skipped or (merged is not None and len(merged) < sum(sizes))
+    return merged, cut
+
+
+def shard_count(num_reads: int) -> int:
+    """Sampler calls a request of ``num_reads`` makes; an invalid count is
+    still the one plain call."""
+    return max(1, len(shard_sizes(num_reads)))
+
+
+def local_sampler_result(
+    sampleset: dimod.SampleSet | None,
+    interrupted: bool,
+    compiled_problem: CompiledProblem,
+    backend: str,
+    num_reads: int,
+) -> RawSolverResult:
+    """The result of a local sampler run; ``sampleset`` None means an
+    interrupt stopped the run before any read completed.
+
+    A local run leaves no vendor facts behind: no solver id, no timing, no
+    quota. Reported are the backend, that it ran here, and the read count
+    asked of the sampler -- the shard layout is an implementation detail
+    and is not part of the output.
+    """
+    metadata = SolverExecutionMetadata(
+        backend=backend,
+        remote=False,
+        num_reads_requested=num_reads,
+    )
+    if sampleset is None:
+        return empty_result(compiled_problem.model, backend=backend, metadata=metadata)
+    result = result_from_sampleset(sampleset, backend=backend, metadata=metadata)
+    result.interrupted = interrupted
+    return result
 
 
 def _never_stop() -> bool:

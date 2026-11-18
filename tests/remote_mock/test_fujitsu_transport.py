@@ -13,6 +13,9 @@ Contract checked here:
 * every HTTP response, error statuses included, returns ``(status, body)``;
 * the wire request carries the method, path and body given, and the headers
   given alongside the ones urllib adds itself;
+* a redirect (3xx) is returned as ``(status, body)`` and never followed, so
+  the redirect target receives no request and no API key (code review
+  2026-11-18, R-02);
 * a read timeout raises a bare ``TimeoutError``, a connect timeout a
   ``URLError`` wrapping one, and both classify as ``REMOTE_TIMEOUT``;
 * a refused connection is a ``URLError`` that classifies as the retryable
@@ -86,6 +89,8 @@ class Reply:
     body: bytes = b"{}"
     # Wait on ``server.release`` (capped) before answering.
     delay: bool = False
+    # Sent as the ``Location`` response header when set (a redirect).
+    location: str | None = None
 
 
 class RecordedRequest(NamedTuple):
@@ -118,6 +123,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(reply.status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(reply.body)))
+        if reply.location is not None:
+            self.send_header("Location", reply.location)
         self.end_headers()
         self.wfile.write(reply.body)
 
@@ -161,9 +168,9 @@ class LoopbackServer(ThreadingHTTPServer):
 def _no_proxy(monkeypatch):
     """Keep every request on loopback, whatever proxy the machine configures.
 
-    ``urlopen`` caches a module-level opener whose ``ProxyHandler`` proxy
-    list is fixed when it is built (on Windows it also reads the registry
-    proxy), so deleting the proxy variables alone does not reliably help.
+    An opener's ``ProxyHandler`` fixes its proxy list when it is built (on
+    Windows it also reads the registry proxy), so deleting the proxy
+    variables alone does not reliably help.
     ``proxy_bypass`` re-reads ``NO_PROXY`` / ``no_proxy`` on every request,
     so setting both spellings bypasses any cached proxy for 127.0.0.1.
     ``urllib.request.install_opener`` is avoided: it is a global change that
@@ -190,6 +197,29 @@ def loopback_server() -> Iterator[LoopbackServer]:
     finally:
         server.release.set()  # wake any delayed handler before joining it
         if thread.is_alive():  # never started: nothing to stop or join
+            server.shutdown()
+            thread.join(timeout=5)
+        server.server_close()
+    assert not thread.is_alive()
+
+
+@pytest.fixture
+def redirect_target() -> Iterator[LoopbackServer]:
+    """A second loopback server: where a redirect points, never where a
+    request is sent."""
+    server = LoopbackServer()
+    thread = threading.Thread(
+        target=server.serve_forever,
+        kwargs={"poll_interval": 0.05},
+        name="fujitsu-transport-redirect-target",
+        daemon=True,
+    )
+    try:
+        thread.start()
+        yield server
+    finally:
+        server.release.set()
+        if thread.is_alive():
             server.shutdown()
             thread.join(timeout=5)
         server.server_close()
@@ -292,6 +322,71 @@ def test_wire_request_matches_arguments(loopback_server, method, path, body):
     assert seen.headers["accept"] == "application/json"
 
 
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("POST", SUBMIT_PATH, b'{"fake": true}'),
+        ("GET", RESULT_PATH, None),
+        ("DELETE", RESULT_PATH, None),
+    ],
+    ids=["post", "get", "delete"],
+)
+def test_redirect_is_returned_and_never_followed(
+    loopback_server, redirect_target, status, method, path, body
+):
+    """R-02: the stock urllib handler would repeat the request, ``X-Api-Key``
+    included, against whatever host ``Location`` names."""
+    redirect_body = b'{"moved": true}'
+    loopback_server.routes[path] = Reply(
+        status, redirect_body, location=redirect_target.url(path)
+    )
+
+    result = fujitsu_da.UrllibTransport().request(
+        method, loopback_server.url(path), backend_headers(), body, 2.0
+    )
+
+    assert result == (status, redirect_body)
+    assert type(result[0]) is int
+    # The redirect target saw nothing at all: no request, hence no key.
+    assert redirect_target.requests == []
+    assert len(loopback_server.requests) == 1
+    assert loopback_server.requests[0].headers["x-api-key"] == FAKE_KEY
+
+
+def test_relative_redirect_is_not_followed_either(loopback_server):
+    """A same-host ``Location`` is refused as well: no second request is made."""
+    loopback_server.routes[RESULT_PATH] = Reply(302, b"", location=SUBMIT_PATH)
+
+    status, _ = fujitsu_da.UrllibTransport().request(
+        "GET", loopback_server.url(RESULT_PATH), backend_headers(), None, 2.0
+    )
+
+    assert status == 302
+    assert [seen.path for seen in loopback_server.requests] == [RESULT_PATH]
+
+
+def test_redirect_reaches_the_backend_as_a_remote_solver_error(
+    loopback_server, redirect_target
+):
+    """Through the classification the backend applies to every non-2xx."""
+    loopback_server.routes[SUBMIT_PATH] = Reply(
+        302, b"", location=redirect_target.url(SUBMIT_PATH)
+    )
+    status, raw = fujitsu_da.UrllibTransport().request(
+        "POST", loopback_server.url(SUBMIT_PATH), backend_headers(), b"{}", 2.0
+    )
+
+    error = fujitsu_da._http_failure("Fujitsu DA job submission failed", status, raw)
+
+    assert error.code == REMOTE_ERROR_FALLBACK_CODE == "REMOTE_SOLVER_ERROR"
+    assert str(error) == (
+        "Fujitsu DA job submission failed: HTTP 302: redirect not followed"
+    )
+    assert redirect_target.url(SUBMIT_PATH) not in str(error)
+    assert redirect_target.requests == []
+
+
 def test_read_timeout_is_bare_timeout_error(loopback_server):
     loopback_server.routes[SLOW_PATH] = Reply(delay=True)
 
@@ -365,3 +460,83 @@ def test_guarded_read_timeout_is_unchained_remote_timeout(loopback_server):
     assert error.__cause__ is None
     assert error.__context__ is None
     assert str(error).startswith("Fujitsu DA result poll failed: TimeoutError")
+
+
+# Small stand-in for ``MAX_RESPONSE_BYTES`` (code review 2026-11-18, R-12).
+SMALL_LIMIT = 16
+# A body marker that must never appear in an error message.
+BODY_MARKER = b"secret-body-marker"
+
+
+@pytest.mark.parametrize("status", [200, 500])
+def test_body_over_the_limit_raises_without_quoting_it(
+    loopback_server, monkeypatch, status
+):
+    monkeypatch.setattr(fujitsu_da, "MAX_RESPONSE_BYTES", SMALL_LIMIT)
+    body = BODY_MARKER.ljust(SMALL_LIMIT + 1, b"x")
+    assert len(body) > SMALL_LIMIT
+    loopback_server.routes[RESULT_PATH] = Reply(status, body)
+
+    with pytest.raises(fujitsu_da.ResponseTooLargeError) as info:
+        fujitsu_da.UrllibTransport().request(
+            "GET", loopback_server.url(RESULT_PATH), backend_headers(), None, 2.0
+        )
+
+    error = info.value
+    assert isinstance(error, OSError)
+    assert BODY_MARKER.decode() not in str(error)
+    assert f"HTTP {status}" in str(error)
+    assert str(SMALL_LIMIT) in str(error)
+    assert error.__context__ is None
+    assert fujitsu_da._classify_transport_exception(error) == "REMOTE_SOLVER_ERROR"
+
+
+def test_body_one_byte_over_the_limit_is_refused(loopback_server, monkeypatch):
+    monkeypatch.setattr(fujitsu_da, "MAX_RESPONSE_BYTES", SMALL_LIMIT)
+    loopback_server.routes[RESULT_PATH] = Reply(200, b"y" * (SMALL_LIMIT + 1))
+
+    with pytest.raises(fujitsu_da.ResponseTooLargeError):
+        fujitsu_da.UrllibTransport().request(
+            "GET", loopback_server.url(RESULT_PATH), backend_headers(), None, 2.0
+        )
+
+
+@pytest.mark.parametrize("status", [200, 500])
+def test_body_exactly_at_the_limit_is_returned_whole(
+    loopback_server, monkeypatch, status
+):
+    monkeypatch.setattr(fujitsu_da, "MAX_RESPONSE_BYTES", SMALL_LIMIT)
+    body = b"z" * SMALL_LIMIT
+    loopback_server.routes[RESULT_PATH] = Reply(status, body)
+
+    result = fujitsu_da.UrllibTransport().request(
+        "GET", loopback_server.url(RESULT_PATH), backend_headers(), None, 2.0
+    )
+
+    assert result == (status, body)
+
+
+def test_guarded_too_large_body_is_unchained_remote_solver_error(
+    loopback_server, monkeypatch
+):
+    monkeypatch.setattr(fujitsu_da, "MAX_RESPONSE_BYTES", SMALL_LIMIT)
+    loopback_server.routes[RESULT_PATH] = Reply(
+        200, BODY_MARKER.ljust(SMALL_LIMIT * 4, b"x")
+    )
+    transport = fujitsu_da.UrllibTransport()
+
+    with pytest.raises(SolverExecutionError) as info:
+        guarded_call(
+            "Fujitsu DA result poll failed",
+            fujitsu_da._classify_transport_exception,
+            lambda: transport.request(
+                "GET", loopback_server.url(RESULT_PATH), backend_headers(), None, 2.0
+            ),
+        )
+
+    error = info.value
+    assert error.code == REMOTE_ERROR_FALLBACK_CODE == "REMOTE_SOLVER_ERROR"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert BODY_MARKER.decode() not in str(error)
+    assert "ResponseTooLargeError" in str(error)

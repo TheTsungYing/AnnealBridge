@@ -8,31 +8,26 @@ from dwave.samplers import SimulatedAnnealingSampler
 
 from annealbridge.exceptions import SolverExecutionError
 from annealbridge.interrupt import Interrupt
-from annealbridge.models import (
-    CompiledProblem,
-    SolverExecutionMetadata,
-    SolverPreferences,
-)
+from annealbridge.models import CompiledProblem, SolverPreferences
 from annealbridge.solvers.base import (
     AvailabilityStatus,
     BackendAliases,
     ParameterLimit,
     RawSolverResult,
     SolverCapabilities,
-    empty_result,
     log_solved,
-    result_from_sampleset,
 )
 
-# The shard layout, the derived shard seeds and the bounded fan-out are
-# shared with the other local sampler backends; ``READS_PER_SHARD`` and the
-# reproducibility contract it carries live there.
+# The shard layout, the derived shard seeds, the bounded fan-out and the
+# result built from the merged reads are shared with the other local sampler
+# backends; ``READS_PER_SHARD`` and the reproducibility contract it carries
+# live there.
 from annealbridge.solvers.sharding import (
     default_workers,
-    run_shards,
-    run_shards_interruptible,
-    shard_seeds,
-    shard_sizes,
+    local_sampler_result,
+    sample_reads,
+    sample_reads_interruptible,
+    shard_count,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,8 +60,8 @@ _CAPABILITIES = SolverCapabilities(
     returns_multiple_samples=True,
     supports_num_sweeps=True,
     # The sampler's rule (see ``_SEED_LIMIT``), declared so validation
-    # refuses an out-of-range seed before anything runs. The check in
-    # ``_sample_sharded`` stays as the last line for a direct caller.
+    # refuses an out-of-range seed before anything runs. ``_check_seed``
+    # stays as the last line for a direct caller.
     seed_min=0,
     seed_max=_SEED_LIMIT - 1,
     # Stops between shards and, through the sampler's own
@@ -150,48 +145,45 @@ class SimulatedAnnealingBackend(BackendAliases):
         limit or a cancel token -- the sampler calls are exactly the
         uninterruptible ones.
         """
-        sizes = shard_sizes(preferences.num_reads)
+        model = compiled_problem.model
+        sweeps = preferences.num_sweeps
         interrupted = False
         try:
-            if interrupt is not None:
-                sampleset, interrupted = self._sample_interruptible(
-                    compiled_problem.model, sizes, preferences, interrupt
-                )
-            elif len(sizes) <= 1:
-                # One shard (or an invalid count): the plain call, seed
-                # untouched, so the sampler's own validation and the
-                # pre-sharding results both stay exactly as they were.
-                sampleset = self._sample(
-                    compiled_problem.model,
+            if interrupt is None:
+                sampleset = sample_reads(
+                    lambda num_reads, seed: self._sample(model, num_reads, sweeps, seed),
                     preferences.num_reads,
-                    preferences.num_sweeps,
                     preferences.seed,
+                    self._workers,
+                    _check_seed,
                 )
             else:
-                sampleset = self._sample_sharded(compiled_problem.model, sizes, preferences)
+                # The sampler calls its ``interrupt_function`` after each
+                # completed read and then returns only the completed ones.
+                # The same wrapper is the between-shards check: once a
+                # check has failed in one shard, every shard not yet
+                # started is skipped instead of run to the end.
+                watch = _InterruptWatch(interrupt)
+                sampleset, interrupted = sample_reads_interruptible(
+                    lambda num_reads, seed: self._sample(
+                        model, num_reads, sweeps, seed, watch
+                    ),
+                    preferences.num_reads,
+                    preferences.seed,
+                    self._workers,
+                    watch,
+                    _check_seed,
+                )
+                watch.raise_if_failed()
         except Exception as exc:
             raise SolverExecutionError(
                 f"Simulated annealing solver failed: {exc}"
             ) from exc
 
-        # A local run leaves no vendor facts behind: no solver id, no
-        # timing, no quota. Reported are the backend, that it ran here,
-        # and the read count asked of the sampler — the shard layout is
-        # an implementation detail and is not part of the output.
-        metadata = SolverExecutionMetadata(
-            backend=self.name,
-            remote=False,
-            num_reads_requested=preferences.num_reads,
+        result = local_sampler_result(
+            sampleset, interrupted, compiled_problem, self.name, preferences.num_reads
         )
-        if sampleset is None:
-            result = empty_result(
-                compiled_problem.model, backend=self.name, metadata=metadata
-            )
-        else:
-            result = result_from_sampleset(
-                sampleset, backend=self.name, metadata=metadata
-            )
-            result.interrupted = interrupted
+        shards = shard_count(preferences.num_reads)
         extra = {"interrupted": True} if result.interrupted else {}
         log_solved(
             logger,
@@ -202,8 +194,8 @@ class SimulatedAnnealingBackend(BackendAliases):
             num_reads=preferences.num_reads,
             num_sweeps=preferences.num_sweeps,
             seed=preferences.seed,
-            shards=max(1, len(sizes)),
-            workers=min(self._workers, max(1, len(sizes))),
+            shards=shards,
+            workers=min(self._workers, shards),
             **extra,
         )
         return result
@@ -228,76 +220,18 @@ class SimulatedAnnealingBackend(BackendAliases):
             sample_kwargs["interrupt_function"] = interrupt_function
         return self._sampler.sample(model, **sample_kwargs)
 
-    def _sample_sharded(
-        self,
-        model: dimod.BinaryQuadraticModel,
-        sizes: list[int],
-        preferences: SolverPreferences,
-    ) -> dimod.SampleSet:
-        """Sample every shard, ``workers`` at a time, and concatenate in order."""
-        seeds = self._shard_seeds(preferences.seed, len(sizes))
-        sweeps = preferences.num_sweeps
-        return run_shards(
-            lambda shard: self._sample(model, sizes[shard], sweeps, seeds[shard]),
-            len(sizes),
-            self._workers,
+
+def _check_seed(seed: int | None) -> None:
+    """The sampler's own seed rule (see ``_SEED_LIMIT``), checked before
+    shard seeds are derived: masked shard seeds are always in range, so
+    without it the sharded path would accept seeds the single-shard path
+    rejects. Both paths accept the same range and raise ValueError; only
+    the message text differs from the vendor's."""
+    if seed is not None and not 0 <= seed < _SEED_LIMIT:
+        raise ValueError(
+            f"'seed' should be an integer between 0 and {_SEED_LIMIT - 1}: "
+            f"value = {seed}"
         )
-
-    def _sample_interruptible(
-        self,
-        model: dimod.BinaryQuadraticModel,
-        sizes: list[int],
-        preferences: SolverPreferences,
-        interrupt: Interrupt,
-    ) -> tuple[dimod.SampleSet | None, bool]:
-        """The sampling above, stoppable; returns the reads that completed
-        (None when none did) and whether any read asked for was skipped.
-
-        The layout -- one plain call for one shard, derived seeds for
-        several -- is exactly the uninterruptible one, so a run the
-        interrupt never stops returns the same reads. The sampler calls its
-        ``interrupt_function`` after each completed read and then returns
-        only the completed ones; a shard not started when the interrupt
-        says stop is skipped.
-        """
-        watch = _InterruptWatch(interrupt)
-        sweeps = preferences.num_sweeps
-        if len(sizes) <= 1:
-            if interrupt.should_stop():
-                return None, True
-            sampleset = self._sample(
-                model, preferences.num_reads, sweeps, preferences.seed, watch
-            )
-            watch.raise_if_failed()
-            return sampleset, len(sampleset) < preferences.num_reads
-        seeds = self._shard_seeds(preferences.seed, len(sizes))
-        merged, skipped = run_shards_interruptible(
-            lambda shard: self._sample(model, sizes[shard], sweeps, seeds[shard], watch),
-            len(sizes),
-            self._workers,
-            # The same wrapper: once a check has failed in one shard, every
-            # shard not yet started is skipped instead of run to the end.
-            watch,
-        )
-        watch.raise_if_failed()
-        cut = skipped or (merged is not None and len(merged) < sum(sizes))
-        return merged, cut
-
-    @staticmethod
-    def _shard_seeds(seed: int | None, count: int) -> list[int | None]:
-        """Per-shard seeds, the user's seed checked against the sampler's
-        rule first."""
-        if seed is not None and not 0 <= seed < _SEED_LIMIT:
-            # The sampler's own rule (see ``_SEED_LIMIT``), checked before
-            # derivation: masked shard seeds are always in range, so without
-            # it this path would accept seeds the single-shard path rejects.
-            # Both paths now accept the same range and raise ValueError; only
-            # the message text differs from the vendor's.
-            raise ValueError(
-                f"'seed' should be an integer between 0 and {_SEED_LIMIT - 1}: "
-                f"value = {seed}"
-            )
-        return shard_seeds(seed, count)
 
 
 class _InterruptWatch:

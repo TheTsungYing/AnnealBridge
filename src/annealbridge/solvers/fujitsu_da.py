@@ -21,6 +21,7 @@ import math
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
@@ -84,6 +85,17 @@ POLL_GRACE_SECONDS = 60.0
 # Bytes of a response body quoted (after redaction) in an error message.
 _BODY_SUMMARY_CHARS = 200
 
+# Largest response body accepted, in bytes (code review 2026-11-18, R-12).
+# The vendor caps one problem at 100,000 bits, so one solution's
+# ``configuration`` object is about 1.5 MB of JSON and the default five
+# solutions about 8 MB. 64 MiB holds roughly 40 fully loaded solutions, or
+# 1024 solutions of about 4,000 variables each. Parsing inflates the body by
+# about an order of magnitude in Python objects, so this is a fuse against a
+# runaway response, not capacity planning: the theoretical maximum
+# (1024 x 16 solutions x 100,000 bits) is beyond any reasonable limit. Read
+# from the module at call time, never bound at import.
+MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+
 # Spec §20.8: HTTP status → catalog code for statuses whose meaning does not
 # depend on the body. 400 is classified by message (below); 5xx and any
 # other status fall back to REMOTE_SOLVER_ERROR.
@@ -142,6 +154,30 @@ _CAPABILITIES = SolverCapabilities(
 )
 
 
+def _too_large_message(status: int, limit: int) -> str:
+    """Fixed-format message for an over-limit response (R-12).
+
+    Carries only the HTTP status and the limit, never any part of the body.
+    """
+    return (
+        f"HTTP {status} response body exceeds the {limit} byte limit; "
+        "lower num_output_solution x num_group to request fewer solutions"
+    )
+
+
+class ResponseTooLargeError(OSError):
+    """A response body was larger than :data:`MAX_RESPONSE_BYTES` (R-12).
+
+    An ``OSError`` so it travels the same path as every other transport
+    failure; the message never contains any part of the body.
+    """
+
+    def __init__(self, status: int, limit: int) -> None:
+        super().__init__(_too_large_message(status, limit))
+        self.status = status
+        self.limit = limit
+
+
 class HttpTransport(Protocol):
     """The backend's only network seam (spec §20.4).
 
@@ -149,6 +185,10 @@ class HttpTransport(Protocol):
     included, so the backend classifies statuses itself. Transport-level
     failures (DNS, refused connection, timeout, dropped connection) are
     raised as the standard ``OSError`` family and classified by the backend.
+
+    A transport must not follow redirects: the headers carry the API key,
+    and a redirect target is a host the user never configured. A 3xx is
+    returned as ``(status, body)`` like any other status.
     """
 
     def request(
@@ -161,6 +201,22 @@ class HttpTransport(Protocol):
     ) -> tuple[int, bytes]: ...
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect (code review 2026-11-18, R-02).
+
+    The stock handler copies the request's headers -- ``X-Api-Key`` among
+    them -- onto the redirected request without checking that the host is
+    the same or that the scheme is still https. Returning ``None`` makes
+    ``urllib`` treat the 3xx as it treats any other error status: it raises
+    ``HTTPError``, and no second request is ever built.
+    """
+
+    def redirect_request(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> None:
+        return None
+
+
 class UrllibTransport:
     """Standard-library transport over ``urllib.request``.
 
@@ -169,7 +225,23 @@ class UrllibTransport:
     Every other ``OSError`` (``URLError`` for DNS / refused connections,
     a bare ``TimeoutError`` on read timeout, ``http.client.RemoteDisconnected``
     …) propagates unchanged for the backend to classify (spec §20.8).
+
+    Redirects are never followed (see :class:`_NoRedirectHandler`): a 3xx
+    comes back as ``(status, body)`` through the same ``HTTPError`` branch,
+    so the API key only ever reaches the configured host. The transport
+    owns its opener for that reason; ``urllib.request.urlopen`` would use
+    the process-wide one, which follows redirects.
+
+    A body longer than :data:`MAX_RESPONSE_BYTES` raises
+    :class:`ResponseTooLargeError` on success and error statuses alike; at
+    most one byte past the limit is ever read, and the body is never
+    truncated and returned (code review 2026-11-18, R-12).
     """
+
+    def __init__(self) -> None:
+        # ``build_opener`` replaces the default redirect handler with the
+        # subclass given and keeps every other default handler.
+        self._opener = urllib.request.build_opener(_NoRedirectHandler)
 
     def request(
         self,
@@ -182,11 +254,17 @@ class UrllibTransport:
         request = urllib.request.Request(
             url, data=body, headers=dict(headers), method=method
         )
+        limit = MAX_RESPONSE_BYTES
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return int(response.status), response.read()
+            with self._opener.open(request, timeout=timeout) as response:
+                status, raw = int(response.status), response.read(limit + 1)
         except urllib.error.HTTPError as error:
-            return int(error.code), error.read()
+            status, raw = int(error.code), error.read(limit + 1)
+        # Raised outside the ``except`` block so the error carries no
+        # ``HTTPError`` context (whose stream still holds the body).
+        if len(raw) > limit:
+            raise ResponseTooLargeError(status, limit)
+        return status, raw
 
 
 def _classify_transport_exception(exc: Exception) -> str:
@@ -238,12 +316,34 @@ def _http_failure(what: str, status: int, body: bytes) -> SolverExecutionError:
             result_status = "configuration_error"
     else:
         code = _HTTP_STATUS_CODES.get(status, REMOTE_ERROR_FALLBACK_CODE)
-    detail = "payload too large" if status == 413 else _redacted_summary(text)
+    if status == 413:
+        detail = "payload too large"
+    elif 300 <= status < 400:
+        # R-02: the redirect target (``Location``) is deliberately not
+        # quoted, and nothing was sent to it.
+        detail = "redirect not followed"
+    else:
+        detail = _redacted_summary(text)
     return SolverExecutionError(
         redact(f"{what}: HTTP {status}: {detail}"),
         code=code,
         status=result_status,
     )
+
+
+def _job_result_url(base_url: str, job_id: str) -> str:
+    """``{base_url}/v4/async/jobs/result/{job_id}`` with the ID percent-encoded.
+
+    The ``job_id`` is a string the vendor returned, so it must not be able
+    to change the request path: ``/``, ``?``, ``#`` and every other reserved
+    character are escaped (code review 2026-11-18, R-13). Escaping rather
+    than a character whitelist, because refusing the ID of a job that has
+    already been created would leave it impossible to cancel or delete, and
+    it would keep occupying one of the account's job slots. ``"."`` and
+    ``".."``, which ``quote`` leaves as dot-segments, are refused by
+    :meth:`FujitsuDABackend._submit` before any URL is built.
+    """
+    return f"{base_url}/v4/async/jobs/result/{urllib.parse.quote(job_id, safe='')}"
 
 
 def _read_settings() -> tuple[str | None, str]:
@@ -355,14 +455,16 @@ def _decode_solutions(
 
     samples = np.empty((len(solutions), num_variables), dtype=np.int8)
     energies = np.empty(len(solutions), dtype=np.float64)
+    # Built once rather than once per solution row.
+    keys = [str(index) for index in range(num_variables)]
     for row, solution in enumerate(solutions):
         if not isinstance(solution, dict):
             raise failure(f"solution {row} is not an object")
         configuration = solution.get("configuration")
         if not isinstance(configuration, dict):
             raise failure(f"solution {row} has no configuration object")
-        for index in range(num_variables):
-            value = configuration.get(str(index))
+        for index, key in enumerate(keys):
+            value = configuration.get(key)
             if not isinstance(value, bool):
                 raise failure(
                     f"solution {row} has no boolean value for variable index {index}"
@@ -503,7 +605,7 @@ class FujitsuDABackend(BackendAliases):
         self._best_effort(
             f"Fujitsu DA job {job_id} result could not be deleted",
             "DELETE",
-            f"{base_url}/v4/async/jobs/result/{job_id}",
+            _job_result_url(base_url, job_id),
             headers,
             None,
         )
@@ -569,8 +671,13 @@ class FujitsuDABackend(BackendAliases):
 
         Transport exceptions go through :func:`guarded_call` (no
         ``__cause__``); non-2xx statuses through the §20.8 table; a 2xx body
-        that is not JSON is a solver error. The JSON error is raised outside
-        its ``except`` block for the same reason as in ``guarded_call``.
+        that is not JSON -- or nests too deeply for the parser -- is a solver
+        error. The JSON error is raised outside its ``except`` block for the
+        same reason as in ``guarded_call``.
+
+        A body longer than :data:`MAX_RESPONSE_BYTES` is refused before it
+        is classified or parsed (R-12). :class:`UrllibTransport` already
+        refuses one while reading; this check covers an injected transport.
         """
         status, raw = guarded_call(
             what,
@@ -579,6 +686,12 @@ class FujitsuDABackend(BackendAliases):
                 method, url, headers, body, self._request_timeout
             ),
         )
+        limit = MAX_RESPONSE_BYTES
+        if len(raw) > limit:
+            raise SolverExecutionError(
+                redact(f"{what}: {_too_large_message(status, limit)}"),
+                code=REMOTE_ERROR_FALLBACK_CODE,
+            )
         if not 200 <= status < 300:
             raise _http_failure(what, status, raw)
         error: SolverExecutionError | None = None
@@ -587,6 +700,14 @@ class FujitsuDABackend(BackendAliases):
         except ValueError:
             error = SolverExecutionError(
                 redact(f"{what}: response is not valid JSON: {_redacted_summary(_body_text(raw))}"),
+                code=REMOTE_ERROR_FALLBACK_CODE,
+            )
+        except RecursionError:
+            error = SolverExecutionError(
+                redact(
+                    f"{what}: response is not valid JSON (nested too deeply): "
+                    f"{_redacted_summary(_body_text(raw))}"
+                ),
                 code=REMOTE_ERROR_FALLBACK_CODE,
             )
         raise error
@@ -621,7 +742,9 @@ class FujitsuDABackend(BackendAliases):
         if orphan_hint is not None:
             raise orphan_hint
         job_id = payload.get("job_id") if isinstance(payload, dict) else None
-        if not isinstance(job_id, str) or not job_id:
+        # ``"."`` / ``".."`` survive percent-encoding as dot-segments and
+        # would change the result path (R-13); they are no usable ID.
+        if not isinstance(job_id, str) or job_id in ("", ".", ".."):
             raise SolverExecutionError(
                 redact(f"{what}: response has no job_id"),
                 code=REMOTE_ERROR_FALLBACK_CODE,
@@ -668,7 +791,7 @@ class FujitsuDABackend(BackendAliases):
         the cleanup request propagates, it is not swallowed.
         """
         what = f"Fujitsu DA job {job_id} status request failed"
-        url = f"{base_url}/v4/async/jobs/result/{job_id}"
+        url = _job_result_url(base_url, job_id)
         budget = effective_time_limit + POLL_GRACE_SECONDS
         deadline = self._clock() + budget
         # What to send if the loop is left by an exception: ``"unknown"`` until a
@@ -751,7 +874,7 @@ class FujitsuDABackend(BackendAliases):
             f"Fujitsu DA job {job_id} result could not be deleted after the solve "
             "failed; the job may still occupy a job slot on the vendor side",
             "DELETE",
-            f"{base_url}/v4/async/jobs/result/{job_id}",
+            _job_result_url(base_url, job_id),
             headers,
             None,
         )
