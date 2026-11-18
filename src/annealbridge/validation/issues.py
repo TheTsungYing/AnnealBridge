@@ -90,6 +90,16 @@ _WARNING_RECOMMENDED_ACTIONS: dict[str, str] = {
         '"<=" and rhs one to let a BQM backend encode it without a slack '
         "variable; the meaning is unchanged."
     ),
+    # 2026-11-18 review R-01: the hard penalty is derived for violations of
+    # at least one unit, which a fractional equality does not guarantee.
+    # The unit is spelled out: this text holds no digit and names no backend
+    # (tests/unit/test_error_catalog.py).
+    "FRACTIONAL_HARD_EQUALITY": (
+        "Multiply both sides of the equality by a common factor so that "
+        "every coefficient and the rhs become integers; the meaning is "
+        "unchanged. Alternatively use a backend that takes hard constraints "
+        "natively (model type cqm)."
+    ),
     # Schema 1.3 spec §14.10: the template expander's own advisories. Each
     # is one warning per template, its count in the message.
     "EMPTY_TEMPLATE_EXPANSION": (

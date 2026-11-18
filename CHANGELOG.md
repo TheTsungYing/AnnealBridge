@@ -7,8 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Warning `FRACTIONAL_HARD_EQUALITY`: on the BQM path, for a backend that is
+  not exhaustive, a hard equality whose coefficients and `rhs` share a
+  spacing below 1 (their greatest common divisor as exact rationals, as in
+  `0.5x + 0.5y == 0.5`) can be violated by less than one unit, which the
+  hard penalty is not derived for; a heuristic backend may then find no
+  feasible solution. `validate`, `recommend` and `solve` now say so, at
+  `constraints[i]` or at the generating constraint template. The warning is
+  advisory: the compiled model is unchanged.
+
 ### Changed
 
+- A problem whose finite coefficients add up beyond the floating-point range
+  is now rejected during validation with `invalid_problem` /
+  `COEFFICIENT_MAGNITUDE_TOO_LARGE` (new error code). Previously `validate`
+  reported it as valid and `solve` returned `resource_limit_exceeded` /
+  `PENALTY_OVERFLOW` "after 0 attempt(s)", even for a problem without a hard
+  constraint. An overflowing objective range is reported on every path and
+  by `validate_problem` (path `objective`), and `recommend` answers
+  `valid: false`; an overflowing soft penalty bound is reported on the BQM
+  path only (path `constraints`), and `recommend` lists the BQM-path backends
+  as blocked.
+- `PENALTY_OVERFLOW` before the first attempt has its own wording; the code
+  and the `resource_limit_exceeded` status are unchanged. An initial penalty
+  that is already infinite reads `Initial hard penalty inf exceeds the
+  floating-point range: ...; nothing was compiled or solved`, and a finite
+  initial penalty whose compiled model has a non-finite bias reads `The model
+  compiled at the initial hard penalty ... has a non-finite bias: ...; no
+  backend was called`. The message after one or more attempts is unchanged.
 - The schema description of `solver.leap_hybrid_bqm.time_limit_seconds` and
   `docs/problem-format.md` now state what both hybrid backends have always
   done: a value below the sampler's minimum for the model is raised to that
@@ -20,6 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `optimality_proven` and `infeasibility_proven` are no longer `true` for an
+  exhaustive backend whose enumeration the wall-clock limit interrupted: a
+  partial enumeration proves nothing. This is a second line of defence:
+  `SolverCapabilities` already refuses to declare a backend both exhaustive
+  and interruptible, and the service no longer relies on that declaration
+  alone. No built-in backend is affected.
 - CLI: a problem file that is not UTF-8 (a UTF-16 file written by Windows
   PowerShell 5.1 `>` or `Out-File`, for instance) printed a traceback and
   exited `1`. It is now reported like any other unusable input, on one stderr

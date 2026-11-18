@@ -42,6 +42,16 @@ variables.
 - The **CQM path keeps the same integer-coefficient requirement** even though
   it uses no slack variables at all. This is deliberately conservative, so both
   compilation paths accept exactly the same set of problems.
+- **A hard equality with fractional coefficients may find no feasible
+  solution on a heuristic BQM backend.** The hard penalty is derived for
+  violations of at least one unit, while an equality whose coefficients and
+  `rhs` share a spacing below 1 (such as `0.5x + 0.5y == 0.5`) can be violated
+  by less; the penalty may then be too weak, and the solve can end `infeasible`
+  although the problem is feasible. Such an equality is neither rejected nor
+  rescaled — it only gets the `FRACTIONAL_HARD_EQUALITY` warning (not on the
+  CQM path or for an exhaustive backend). Multiply both sides by a common
+  factor so that every coefficient and the `rhs` are integers, or use a
+  backend that takes hard constraints natively (model type `cqm`).
 - **Cardinality constraints** (version `1.2`) count **binary** variables only,
   each listed once (`CARDINALITY_VARIABLE_NOT_BINARY`,
   `DUPLICATE_CARDINALITY_VARIABLE`); a weighted count or a sum over integer

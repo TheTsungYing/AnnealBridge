@@ -22,6 +22,7 @@ binary too: that covers the slack bits the compiler generates and the
 internal ``__slack_total`` pseudo-variable below.
 """
 
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
@@ -308,10 +309,64 @@ def compute_penalty_scale(problem: OptimizationProblem) -> float:
     variable bounds (3b §8).
     """
     bounds = variable_bounds(problem)
-    soft_bound = sum(
+    soft_bound = compute_soft_energy_total(problem, bounds)
+    return compute_objective_scale(problem.objective, bounds) + soft_bound
+
+
+def compute_soft_energy_total(problem: OptimizationProblem, bounds: Bounds | None = None) -> float:
+    """Sum of :func:`compute_soft_energy_bound` over every constraint.
+
+    The soft part of :func:`compute_penalty_scale`, on its own so the problem
+    validator can add it to the objective scale it already computed instead
+    of walking the objective a second time (2026-11-18 review R-11). The
+    summation order is the one ``compute_penalty_scale`` always used, so the
+    penalty scale is the same float bit for bit.
+    """
+    return sum(
         compute_soft_energy_bound(constraint, bounds) for constraint in problem.all_constraints()
     )
-    return compute_objective_scale(problem.objective, bounds) + soft_bound
+
+
+def equality_violation_step_below_one(constraint: Constraint) -> bool:
+    """Whether an ``==`` constraint can be violated by less than one unit.
+
+    The hard-penalty derivation (:func:`compute_penalty_scale`, spec §18)
+    assumes a violated hard constraint is off by at least ``1``. Inequalities
+    get that from their integer coefficients (NON_INTEGER_INEQUALITY); an
+    equality may carry fractions, and then ``lambda * violation**2`` can be
+    far smaller than the objective gain it has to outweigh (2026-11-18 review
+    R-01).
+
+    Every variable takes integer values, so for any assignment ``lhs - rhs``
+    is an integer multiple of ``g``, the greatest common divisor of the
+    accumulated non-zero coefficients and the rhs taken as exact rationals
+    (a float *is* a rational with a power-of-two denominator). ``g >= 1``
+    therefore guarantees every non-zero violation is at least ``1``; this
+    returns ``True`` exactly when ``g < 1``. That is a sufficient test, not
+    a necessary one: ``1.5 x + 2.5 y == 4`` has ``g = 0.5`` although no 0/1
+    assignment violates it by less than ``1.5`` (deciding that in general is
+    a subset-sum problem).
+
+    All-integer constraints (``g`` is then a positive integer) return before
+    any rational arithmetic, so the common case costs one pass of
+    ``float.is_integer``. A constraint without a non-zero coefficient has a
+    constant lhs and returns ``False``. Non-finite values are the error
+    pass's business and must not reach this function.
+    """
+    values = [*nonzero_coefficients(constraint.terms).values()]
+    if not values:
+        return False
+    if constraint.rhs != 0.0:
+        values.append(constraint.rhs)
+    if all(value.is_integer() for value in values):
+        return False
+    ratios = [abs(value).as_integer_ratio() for value in values]
+    # Denominators are powers of two, so the largest is their common multiple.
+    denominator = max(den for _, den in ratios)
+    numerator = 0
+    for num, den in ratios:
+        numerator = math.gcd(numerator, num * (denominator // den))
+    return numerator < denominator
 
 
 @dataclass(frozen=True)

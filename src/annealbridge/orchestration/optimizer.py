@@ -719,22 +719,81 @@ class OptimizationService:
         ceiling must not throw that away. ``None`` when no attempt finished.
         """
         made = len(attempts)
-        last = attempts[-1].penalty if attempts else None
+        if made:
+            # The retry ladder doubled its way to the ceiling.
+            last = attempts[-1].penalty
+            message = (
+                f"Hard penalty {penalty!r} exceeds the floating-point range "
+                f"after {made} attempt(s)"
+                + (f" (last finite penalty {last!r})" if last is not None else "")
+                + "; no feasible solution was found before the ceiling"
+            )
+        elif math.isfinite(penalty):
+            # 2026-11-18 review R-11: nothing was attempted, so the wording
+            # must not speak of attempts or of feasibility. The penalty is
+            # finite; the compiled biases (penalty × coefficients) are not.
+            message = (
+                f"The model compiled at the initial hard penalty {penalty!r} "
+                "has a non-finite bias: the penalty times the constraint "
+                "coefficients exceeds the floating-point range; no backend "
+                "was called"
+            )
+        else:
+            message = (
+                f"Initial hard penalty {penalty!r} exceeds the floating-point "
+                "range: the problem's penalty scale times "
+                "solver.penalty_multiplier overflowed; nothing was compiled "
+                "or solved"
+            )
         return self._failure(
             "resource_limit_exceeded",
             backend.name,
             direction,
-            [
-                catalog_error(
-                    "PENALTY_OVERFLOW",
-                    f"Hard penalty {penalty!r} exceeds the floating-point range "
-                    f"after {made} attempt(s)"
-                    + (f" (last finite penalty {last!r})" if last is not None else "")
-                    + "; no feasible solution was found before the ceiling",
-                )
-            ],
+            [catalog_error("PENALTY_OVERFLOW", message)],
             attempts=attempts,
             metadata=metadata,
+        )
+
+    def _initial_penalty_overflow(
+        self,
+        problem: OptimizationProblem,
+        backend: SolverBackend,
+        direction: str,
+        penalty: float,
+    ) -> SolveResult:
+        """The initial hard penalty is not finite (2026-11-18 review R-11).
+
+        Two different causes, told apart by the strategy's penalty scale:
+
+        * the scale itself is not finite: the problem's own magnitudes
+          overflow, whatever the multiplier. The validator rejects that with
+          the same code before a solve gets here; this is the same verdict
+          for a penalty strategy whose scale the validator does not know.
+          ``invalid_problem`` / COEFFICIENT_MAGNITUDE_TOO_LARGE.
+        * the scale is finite and only its product with
+          ``solver.penalty_multiplier`` overflows: the hard penalty left the
+          float range, PENALTY_OVERFLOW as before, worded for a solve that
+          never started.
+
+        The scale is recomputed here, on the failure path only.
+        """
+        if math.isfinite(self._penalty_strategy.penalty_scale(problem)):
+            return self._penalty_overflow(
+                backend, direction, [], penalty, metadata=None
+            )
+        return self._failure(
+            "invalid_problem",
+            backend.name,
+            direction,
+            [
+                catalog_error(
+                    "COEFFICIENT_MAGNITUDE_TOO_LARGE",
+                    "The problem's penalty scale (the objective's range plus "
+                    "the soft constraints' penalty bound) exceeds the "
+                    "floating-point range, so no hard penalty can be derived; "
+                    "nothing was compiled or solved",
+                )
+            ],
         )
 
     @staticmethod
@@ -839,8 +898,16 @@ class OptimizationService:
         # compiled count, while compiling a large inequality is O(n²).
         # The post-compile check below stays as the final guarantee.
         variable_limit = self._policy.required_limit("variables")
-        if backend.is_exhaustive:
+        # One estimate serves both checks (2026-11-18 review R-19); a backend
+        # with neither ceiling is not estimated at all, as before.
+        estimated: int | None = None
+        if (
+            backend.is_exhaustive
+            or backend.capabilities.compiled_variable_limit is not None
+        ):
             estimated = estimate_model_variables(problem, compiler.model_type)
+        if backend.is_exhaustive:
+            assert estimated is not None
             if estimated > variable_limit:
                 return self._failure(
                     "resource_limit_exceeded",
@@ -852,7 +919,7 @@ class OptimizationService:
         # (``compiled_variable_limit``): flag-driven like the exhaustive one,
         # never by name, and again refused before the O(n²) compile.
         if backend.capabilities.compiled_variable_limit is not None:
-            estimated = estimate_model_variables(problem, compiler.model_type)
+            assert estimated is not None
             declared_error = compiled_variable_limit_error(
                 backend.capabilities, estimated
             )
@@ -868,6 +935,11 @@ class OptimizationService:
             if compiler.uses_hard_penalty
             else None
         )
+        # 2026-11-18 review R-11: an initial penalty outside the float range
+        # is not the retry ladder. Refused here, before anything is logged
+        # or compiled, and told apart by where the overflow comes from.
+        if penalty is not None and not math.isfinite(penalty):
+            return self._initial_penalty_overflow(problem, backend, direction, penalty)
         # Both scales walk the whole problem, so they are only computed
         # when the line will actually be emitted (2026-09-09 review F-26).
         # On the hard-penalty path ``initial_penalty`` already walked it
@@ -1070,7 +1142,13 @@ class OptimizationService:
             # business assignment was re-validated and ranked, so rank 1
             # is the global optimum of the ranking score. Computed once
             # so the field and the message can never disagree.
-            optimality_proven = backend.is_exhaustive and raw.num_samples > 0
+            # An interrupted enumeration is partial, so it proves nothing
+            # (2026-11-18 review R-18).
+            optimality_proven = (
+                backend.is_exhaustive
+                and raw.num_samples > 0
+                and not raw.interrupted
+            )
             return SolveResult(
                 status="success",
                 backend=backend.name,
@@ -1180,11 +1258,14 @@ class OptimizationService:
                     penalty = self._penalty_strategy.next_penalty(penalty, attempt)
 
             # An exhaustive backend proves infeasibility only by actually
-            # enumerating assignments: zero samples back is not a proof.
+            # enumerating assignments: zero samples back is not a proof,
+            # and neither is an enumeration the wall-clock limit cut short
+            # (2026-11-18 review R-18).
             proven = (
                 backend.is_exhaustive
                 and state.raw is not None
                 and state.raw.num_samples > 0
+                and not state.raw.interrupted
             )
             message, warnings = _infeasible_message(
                 proven,

@@ -1,0 +1,177 @@
+"""FRACTIONAL_HARD_EQUALITY on a schema 1.3 problem with constraint templates.
+
+2026-11-18 review R-01, stage A, combined with the schema 1.3 spec
+2026-09-25 §14.11 path mapping: the hard equalities a constraint template
+generates get the warning once, aggregated at the template path with the
+number of generated entries; explicit equalities keep one warning each at
+their own ``constraints[i]`` path. The CQM path never gets the warning.
+"""
+
+from annealbridge.models import OptimizationProblem
+from annealbridge.orchestration import OptimizationService
+from annealbridge.validation import expand_problem, validate_problem_full
+
+CODE = "FRACTIONAL_HARD_EQUALITY"
+ITEMS = ["a", "b", "c", "d"]
+
+
+def document(backend: str = "simulated_annealing") -> dict:
+    """Four generated fractional equalities, one integer-step template, and
+    three explicit equalities of which the first and the last are fractional."""
+    return {
+        "version": "1.3",
+        "name": "fractional templates",
+        "index_sets": [{"name": "item", "elements": ITEMS}],
+        "variable_families": [
+            {"name": "x", "indices": ["item"]},
+            {"name": "y", "indices": ["item"]},
+        ],
+        "variables": [{"name": "u"}, {"name": "v"}],
+        "objective": {
+            "direction": "maximize",
+            "linear_terms": [
+                {"variable": "u", "coefficient": 1},
+                {"variable": "v", "coefficient": 1},
+            ],
+            "linear_term_templates": [
+                {"for_each": ["i in item"], "coefficient": 1, "variable": "x[i]"}
+            ],
+        },
+        "constraints": [
+            {
+                "id": "explicit_half",
+                "type": "hard",
+                "terms": [{"variable": "u", "coefficient": 0.5}],
+                "operator": "==",
+                "rhs": 0.5,
+            },
+            {
+                "id": "explicit_integer",
+                "type": "hard",
+                "terms": [
+                    {"variable": "u", "coefficient": 1},
+                    {"variable": "v", "coefficient": 1},
+                ],
+                "operator": "==",
+                "rhs": 1,
+            },
+            {
+                "id": "explicit_quarter",
+                "type": "hard",
+                "terms": [
+                    {"variable": "u", "coefficient": 0.25},
+                    {"variable": "v", "coefficient": 0.75},
+                ],
+                "operator": "==",
+                "rhs": 0.75,
+            },
+        ],
+        "constraint_templates": [
+            {
+                "id": "pair",
+                "type": "hard",
+                "for_each": ["i in item"],
+                "terms": [
+                    {"coefficient": 0.5, "variable": "x[i]"},
+                    {"coefficient": 0.5, "variable": "y[i]"},
+                ],
+                "operator": "==",
+                "rhs": 0.5,
+            },
+            {
+                # Fractional coefficients whose common step is 2.5 >= 1:
+                # every violation is at least one unit, so no warning.
+                "id": "coarse",
+                "type": "hard",
+                "for_each": ["i in item"],
+                "terms": [
+                    {"coefficient": 2.5, "variable": "x[i]"},
+                    {"coefficient": 2.5, "variable": "y[i]"},
+                ],
+                "operator": "==",
+                "rhs": 2.5,
+            },
+        ],
+        "solver": {"backend": backend},
+    }
+
+
+def problem(backend: str = "simulated_annealing") -> OptimizationProblem:
+    return OptimizationProblem.model_validate(document(backend))
+
+
+def fractional(warnings) -> list:
+    return [warning for warning in warnings if warning.code == CODE]
+
+
+def test_the_document_expands_to_the_expected_constraints():
+    expansion = expand_problem(problem())
+    assert not expansion.errors
+    assert [constraint.id for constraint in expansion.problem.constraints] == [
+        "explicit_half",
+        "explicit_integer",
+        "explicit_quarter",
+        *(f"pair[{item}]" for item in ITEMS),
+        *(f"coarse[{item}]" for item in ITEMS),
+    ]
+
+
+def assert_bqm_warnings(warnings) -> None:
+    found = fractional(warnings)
+    assert [warning.path for warning in found] == [
+        "constraints[0]",
+        "constraints[2]",
+        "constraint_templates[0]",
+    ]
+    explicit_half, explicit_quarter, generated = found
+
+    # Explicit entries: one warning each, their message untouched.
+    assert explicit_half.message.startswith("Hard equality constraint explicit_half ")
+    assert "generated" not in explicit_half.message
+    assert explicit_quarter.message.startswith(
+        "Hard equality constraint explicit_quarter "
+    )
+    assert "generated" not in explicit_quarter.message
+
+    # Generated entries: one aggregated warning at the template path.
+    assert generated.message.startswith("Hard equality constraint pair[a] ")
+    assert "(generated by constraint_templates[0] with i=a)" in generated.message
+    assert generated.message.endswith(
+        f"; {len(ITEMS)} generated entries from this template get this warning"
+    )
+
+    # Nothing points at an expanded constraint index or at the coarse template.
+    assert all(not warning.path.startswith("constraints[3") for warning in found)
+    assert "constraint_templates[1]" not in {warning.path for warning in found}
+    for warning in found:
+        assert warning.recommended_action
+        assert warning.recommended_action == found[0].recommended_action
+
+
+def test_validate_problem_full_on_the_bqm_path_aggregates_the_template():
+    result = validate_problem_full(problem(), model_type="bqm")
+
+    assert result.valid
+    assert result.errors == []
+    assert_bqm_warnings(result.warnings)
+
+
+def test_service_validate_with_a_heuristic_backend_aggregates_the_template():
+    result = OptimizationService().validate(problem("simulated_annealing"))
+
+    assert result.valid
+    assert_bqm_warnings(result.warnings)
+
+
+def test_cqm_path_has_no_fractional_equality_warning():
+    result = validate_problem_full(problem(), model_type="cqm")
+
+    assert result.valid
+    assert fractional(result.warnings) == []
+
+
+def test_exhaustive_backend_has_no_fractional_equality_warning():
+    result = OptimizationService().validate(problem("exact"))
+
+    assert result.valid
+    assert fractional(result.warnings) == []

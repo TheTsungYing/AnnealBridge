@@ -299,6 +299,11 @@ A **quadratic term** is
   `UNKNOWN_VARIABLE`.
 - A coefficient or the constant that is NaN or infinite is rejected with
   `NON_FINITE_COEFFICIENT`.
+- Finite coefficients must also not add up beyond the floating-point range:
+  when the sum of the objective's coefficient magnitudes over the variables'
+  ranges is not finite (on the BQM path, together with the bound on the soft
+  constraints' total penalty), the problem is rejected with
+  `COEFFICIENT_MAGNITUDE_TOO_LARGE`.
 - Duplicate terms are **not** an error: the compiler sums them and the
   validator emits the `DUPLICATE_TERM_MERGED` warning.
 - `variable1 == variable2` is rejected with `SELF_QUADRATIC_TERM` for a binary
@@ -349,6 +354,17 @@ value** — the JSON number may be written as `6` or `6.0`, but it must be
 mathematically integral. Non-integer values are rejected with
 `NON_INTEGER_INEQUALITY`. Equality (`==`) constraints are not subject to this
 restriction, and no automatic scaling of fractional coefficients is performed.
+
+A hard equality with fractional coefficients is accepted, but on the BQM path
+it is best rewritten with integers. The hard penalty is derived for violations
+of at least one unit; when the common spacing of an equality's coefficients
+and `rhs` is below 1 (as in `0.5x + 0.5y == 0.5`), a violation can be smaller
+than that, the penalty may be too weak to rule it out, and a heuristic backend
+may find no feasible solution. Such a constraint gets the
+`FRACTIONAL_HARD_EQUALITY` warning unless the backend is exhaustive. Multiply
+both sides by a common factor (`x + y == 1`), or use a backend on the CQM path,
+which keeps hard constraints native. Coefficients that are fractional but
+share a spacing of at least 1, such as `2.5x + 2.5y == 5`, raise no warning.
 
 The restriction also applies on the CQM path, where slack variables are not
 used at all. It is kept deliberately conservative so that both paths accept

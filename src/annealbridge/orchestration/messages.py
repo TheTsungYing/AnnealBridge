@@ -25,8 +25,9 @@ def _infeasible_message(
     compiler and a policy behind it. ``wall_clock_limited`` (batch 6 J):
     the wall-clock limit cut the search short, which then is the reason
     given; the WALL_CLOCK_LIMIT_REACHED warning is added by the service.
-    An exhaustive backend is never interrupted, so ``proven`` and a cut
-    search do not meet.
+    ``proven`` and a cut search do not meet: the service never calls an
+    interrupted enumeration a proof (2026-11-18 review R-18), so an
+    exhaustive backend the limit stopped part-way gets this wording too.
     """
     warnings: list[SolveError] = []
     if wall_clock_limited and not proven:

@@ -43,8 +43,10 @@ from annealbridge.validation.estimates import (
     accumulate_terms,
     analyze_inequality,
     compute_objective_scale,
+    compute_soft_energy_total,
     constraint_bit_count,
     count_slack_bits,
+    equality_violation_step_below_one,
     estimate_encoded_interactions,
     estimate_model_variables,
     integer_encoding_bits,
@@ -104,6 +106,7 @@ VALIDATOR_ERROR_CODES: frozenset[str] = frozenset(
     {
         "BOUNDS_ON_BINARY",
         "CARDINALITY_VARIABLE_NOT_BINARY",
+        "COEFFICIENT_MAGNITUDE_TOO_LARGE",
         "DUPLICATE_CARDINALITY_VARIABLE",
         "DUPLICATE_CONSTRAINT_ID",
         "DUPLICATE_TEMPLATE_NAME",
@@ -303,6 +306,9 @@ def _collect(
     for index, cardinality in enumerate(problem.cardinality_constraints):
         _check_cardinality_constraint(cardinality, index, variable_types, errors)
     _check_solver_preferences(problem, errors)
+    if not errors:
+        # Needs legal bounds, so only once everything above is clean.
+        _check_objective_range(problem, errors)
 
     duplicate_warnings: list[SolveError] = []
     if duplicate_terms:
@@ -392,6 +398,9 @@ def _validate_full(
     # Safe from here on: the error pass guarantees every bound is legal.
     bounds = variable_bounds(problem)
     objective_scale = compute_objective_scale(problem.objective, bounds)
+    _check_soft_energy_range(problem, bounds, objective_scale, model_type, errors)
+    if errors:
+        return ProblemValidationResult(valid=False, errors=errors)
     estimated = estimate_model_variables(problem, model_type)
 
     warnings = [] if warnings is None else warnings
@@ -399,6 +408,7 @@ def _validate_full(
     _warn_inequalities(problem, bounds, warnings)
     _warn_constraint_ranges(problem, bounds, warnings)
     _warn_cardinality_form(problem, model_type, warnings)
+    _warn_fractional_equalities(problem, model_type, capabilities, warnings)
     _warn_integer_encoding(problem, bounds, model_type, warnings)
     if capabilities is not None:
         _warn_exact_limits(estimated, capabilities, max_compiled_variables, warnings)
@@ -950,6 +960,52 @@ def _warn_cardinality_form(
                     f"{len(names)} binary variables; declared in "
                     'cardinality_constraints (operator "<=", rhs 1) it compiles '
                     "on a BQM backend without a slack variable"
+                ),
+            )
+        )
+
+
+def _warn_fractional_equalities(
+    problem: OptimizationProblem,
+    model_type: ModelType,
+    capabilities: SolverCapabilities | None,
+    warnings: list[SolveError],
+) -> None:
+    """2026-11-18 review R-01: a hard equality a BQM penalty may not enforce.
+
+    The hard penalty is derived for violations of at least one unit
+    (``compute_penalty_scale``). A hard ``==`` whose coefficients and rhs
+    are not all integers can be violated by less
+    (:func:`equality_violation_step_below_one`), and then the compiled
+    model's minimum may sit on an infeasible assignment: a heuristic backend
+    returns no feasible sample and the solve ends ``infeasible``.
+
+    Advisory only; nothing about compilation changes. On the BQM path only
+    (the CQM path keeps hard constraints native), and not for an exhaustive
+    backend, which enumerates every assignment and is re-validated against
+    the original problem whatever the penalty is. A cardinality constraint
+    has unit coefficients and an integer rhs, so it never qualifies.
+    """
+    if model_type != "bqm":
+        return
+    if capabilities is not None and capabilities.exhaustive:
+        return
+    for path, constraint in _constraint_paths(problem):
+        if constraint.type != "hard" or constraint.operator != "==":
+            continue
+        if not equality_violation_step_below_one(constraint):
+            continue
+        warnings.append(
+            _warning(
+                "FRACTIONAL_HARD_EQUALITY",
+                path,
+                (
+                    f"Hard equality constraint {constraint.id} has a "
+                    "non-integer coefficient or rhs, so it can be violated by "
+                    "less than 1; on a BQM backend the hard penalty is derived "
+                    "for violations of at least one unit and may be too weak "
+                    "to rule such a violation out, in which case no feasible "
+                    "solution is found"
                 ),
             )
         )
@@ -1587,6 +1643,72 @@ def _check_constraint(
     # the exact range, the same way it is skipped for illegal bounds.
     if _check_inequality_magnitude(constraint, base, safe_bounds, errors):
         _check_trivially_infeasible(constraint, base, safe_bounds, errors)
+
+
+def _check_objective_range(problem: OptimizationProblem, errors: list[SolveError]) -> None:
+    """2026-11-18 review R-11: finite coefficients whose range is not finite.
+
+    Every coefficient passed the checks above, yet their magnitudes can
+    still add up beyond float64 (two coefficients of ``1e308``). Then
+    ``objective_scale`` is infinite and objective values of different
+    assignments can no longer be compared, on any compiler path and
+    whatever the backend, so this belongs to the error pass. Before this
+    check the service reported such a problem as PENALTY_OVERFLOW after
+    zero attempts, even without a single hard constraint.
+
+    Called only when the pass is otherwise clean: the scale is taken over
+    the variables' declared ranges, which must be legal.
+    """
+    scale = compute_objective_scale(problem.objective, variable_bounds(problem))
+    if math.isfinite(scale):
+        return
+    errors.append(
+        _error(
+            code="COEFFICIENT_MAGNITUDE_TOO_LARGE",
+            path="objective",
+            message=(
+                "The objective's coefficients are too large: the sum of "
+                "their magnitudes over the variables' ranges exceeds the "
+                "floating-point range, so objective values cannot be "
+                "compared"
+            ),
+        )
+    )
+
+
+def _check_soft_energy_range(
+    problem: OptimizationProblem,
+    bounds: Bounds,
+    objective_scale: float,
+    model_type: ModelType,
+    errors: list[SolveError],
+) -> None:
+    """2026-11-18 review R-11: the BQM path's penalty scale must be finite.
+
+    ``objective_scale`` (finite: :func:`_check_objective_range` passed) plus
+    the soft energy bound is the penalty scale of ``compute_penalty_scale``;
+    when it overflows no hard penalty can be derived from it, and the
+    service used to report PENALTY_OVERFLOW after zero attempts although no
+    penalty ladder was involved. Depends on the compiler path, like the
+    advisories beside it: the CQM path derives no hard penalty, and its
+    compiler reports an overflowing soft term itself.
+    """
+    if model_type != "bqm":
+        return
+    if math.isfinite(objective_scale + compute_soft_energy_total(problem, bounds)):
+        return
+    errors.append(
+        _error(
+            code="COEFFICIENT_MAGNITUDE_TOO_LARGE",
+            path="constraints",
+            message=(
+                "The soft constraints' weights and coefficients are too "
+                "large: the bound on their total penalty exceeds the "
+                "floating-point range, so the model cannot be scaled on a "
+                "BQM backend"
+            ),
+        )
+    )
 
 
 def _check_inequality_magnitude(

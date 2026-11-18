@@ -262,6 +262,16 @@ RECOMMENDED_ACTIONS: dict[str, str] = {
         "could be encoded wrongly; rescale the unit of the coefficients or "
         "the variables, or tighten the bounds."
     ),
+    # 2026-11-18 review R-11: every number is finite, but the range the
+    # objective or the soft penalties span is not. A problem-side verdict,
+    # kept apart from PENALTY_OVERFLOW (the hard penalty leaving the range).
+    "COEFFICIENT_MAGNITUDE_TOO_LARGE": (
+        "The objective's or the soft constraints' magnitudes add up beyond "
+        "the floating-point range, so solutions cannot be scored or the "
+        "model scaled; rescale the unit of the objective, the soft weights "
+        "or the coefficients so that their magnitudes stay well inside that "
+        "range."
+    ),
     # Schema 1.2 spec 2026-09-25 §11.1. The version a feature needs is named
     # in the message only: this fixed guidance holds for every feature gate.
     "FEATURE_REQUIRES_NEWER_VERSION": (

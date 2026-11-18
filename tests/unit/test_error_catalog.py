@@ -57,6 +57,9 @@ EXPECTED_CODES = [
     # 2026-09-09 review (F-24): an inequality whose coefficients times its
     # variables' bounds put the slack range beyond exact float64 integers.
     "INEQUALITY_MAGNITUDE_TOO_LARGE",
+    # 2026-11-18 review (R-11): finite coefficients whose objective range or
+    # soft penalty bound adds up beyond the floating-point range.
+    "COEFFICIENT_MAGNITUDE_TOO_LARGE",
     # Compilation
     "COMPILATION_FAILED",
     # 2026-09-09 review (F-02 / F-07 / F-08): the parameter ceilings that
@@ -130,7 +133,7 @@ class TestRecommendedActions:
         assert set(RECOMMENDED_ACTIONS) == set(EXPECTED_CODES)
 
     def test_expected_codes_are_unique(self):
-        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 64
+        assert len(EXPECTED_CODES) == len(set(EXPECTED_CODES)) == 65
 
 
 class TestRetryableCodes:
@@ -166,6 +169,9 @@ EXPECTED_VALIDATOR_CODES = {
     "INTEGER_REQUIRES_VERSION_1_1",
     # 2026-09-09 review (F-24).
     "INEQUALITY_MAGNITUDE_TOO_LARGE",
+    # 2026-11-18 review (R-11): the objective range (every path) and the
+    # BQM path's soft penalty bound.
+    "COEFFICIENT_MAGNITUDE_TOO_LARGE",
     # Batch 6 (J): backend-dependent, raised by validate_problem_full.
     "WALL_CLOCK_LIMIT_UNSUPPORTED",
     # Schema 1.2 spec 2026-09-25 §11.1.
@@ -415,6 +421,22 @@ class TestEmittedWarningCodesAreCatalogued:
         text = _WARNING_RECOMMENDED_ACTIONS["CARDINALITY_FORM_AVAILABLE"]
         assert "cardinality_constraints" in text
         assert "rhs one" in text
+
+    def test_fractional_hard_equality_warning_is_emitted_with_guidance(self):
+        """2026-11-18 review R-01: the validator's fractional-equality advisory."""
+        from annealbridge.validation.problem_validator import (
+            _WARNING_RECOMMENDED_ACTIONS,
+        )
+
+        emitted = literal_warning_codes()
+        assert "FRACTIONAL_HARD_EQUALITY" in emitted
+        assert all(
+            site.startswith("validation/problem_validator.py")
+            for site in emitted["FRACTIONAL_HARD_EQUALITY"]
+        )
+        text = _WARNING_RECOMMENDED_ACTIONS["FRACTIONAL_HARD_EQUALITY"]
+        assert "integers" in text
+        assert "cqm" in text
 
     def test_service_warnings_reuse_the_error_catalog(self):
         """§20: warnings the *service* adds (UNKNOWN_BACKEND, ...) are catalog codes."""

@@ -506,6 +506,12 @@ class TestPenaltyOverflow:
         assert result.attempts == []
         assert backend.solve_calls == 0
         assert result.errors[0].recommended_action
+        # 2026-11-18 review R-11: nothing was attempted, so the wording
+        # speaks neither of attempts nor of feasibility.
+        message = result.errors[0].message
+        assert message.startswith("Initial hard penalty")
+        assert "attempt(s)" not in message
+        assert "feasible" not in message
 
     def test_doubling_stops_before_the_penalty_leaves_float_range(
         self, warnings_are_errors
@@ -524,6 +530,9 @@ class TestPenaltyOverflow:
         assert all(math.isfinite(p) for p in backend.penalties)
         message = result.errors[0].message
         assert str(len(result.attempts)) in message
+        # The retry-ladder wording is unchanged (2026-11-18 review R-11).
+        assert "attempt(s)" in message
+        assert "no feasible solution was found before the ceiling" in message
 
     def test_finite_penalty_that_overflows_in_compile_is_refused(
         self, warnings_are_errors
@@ -536,6 +545,11 @@ class TestPenaltyOverflow:
         assert result.status == "resource_limit_exceeded"
         assert codes(result) == ["PENALTY_OVERFLOW"]
         assert backend.solve_calls == 0
+        # 2026-11-18 review R-11: worded for a compile that never reached
+        # a backend, not for the retry ladder.
+        message = result.errors[0].message
+        assert "non-finite bias" in message
+        assert "attempt(s)" not in message
 
     def test_last_completed_attempt_metadata_survives_the_ladder(
         self, warnings_are_errors
