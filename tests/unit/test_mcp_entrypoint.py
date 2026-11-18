@@ -126,22 +126,113 @@ def test_run_reports_the_missing_extra_for_the_subcommand_too(
 
 
 @pytest.mark.parametrize(
-    ("name", "expected"),
+    ("exc", "expected"),
     [
-        ("mcp", True),
-        ("mcp.server", True),
-        ("anyio", False),
-        ("annealbridge.interfaces.mcp.server", False),
-        (None, False),
+        (ModuleNotFoundError(name="mcp"), mcp_entrypoint.MISSING_EXTRA_MESSAGE),
+        (
+            ModuleNotFoundError(name="mcp.server"),
+            mcp_entrypoint.INCOMPATIBLE_MCP_MESSAGE,
+        ),
+        (ImportError(name="mcp"), mcp_entrypoint.INCOMPATIBLE_MCP_MESSAGE),
+        (ImportError(name="mcp.server"), mcp_entrypoint.INCOMPATIBLE_MCP_MESSAGE),
+        (ModuleNotFoundError(name="anyio"), None),
+        (ImportError(name="anyio"), None),
+        (ModuleNotFoundError(name="annealbridge.interfaces.mcp.server"), None),
+        (ImportError(name="annealbridge.interfaces.mcp.tools"), None),
+        (ModuleNotFoundError(name="mcpx"), None),
+        (ModuleNotFoundError(name=None), None),
+        (ImportError(), None),
     ],
 )
-def test_only_the_third_party_mcp_package_counts_as_the_missing_extra(
-    name: str | None, expected: bool
+def test_only_the_third_party_mcp_package_is_reported(
+    exc: ImportError, expected: str | None
 ) -> None:
-    """2026-09-11 install verification (gap 3): the shim must recognise the
-    ``mcp`` distribution and nothing else — not another missing dependency and
-    not our own ``annealbridge.interfaces.mcp`` modules."""
-    assert mcp_entrypoint._is_missing_mcp(ModuleNotFoundError(name=name)) is expected
+    """2026-09-11 install verification (gap 3), widened by the 2026-11-18 review
+    (R-17): the shim must recognise the ``mcp`` distribution and nothing else
+    — not another missing dependency, not our own
+    ``annealbridge.interfaces.mcp`` modules, and not an error naming no
+    module. Only ``mcp`` itself missing is the missing extra; anything else
+    from ``mcp`` is an incompatible release."""
+    assert mcp_entrypoint._mcp_import_problem(exc) == expected
+
+
+def _raise_on_server_import(
+    monkeypatch: pytest.MonkeyPatch, error: ImportError
+) -> None:
+    """Make importing the MCP server module raise ``error``, as an
+    incompatible or broken ``mcp`` install would."""
+    _forget_mcp_modules(monkeypatch)
+    real_import = builtins.__import__
+
+    def _fake_import(name, *args, **kwargs):
+        if name == "annealbridge.interfaces.mcp.server":
+            raise error
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ImportError("cannot import name 'X' from 'mcp'", name="mcp"),
+        ModuleNotFoundError(
+            "No module named 'mcp.server.mcpserver'", name="mcp.server.mcpserver"
+        ),
+    ],
+    ids=["missing-name", "missing-submodule"],
+)
+@pytest.mark.parametrize("entry", ["console-script", "subcommand"])
+def test_an_incompatible_mcp_release_exits_2_with_the_upgrade_hint(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: ImportError,
+    entry: str,
+) -> None:
+    """2026-11-18 review (R-17): an older ``mcp`` that lacks a name or submodule
+    the server imports gets one stderr line with the upgrade hint and exit
+    code 2 from either entry point, never a traceback."""
+    _raise_on_server_import(monkeypatch, error)
+
+    with pytest.raises(SystemExit) as excinfo:
+        if entry == "console-script":
+            mcp_entrypoint.main()
+        else:
+            mcp_entrypoint.run([], prog="annealbridge mcp")
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.err == mcp_entrypoint.INCOMPATIBLE_MCP_MESSAGE + "\n"
+    assert 'pip install --upgrade "annealbridge[mcp]"' in captured.err
+    assert "Traceback" not in captured.err
+    assert captured.out == ""
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ImportError(
+            "cannot import name 'X' from 'annealbridge.interfaces.mcp.tools'",
+            name="annealbridge.interfaces.mcp.tools",
+        ),
+        ImportError("something went wrong"),
+    ],
+    ids=["our-own-module", "no-name"],
+)
+def test_an_import_error_not_from_mcp_is_re_raised(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: ImportError,
+) -> None:
+    """2026-11-18 review (R-17): an import failure in our own modules, or one
+    naming no module, is a bug to surface, not an install problem to hide."""
+    _raise_on_server_import(monkeypatch, error)
+
+    with pytest.raises(ImportError) as excinfo:
+        mcp_entrypoint.main()
+
+    assert excinfo.value is error
+    assert capsys.readouterr().err == ""
 
 
 def test_a_different_missing_dependency_is_not_swallowed(

@@ -1369,9 +1369,11 @@ The numerical constants of the dynamics are the paper's and are not exposed.
 | --- | --- | --- | --- |
 | `time_limit_seconds` | finite number > 0 \| null | `null` | Hybrid solver time budget. `null` uses the sampler's minimum. Above `ANNEALBRIDGE_MAX_REMOTE_TIME_SECONDS` it is refused with `REMOTE_TIME_LIMIT`, never clamped. |
 
-For `leap_hybrid_cqm` the sampler's minimum `time_limit_seconds` is 5 s: a
-lower value is raised to the minimum and reported in
-`metadata.effective_time_limit_seconds`.
+Both backends apply the same rule: a `time_limit_seconds` below the sampler's
+minimum for the model is raised to that minimum, and the value actually used
+is reported in `metadata.effective_time_limit_seconds`. For `leap_hybrid_cqm`
+the minimum is 5 s; for `leap_hybrid_bqm` the sampler determines it from the
+model.
 
 **`fujitsu_da`**
 

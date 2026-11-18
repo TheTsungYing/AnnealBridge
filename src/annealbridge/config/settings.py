@@ -199,6 +199,30 @@ def unknown_settings_variables(environ: Mapping[str, str] = os.environ) -> list[
     return sorted(unknown)
 
 
+# pydantic prefixes the message of a ValueError raised in a field validator.
+_VALUE_ERROR_PREFIX = "Value error, "
+
+
+def _variable_name(loc: tuple[int | str, ...]) -> str:
+    """The environment variable an error location belongs to.
+
+    The first part is the field, written as the variable the operator set
+    (``ANNEALBRIDGE_LIMITS``). Anything after it is a position inside that
+    variable's value — a key of the ``ANNEALBRIDGE_LIMITS`` JSON object —
+    and is appended as written (``ANNEALBRIDGE_LIMITS.iterations``): keys
+    are case-sensitive, so upper-casing one would name a key that is not
+    there (2026-11-18 review R-04).
+    """
+    prefix = str(ServerSettings.model_config["env_prefix"])
+    field, *inner = [str(part) for part in loc] or [""]
+    return ".".join([f"{prefix}{field}".upper(), *inner])
+
+
+def _reason(message: str) -> str:
+    """pydantic's reason without the prefix it gives a validator's own error."""
+    return message.removeprefix(_VALUE_ERROR_PREFIX)
+
+
 def load_settings() -> ServerSettings:
     """Read :class:`ServerSettings` from the environment.
 
@@ -222,9 +246,7 @@ def load_settings() -> ServerSettings:
             "values are not echoed:"
         ]
         for error in exc.errors():
-            field = ".".join(str(part) for part in error["loc"])
-            variable = f"{ServerSettings.model_config['env_prefix']}{field}".upper()
-            lines.append(f"  {variable}: {error['msg']}")
+            lines.append(f"  {_variable_name(error['loc'])}: {_reason(error['msg'])}")
         raise SettingsError("\n".join(lines)) from None
     except PydanticSettingsError as exc:
         raise SettingsError(f"Invalid server settings: {exc}") from None

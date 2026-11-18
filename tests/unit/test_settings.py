@@ -665,6 +665,39 @@ class TestGenericLimits:
 
         assert "ANNEALBRIDGE_LIMITS" in str(exc_info.value)
 
+    def test_rejected_limit_value_is_not_echoed(self, clean_env):
+        # 2026-11-18 review (R-04): the header promises "values are not
+        # echoed", and the limits rule used to append "(got <value>)".
+        clean_env.setenv("ANNEALBRIDGE_LIMITS", '{"iterations": -123456789}')
+
+        with pytest.raises(SettingsError) as exc_info:
+            load_settings()
+
+        message = str(exc_info.value)
+        assert "values are not echoed" in message
+        assert "123456789" not in message
+        assert (
+            "  ANNEALBRIDGE_LIMITS: limit 'iterations' must be a finite number "
+            "greater than 0"
+        ) in message.splitlines()
+        # pydantic's prefix for a validator's own error is dropped.
+        assert "Value error" not in message
+
+    def test_a_limit_key_keeps_its_own_spelling_in_the_variable_path(self, clean_env):
+        # 2026-11-18 review (R-04): only the variable name is upper-cased;
+        # the key inside its JSON value is case-sensitive and shown as set.
+        secret = "DEV-" + "a" * 24
+        clean_env.setenv("ANNEALBRIDGE_LIMITS", '{"iterations": "%s"}' % secret)
+
+        with pytest.raises(SettingsError) as exc_info:
+            load_settings()
+
+        message = str(exc_info.value)
+        assert "  ANNEALBRIDGE_LIMITS.iterations: " in message
+        assert "ITERATIONS" not in message
+        assert secret not in message
+        assert "DEV-" not in message
+
     def test_old_env_names_still_drive_the_compatibility_keys(self, clean_env):
         clean_env.setenv("ANNEALBRIDGE_EXACT_MAX_VARIABLES", "8")
         clean_env.setenv("ANNEALBRIDGE_MAX_QPU_READS", "50")

@@ -68,6 +68,11 @@ stderr, use the terminal's encoding.
 `solve`, `validate`, `recommend` and `expand` take a `PROBLEM_FILE` argument:
 the path of an `OptimizationProblem` JSON document, or `-` to read the
 document from stdin. Either way it is decoded as UTF-8, with or without a byte-order mark.
+Bytes in any other encoding are unusable input: one stderr line,
+`Error: '<file>' is not valid UTF-8 (undecodable byte at offset N)`, and exit
+code `2`. When the input starts with a UTF-16 byte-order mark — what Windows
+PowerShell 5.1 `>` and `Out-File` write by default — the line adds a hint to
+save it as UTF-8 (for example with `Out-File -Encoding utf8`).
 Every message about a document read from stdin names it `<stdin>`:
 
 ```console
@@ -143,6 +148,7 @@ Best solution (rank 1)
 
 Hard constraints: 1 / 1 satisfied
 Soft constraints: 0 violations
+Optimality proven: yes
 ```
 
 What the report shows depends on `status`. `success` prints the best solution
@@ -585,7 +591,8 @@ suits you; a hand-written host configuration is shorter with
 
 Exit `2` covers five distinct situations, and all five print to stderr:
 
-- **The input file (or stdin) cannot be used** — unreadable, not valid JSON
+- **The input file (or stdin) cannot be used** — unreadable, not valid UTF-8
+  (see [The problem file](#the-problem-file)), not valid JSON
   (a document nested too deeply, or holding an integer too long to parse,
   included: it is reported like any other unusable input, never as a Python
   traceback), or not a valid `OptimizationProblem` document:

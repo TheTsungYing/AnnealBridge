@@ -83,6 +83,8 @@ export ANNEALBRIDGE_ENABLED_BACKENDS="exact,simulated_annealing"
 - A backend outside the list is refused with `backend_unavailable` /
   `BACKEND_DISABLED_BY_POLICY`, and is reported as not enabled in the
   capabilities view, so an agent is not steered towards it.
+- A name that matches no registered backend is not an error, but it enables
+  nothing; such names are listed in a WARNING log at startup.
 
 Note that a remote backend the policy will not call is reported as *not
 enabled* regardless of this list: with `ANNEALBRIDGE_ALLOW_REMOTE=false`, all

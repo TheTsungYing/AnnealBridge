@@ -202,6 +202,17 @@ class TestLimitsValidation:
 
         assert [error["loc"] for error in exc_info.value.errors()] == [("limits",)]
 
+    def test_rejected_value_is_not_part_of_the_message(self):
+        # 2026-11-18 review (R-04): this message is shown to the operator by
+        # the settings error, which promises never to echo a value.
+        with pytest.raises(ValidationError) as exc_info:
+            ExecutionPolicy(limits={"iterations": -123456789})
+
+        (error,) = exc_info.value.errors()
+        assert error["msg"] == (
+            "Value error, limit 'iterations' must be a finite number greater than 0"
+        )
+
     def test_smallest_positive_value_is_accepted(self):
         assert ExecutionPolicy(limits={"iterations": 1e-9}).limit("iterations") == 1e-9
 

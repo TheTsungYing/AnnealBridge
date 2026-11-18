@@ -144,8 +144,8 @@ See [Templates](problem-format.md#templates-version-13) for the full rules.
 - **`exact`** is a testing and debugging backend, and a ground-truth benchmark
   for the annealer. The state space doubles with every variable, so it is
   limited to small problems.
-- **Leap Hybrid** typically returns a single sample per solve, so there is no
-  set of runners-up to rank.
+- **`leap_hybrid_bqm`** typically returns a single sample per solve, so there
+  is no set of runners-up to rank.
 - **QPU embedding may fail** for dense problems; the result then carries
   `EMBEDDING_FAILED`.
 

@@ -79,7 +79,8 @@ class LeapHybridBQMOptions(InputModel):
     # None → sampler 最小值
     time_limit_seconds: Quantity | None = _finite(
         "Time budget for the hybrid solver, in seconds. Must be positive; "
-        "null uses the sampler's own minimum for the model."
+        "null uses the sampler's own minimum for the model, and a value below "
+        "that minimum is raised to it and reported in the result metadata."
     )
 
 

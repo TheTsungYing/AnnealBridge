@@ -99,6 +99,36 @@ def _format_number(value: float) -> str:
 STDIN_ARGUMENT = "-"
 
 
+# Byte-order marks of UTF-16 (little- and big-endian). Windows PowerShell 5.1
+# writes UTF-16LE with a BOM through ``>`` and ``Out-File`` by default.
+_UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
+
+
+def _decode_utf8(data: bytes, source: str) -> str:
+    """``data`` decoded as UTF-8, a leading BOM dropped, or one stderr line
+    and exit code 2.
+
+    The message gives only the offset of the first undecodable byte, never
+    the bytes themselves, and adds a hint when the input carries a UTF-16
+    byte-order mark.
+    """
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        message = (
+            f"Error: '{source}' is not valid UTF-8 "
+            f"(undecodable byte at offset {exc.start})"
+        )
+        if data.startswith(_UTF16_BOMS):
+            message += (
+                "; it looks like UTF-16, so save it as UTF-8 (Windows PowerShell "
+                "5.1 '>' and Out-File write UTF-16 by default; use "
+                "'Out-File -Encoding utf8' or 'Set-Content -Encoding utf8')"
+            )
+        typer.echo(message, err=True)
+        raise typer.Exit(code=2)
+
+
 def _read_stdin() -> str:
     """The whole of stdin as UTF-8 text, a leading BOM dropped.
 
@@ -106,13 +136,11 @@ def _read_stdin() -> str:
     layer, whose encoding follows the Windows console code page.
     """
     try:
-        return sys.stdin.buffer.read().decode("utf-8-sig")
+        data = sys.stdin.buffer.read()
     except OSError as exc:
         typer.echo(f"Error: cannot read '<stdin>': {exc}", err=True)
         raise typer.Exit(code=2)
-    except UnicodeDecodeError as exc:
-        typer.echo(f"Error: '<stdin>' is not valid UTF-8: {exc}", err=True)
-        raise typer.Exit(code=2)
+    return _decode_utf8(data, "<stdin>")
 
 
 def _source_name(path: Path) -> str:
@@ -129,10 +157,11 @@ def _load_problem(path: Path) -> OptimizationProblem:
         text = _read_stdin()
     else:
         try:
-            text = path.read_text(encoding="utf-8-sig")
+            data = path.read_bytes()
         except OSError as exc:
             typer.echo(f"Error: cannot read '{source}': {exc}", err=True)
             raise typer.Exit(code=2)
+        text = _decode_utf8(data, source)
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:

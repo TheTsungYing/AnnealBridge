@@ -51,8 +51,10 @@ def validate_limits(limits: dict[str, float]) -> dict[str, float]:
                 f"'{COMPATIBILITY_LIMIT_FIELDS[key]}' instead of limits['{key}']"
             )
         if not math.isfinite(value) or value <= 0:
+            # The value is deliberately left out: this message reaches the
+            # operator through the settings error, which never echoes one.
             raise ValueError(
-                f"limit '{key}' must be a finite number greater than 0 (got {value!r})"
+                f"limit '{key}' must be a finite number greater than 0"
             )
     return limits
 

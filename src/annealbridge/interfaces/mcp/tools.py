@@ -8,7 +8,13 @@ Every core call that does real work (validate, recommend, solve) runs in a
 worker thread through ``anyio.to_thread.run_sync`` (2026-09-09 review F-15):
 they are synchronous and CPU-bound, and a large problem — ``recommend`` runs
 the full validation once per registered backend — would otherwise freeze the
-event loop and with it every other client of the server.
+event loop and with it every other client of the server. So does what comes
+before them (2026-11-18 review R-05): parsing the submitted document into
+the model is a full ``model_validate``, around a second for a document of
+several megabytes, and assembling the capabilities view asks every backend
+whether it is available. Only ``get_state()`` stays on the event loop: its
+lazy build is not guarded against two threads, and once built it is a read
+of one module global.
 
 A solve is also cancellable (batch 6 J): when the client cancels the
 request, the solve is told to stop through a ``CancelToken`` and the
@@ -195,8 +201,13 @@ async def get_optimization_capabilities(
     cardinality constraints too.
     """
     state = get_state()
-    return build_capabilities(
-        state.registry, state.policy, include_schema=include_schema
+    return await anyio.to_thread.run_sync(
+        functools.partial(
+            build_capabilities,
+            state.registry,
+            state.policy,
+            include_schema=include_schema,
+        )
     )
 
 
@@ -250,7 +261,9 @@ async def validate_optimization_problem(
     pairwise penalty there and has no slack bits. On a cqm backend integer
     variables are native and no encoding bits are counted.
     """
-    parsed = _parse("validate_optimization_problem", problem)
+    parsed = await anyio.to_thread.run_sync(
+        _parse, "validate_optimization_problem", problem
+    )
     if not isinstance(parsed, OptimizationProblem):
         return invalid_validation_result(parsed)
     return await anyio.to_thread.run_sync(get_state().service.validate, parsed)
@@ -293,7 +306,7 @@ async def recommend_backend(problem: ProblemArgument) -> BackendRecommendationRe
     document with templates is expanded first and ranked as the expanded
     problem; an error in a template names the template's own path.
     """
-    parsed = _parse("recommend_backend", problem)
+    parsed = await anyio.to_thread.run_sync(_parse, "recommend_backend", problem)
     if not isinstance(parsed, OptimizationProblem):
         return invalid_recommendation_result(parsed)
     return await anyio.to_thread.run_sync(get_state().service.recommend, parsed)
@@ -371,7 +384,12 @@ async def solve_optimization(
     not name a backend, say in the answer which backend ran and why.
     """
     started = time.perf_counter()
-    parsed = _parse("solve_optimization", problem)
+    # Parsed on a worker thread of its own, before the state is touched, so
+    # a document that fails the schema is answered without building it. The
+    # thread is awaited to its end even when the request is cancelled
+    # meanwhile; the cancellation then takes effect at the first checkpoint
+    # of ``_run_cancellable``, before any solve has started.
+    parsed = await anyio.to_thread.run_sync(_parse, "solve_optimization", problem)
     if not isinstance(parsed, OptimizationProblem):
         return invalid_solve_result(parsed, started)
     state = get_state()

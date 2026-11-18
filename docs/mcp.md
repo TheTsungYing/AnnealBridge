@@ -70,7 +70,14 @@ Error: the MCP server needs the optional "mcp" dependency; install it with: pip 
 
 and ends with exit code `2`, leaving stdout empty — a missing extra is
 reported, never a `ModuleNotFoundError` traceback. Install the extra and the
-same command works.
+same command works. An installed `mcp` release too old for this version of
+AnnealBridge is reported the same way — one stderr line, exit code `2`, no
+traceback — with an upgrade hint instead:
+
+```console
+$ annealbridge-mcp
+Error: the installed "mcp" package is not compatible with this version of annealbridge; upgrade it with: pip install --upgrade "annealbridge[mcp]"
+```
 
 Run it with no arguments for stdio, the default transport:
 

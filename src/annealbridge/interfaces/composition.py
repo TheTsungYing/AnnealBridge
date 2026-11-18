@@ -6,6 +6,7 @@ Importing it has no side effects: the environment is read only when
 ``build_state``/``build_service`` is called.
 """
 
+import logging
 import sys
 from dataclasses import dataclass
 from typing import NoReturn
@@ -13,6 +14,8 @@ from typing import NoReturn
 from annealbridge.config import ServerSettings, SettingsError, load_settings
 from annealbridge.orchestration import ExecutionPolicy, OptimizationService
 from annealbridge.solvers import SolverRegistry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -30,6 +33,7 @@ def build_state_from_policy(
     # The registry is kept alongside the service because the capabilities
     # view needs it directly; the service's copy is a private attribute.
     registry = registry if registry is not None else SolverRegistry.default()
+    _warn_unknown_enabled_backends(policy, registry)
     try:
         service = OptimizationService(registry=registry, policy=policy)
     except ValueError as exc:
@@ -37,6 +41,33 @@ def build_state_from_policy(
         # §11.3): a configuration error, reported like any other bad setting.
         raise SettingsError(f"Invalid server settings: {exc}") from None
     return AppState(policy=policy, registry=registry, service=service)
+
+
+def _warn_unknown_enabled_backends(
+    policy: ExecutionPolicy, registry: SolverRegistry
+) -> None:
+    """Log a WARNING for allow-list names that match no registered backend.
+
+    An unknown name is not an error and the policy is left unchanged: the
+    allow-list simply cannot enable a backend that is not registered, so a
+    misspelt name would otherwise disable the intended backend silently.
+    This is the only place that holds both the policy and the registry.
+
+    The unknown names are shown on purpose, unlike any other rejected
+    setting (2026-11-18 review R-16): a warning that did not say which name
+    is wrong would not help the operator find the typo.
+    """
+    if policy.enabled_backends is None:
+        return
+    unknown = set(policy.enabled_backends) - set(registry.names())
+    if not unknown:
+        return
+    logger.warning(
+        "ANNEALBRIDGE_ENABLED_BACKENDS lists names that match no registered "
+        "backend and therefore enable nothing: %s. Registered backends: %s.",
+        ", ".join(sorted(unknown)),
+        ", ".join(sorted(registry.names())),
+    )
 
 
 def exit_on_settings_error(exc: SettingsError) -> NoReturn:

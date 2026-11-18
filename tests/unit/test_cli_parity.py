@@ -214,6 +214,20 @@ class TestStdin:
         assert result.exit_code == 2
         assert "'<stdin>' is not valid UTF-8" in _stderr(result)
 
+    def test_a_utf16_bom_on_stdin_gets_the_utf16_hint(self):
+        text = KNAPSACK.read_text(encoding="utf-8")
+        result = runner.invoke(
+            app, ["validate", "-"], input=b"\xff\xfe" + text.encode("utf-16-le")
+        )
+
+        assert result.exit_code == 2
+        stderr = _stderr(result)
+        assert stderr.startswith("Error: '<stdin>' is not valid UTF-8")
+        assert "UTF-16" in stderr
+        assert "-Encoding utf8" in stderr
+        assert "Traceback" not in stderr
+        assert len(stderr.strip().splitlines()) == 1
+
     def test_a_schema_error_on_stdin_names_stdin(self):
         problem = json.loads(KNAPSACK.read_text(encoding="utf-8"))
         problem["unexpected_field"] = 1
@@ -230,6 +244,73 @@ class TestStdin:
 
         assert result.exit_code == 0
         assert "stdin" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# A problem file that is not UTF-8 (2026-11-18 review R-03)
+# ---------------------------------------------------------------------------
+
+
+class TestNonUtf8File:
+    """A problem file in another encoding is unusable input: one stderr line
+    naming the file, exit code 2, no traceback."""
+
+    @pytest.fixture
+    def latin1_file(self, tmp_path: Path) -> Path:
+        path = tmp_path / "latin1.json"
+        path.write_bytes(b'{"name": "caf\xe9"}')
+        return path
+
+    @pytest.fixture
+    def utf16_file(self, tmp_path: Path) -> Path:
+        # What Windows PowerShell 5.1 ``>`` writes: UTF-16LE with a BOM.
+        path = tmp_path / "utf16.json"
+        text = KNAPSACK.read_text(encoding="utf-8")
+        path.write_bytes(b"\xff\xfe" + text.encode("utf-16-le"))
+        return path
+
+    @pytest.mark.parametrize("command", ["validate", "solve", "recommend", "expand"])
+    def test_a_latin1_file_exits_2_and_names_the_file(self, latin1_file, command):
+        result = runner.invoke(app, [command, str(latin1_file)])
+
+        assert result.exit_code == 2
+        assert result.stdout == ""
+        stderr = _stderr(result)
+        assert stderr.startswith(f"Error: '{latin1_file}' is not valid UTF-8")
+        assert "UTF-16" not in stderr
+        assert "Traceback" not in stderr
+        assert len(stderr.strip().splitlines()) == 1
+        # Only the offset is reported, never the file's bytes.
+        assert "caf" not in stderr
+
+    @pytest.mark.parametrize("command", ["validate", "solve", "recommend", "expand"])
+    def test_a_utf16_file_exits_2_with_the_utf16_hint(self, utf16_file, command):
+        result = runner.invoke(app, [command, str(utf16_file)])
+
+        assert result.exit_code == 2
+        assert result.stdout == ""
+        stderr = _stderr(result)
+        assert stderr.startswith(f"Error: '{utf16_file}' is not valid UTF-8")
+        assert "UTF-16" in stderr
+        assert "-Encoding utf8" in stderr
+        assert "Traceback" not in stderr
+        assert len(stderr.strip().splitlines()) == 1
+
+    def test_json_output_mode_reports_the_same_way(self, utf16_file):
+        result = runner.invoke(app, ["solve", str(utf16_file), "--json"])
+
+        assert result.exit_code == 2
+        assert result.stdout == ""
+        assert "UTF-16" in _stderr(result)
+
+    def test_a_utf8_file_with_a_bom_is_still_accepted(self, tmp_path: Path):
+        path = tmp_path / "bom.json"
+        path.write_bytes(UTF8_BOM + KNAPSACK.read_bytes())
+
+        result = runner.invoke(app, ["validate", str(path), "--json"])
+
+        assert result.exit_code == 0
+        assert json.loads(result.stdout)["valid"] is True
 
 
 # ---------------------------------------------------------------------------

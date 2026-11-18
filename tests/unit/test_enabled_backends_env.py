@@ -9,6 +9,7 @@ reads before choosing a backend.
 """
 
 import json
+import logging
 import os
 
 import pytest
@@ -70,3 +71,51 @@ def test_capabilities_view_reports_the_gate(only_exact_enabled):
 
     assert enabled["exact"] is True
     assert enabled["simulated_annealing"] is False
+
+
+COMPOSITION_LOGGER = "annealbridge.interfaces.composition"
+
+
+@pytest.fixture
+def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in list(os.environ):
+        if name.upper().startswith("ANNEALBRIDGE_"):
+            monkeypatch.delenv(name, raising=False)
+
+
+def composition_warnings(caplog: pytest.LogCaptureFixture) -> list:
+    return [
+        record
+        for record in caplog.records
+        if record.name == COMPOSITION_LOGGER and record.levelno == logging.WARNING
+    ]
+
+
+def test_unknown_name_is_warned_and_kept(clean_env, monkeypatch, caplog):
+    monkeypatch.setenv("ANNEALBRIDGE_ENABLED_BACKENDS", "exact,simulated_anealing")
+    caplog.set_level(logging.WARNING, logger=COMPOSITION_LOGGER)
+
+    state = build_state()
+
+    warnings = composition_warnings(caplog)
+    assert len(warnings) == 1
+    assert "simulated_anealing" in warnings[0].getMessage()
+    assert state.policy.enabled_backends == {"exact", "simulated_anealing"}
+
+
+def test_known_names_are_not_warned(clean_env, monkeypatch, caplog):
+    monkeypatch.setenv("ANNEALBRIDGE_ENABLED_BACKENDS", "exact,simulated_annealing")
+    caplog.set_level(logging.WARNING, logger=COMPOSITION_LOGGER)
+
+    build_state()
+
+    assert composition_warnings(caplog) == []
+
+
+def test_unset_allow_list_is_not_warned(clean_env, caplog):
+    caplog.set_level(logging.WARNING, logger=COMPOSITION_LOGGER)
+
+    state = build_state()
+
+    assert state.policy.enabled_backends is None
+    assert composition_warnings(caplog) == []
