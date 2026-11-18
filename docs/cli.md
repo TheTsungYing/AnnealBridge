@@ -494,7 +494,7 @@ $ annealbridge capabilities --json
     ...
   ],
   "problem_json_schema": null,
-  "annealbridge_version": "0.4.0"
+  "annealbridge_version": "0.5.0"
 }
 ```
 

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-18
+
+### Upgrade notes
+
+Read these before upgrading an existing installation or client; each is
+described in full under Added, Changed, Fixed or Security below. The problem
+schema, the result fields and the dependency floors are unchanged.
+
+- **More codes.** The error catalog grows from 64 to 65 codes with
+  `COEFFICIENT_MAGNITUDE_TOO_LARGE`, and validation adds the warning
+  `FRACTIONAL_HARD_EQUALITY`. A client that switches on codes should expect
+  them.
+- **A problem whose coefficients overflow the floating-point range is now
+  invalid.** `validate` answers `valid: false` and `solve` answers
+  `invalid_problem` / `COEFFICIENT_MAGNITUDE_TOO_LARGE`, where `validate`
+  used to accept it and `solve` returned `resource_limit_exceeded` /
+  `PENALTY_OVERFLOW`. A client that matched on that status or code for such a
+  problem has to match the new ones.
+- **`fujitsu_da` no longer follows HTTP redirects, and refuses a response
+  body larger than 64 MiB.** An endpoint configured through `FUJITSU_DA_URL`
+  has to answer directly; one that redirected now fails with
+  `REMOTE_SOLVER_ERROR`.
+- **CLI: a problem file that is not UTF-8 exits with code `2`,** on one
+  stderr line, where it used to print a traceback and exit `1`. A script that
+  treated exit `1` as "the problem is invalid" no longer sees it for an
+  unreadable file.
+- **An MCP server started with `uvx` does not upgrade on its own.** `uvx`
+  keeps the environment it resolved on its first run: run
+  `uv cache clean annealbridge`, restart the host, and check with
+  `annealbridge-mcp --version`. See Upgrading in `docs/mcp.md`.
+
 ### Added
 
 - Warning `FRACTIONAL_HARD_EQUALITY`: on the BQM path, for a backend that is
@@ -1409,7 +1440,8 @@ First public release.
   truncated to `solver.top_k`. The previous wording ("how many satisfied
   every hard constraint") read as a count of raw solver rows.
 
-[Unreleased]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/TheTsungYing/AnnealBridge/compare/v0.2.0...v0.2.1
